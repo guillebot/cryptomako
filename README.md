@@ -1,6 +1,6 @@
 # CryptoMako
 
-CryptoMako presents a [Cryptomator](https://cryptomator.org) vault stored on S3 (or S3-compatible storage) as plaintext. This repository is an AGPLv3 proof of concept.
+CryptoMako presents a [Cryptomator](https://cryptomator.org) vault stored on S3 (or S3-compatible storage) as plaintext. Licensed under **AGPLv3** (including paid distribution).
 
 The PoC is a CLI (`cryptomako`) that unlocks a format-8 vault, lists the cleartext tree, and decrypts files. A macOS File Provider extension comes later (see `docs/30-m2-file-provider.md`). Decryption always happens in-process. CryptoMako never mounts ciphertext for Cryptomator/FUSE to sit on top of.
 
