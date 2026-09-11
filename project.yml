@@ -1,0 +1,114 @@
+name: CryptoMako
+
+options:
+  bundleIdPrefix: net.gschimmel
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+packages:
+  CryptoMako:
+    path: .
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.10"
+    CODE_SIGN_STYLE: Automatic
+    # Xcode 16 debug builds split a target into a stub plus a .debug.dylib for
+    # previews. The system will not launch a File Provider appex built that way,
+    # and the failure is silent: the domain registers and Finder hangs. This
+    # applies to any debug configuration, signed or not.
+    ENABLE_DEBUG_DYLIB: NO
+    ENABLE_PREVIEWS: NO
+    # Set your Apple Developer team here (or pass DEVELOPMENT_TEAM= on the
+    # xcodebuild command line). Without it the File Provider cannot serve files:
+    # App Groups need a provisioning profile and a team prefix, and there is no
+    # ad-hoc route around that. See docs/30-m2-file-provider.md.
+    DEVELOPMENT_TEAM: ""
+
+targets:
+  CryptoMako:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/CryptoMakoApp
+      - path: Support/Brand/Assets.xcassets
+    dependencies:
+      - package: CryptoMako
+        product: CryptoMakoVault
+      - package: CryptoMako
+        product: CryptoMakoS3
+      - package: CryptoMako
+        product: CryptoMakoShared
+      - target: CryptoMakoFileProvider
+        embed: true
+        codeSign: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.gschimmel.cryptomako
+        PRODUCT_NAME: CryptoMako
+        CODE_SIGN_ENTITLEMENTS: Support/CryptoMako.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        COMBINE_HIDPI_IMAGES: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: Support/CryptoMako-Info.plist
+      properties:
+        CFBundleName: CryptoMako
+        CFBundlePackageType: APPL
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        LSApplicationCategoryType: public.app-category.utilities
+        NSHumanReadableCopyright: "© 2026 Guillermo Schimmel. AGPLv3."
+        NSSupportsAutomaticTermination: true
+        NSSupportsSuddenTermination: true
+
+  CryptoMakoFileProvider:
+    type: app-extension
+    platform: macOS
+    sources:
+      - path: Sources/CryptoMakoFileProvider
+    dependencies:
+      - package: CryptoMako
+        product: CryptoMakoVault
+      - package: CryptoMako
+        product: CryptoMakoS3
+      - package: CryptoMako
+        product: CryptoMakoShared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.gschimmel.cryptomako.FileProvider
+        PRODUCT_NAME: CryptoMakoFileProvider
+        CODE_SIGN_ENTITLEMENTS: Support/CryptoMakoFileProvider.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        SKIP_INSTALL: YES
+    info:
+      path: Support/CryptoMakoFileProvider-Info.plist
+      properties:
+        CFBundleName: CryptoMakoFileProvider
+        CFBundlePackageType: XPC!
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.fileprovider-nonui
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).FileProviderExtension
+          NSExtensionFileProviderSupportsEnumeration: true
+        # Must name a group the extension actually holds an entitlement for, and
+        # on macOS that means team-prefixed. Declaring one it lacks stops the
+        # system launching it, and the failure is silent: the domain registers,
+        # Finder shows the folder, and every request hangs with nothing serving
+        # it. Resolves to nothing until DEVELOPMENT_TEAM is set.
+        NSExtensionFileProviderDocumentGroup: $(AppIdentifierPrefix)group.net.gschimmel.cryptomako
+
+schemes:
+  CryptoMako:
+    build:
+      targets:
+        CryptoMako: all
+        CryptoMakoFileProvider: all
+    run:
+      config: Debug

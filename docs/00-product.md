@@ -21,6 +21,7 @@ Decrypt inside CryptoMako (CLI now, File Provider later). Never expose ciphertex
 ## Locked rules
 
 - Vault format **8** only; password unlock; one vault; one Mac.
+- **Host app GUI** (SwiftUI): view/edit connection config, unlock, show status and a listing. Secrets stay in the window / Keychain, never in `poc.json`. The File Provider (M2) is Finder; this window is how you configure and watch the vault.
 - Interop: anything written (M3) must open in stock Cryptomator and pass Directory Health Check with zero warnings.
 - Secrets never on argv: `CRYPTOMAKO_PASSWORD`, `CRYPTOMAKO_SECRET_KEY` (Keychain from M2).
 - DirId is the stable item id. Folder rename is O(1) (rewrite `dir.c9r`), not a prefix copy.

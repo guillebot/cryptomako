@@ -25,6 +25,17 @@ public struct VaultLocation: Sendable, Equatable {
     public func key(_ relative: String) -> String {
         prefix + relative
     }
+
+    /// Dummy location used when the ciphertext lives on disk, not S3.
+    public static func local(prefix: String = "") -> VaultLocation {
+        VaultLocation(
+            endpoint: URL(string: "file:///")!,
+            region: "local",
+            bucket: "local",
+            prefix: prefix,
+            accessKey: "local"
+        )
+    }
 }
 
 public struct VaultConfig: Sendable, Equatable {

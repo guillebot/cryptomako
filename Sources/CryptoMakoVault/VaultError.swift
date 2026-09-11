@@ -1,4 +1,5 @@
 import Foundation
+import CryptoMakoS3
 
 public enum VaultError: Error, LocalizedError {
     case unlockFailed

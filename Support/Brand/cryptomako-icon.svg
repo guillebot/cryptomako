@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- CryptoMako app icon: remote bucket + crypto lock. Mako fin shackle. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" role="img" aria-label="CryptoMako">
+  <defs>
+    <linearGradient id="bg" x1="120" y1="80" x2="920" y2="960" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#031820"/>
+      <stop offset="0.45" stop-color="#0A4A55"/>
+      <stop offset="1" stop-color="#15948E"/>
+    </linearGradient>
+    <linearGradient id="bucket" x1="280" y1="360" x2="760" y2="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F4FBFB"/>
+      <stop offset="1" stop-color="#B8E4E4"/>
+    </linearGradient>
+    <linearGradient id="bucketShade" x1="512" y1="420" x2="512" y2="820" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="1" stop-color="#0E5C63" stop-opacity="0.22"/>
+    </linearGradient>
+    <linearGradient id="lock" x1="412" y1="500" x2="612" y2="700" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#D7EFEF"/>
+    </linearGradient>
+    <linearGradient id="fin" x1="512" y1="330" x2="512" y2="470" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7CF0E7"/>
+      <stop offset="1" stop-color="#2BB8AE"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="720" cy="260" r="180" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#6EE7F2" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#6EE7F2" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="14" stdDeviation="18" flood-color="#021014" flood-opacity="0.45"/>
+    </filter>
+    <filter id="cloudShadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#021014" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <!-- macOS squircle-ish canvas -->
+  <rect width="1024" height="1024" rx="226" fill="url(#bg)"/>
+  <ellipse cx="720" cy="260" rx="200" ry="140" fill="url(#glow)"/>
+
+  <!-- Remote cloud + uplink -->
+  <g filter="url(#cloudShadow)" opacity="0.95">
+    <ellipse cx="290" cy="250" rx="92" ry="58" fill="#DDF7F7"/>
+    <ellipse cx="380" cy="232" rx="78" ry="50" fill="#EAFBFB"/>
+    <ellipse cx="470" cy="258" rx="86" ry="54" fill="#C9F0F0"/>
+  </g>
+  <path
+    d="M470 286 C520 320 540 360 548 410"
+    fill="none"
+    stroke="#8AE8DE"
+    stroke-width="10"
+    stroke-linecap="round"
+    stroke-dasharray="2 18"
+    opacity="0.85"
+  />
+  <circle cx="548" cy="410" r="12" fill="#8AE8DE"/>
+
+  <!-- S3-style bucket -->
+  <g filter="url(#softShadow)">
+    <path
+      d="M272 430
+         C272 392 392 360 512 360
+         C632 360 752 392 752 430
+         L728 760
+         C728 804 632 836 512 836
+         C392 836 296 804 296 760
+         Z"
+      fill="url(#bucket)"
+    />
+    <ellipse cx="512" cy="430" rx="240" ry="52" fill="#FFFFFF" opacity="0.55"/>
+    <path
+      d="M272 430
+         C272 392 392 360 512 360
+         C632 360 752 392 752 430"
+      fill="none"
+      stroke="#FFFFFF"
+      stroke-width="8"
+      opacity="0.65"
+    />
+    <path
+      d="M272 430
+         C272 392 392 360 512 360
+         C632 360 752 392 752 430
+         L728 760
+         C728 804 632 836 512 836
+         C392 836 296 804 296 760
+         Z"
+      fill="url(#bucketShade)"
+    />
+  </g>
+
+  <!-- Padlock: mako-fin shackle + body on bucket -->
+  <g filter="url(#softShadow)">
+    <!-- Fin-shaped shackle (sharp apex = mako) -->
+    <path
+      d="M412 520
+         L512 360
+         L612 520
+         C612 470 590 438 512 438
+         C434 438 412 470 412 520
+         Z"
+      fill="url(#fin)"
+      stroke="#0E6B66"
+      stroke-width="6"
+      stroke-linejoin="round"
+    />
+    <rect x="392" y="520" width="240" height="190" rx="42" fill="url(#lock)" stroke="#0E6B66" stroke-width="6"/>
+    <!-- Keyhole -->
+    <circle cx="512" cy="590" r="28" fill="#0A4A55"/>
+    <path d="M512 618 L512 668 L492 688 L532 688 Z" fill="#0A4A55"/>
+    <circle cx="512" cy="590" r="14" fill="#7CF0E7" opacity="0.35"/>
+  </g>
+
+  <!-- Subtle crypto bits -->
+  <g opacity="0.55" stroke="#7CF0E7" stroke-width="6" fill="none" stroke-linecap="round">
+    <path d="M820 640 L860 680"/>
+    <path d="M850 630 L890 670"/>
+    <path d="M840 650 L880 690"/>
+  </g>
+</svg>

@@ -3,10 +3,20 @@
 ## Modules
 
 ```
-CryptoMakoCLI  →  CryptoMakoVault  →  cryptolib-swift
-                       ↓
-                 CryptoMakoS3  →  Soto S3
+CryptoMakoCLI ──┐
+CryptoMakoApp ──┼─→ CryptoMakoVault ─→ cryptolib-swift
+CryptoMakoFileProvider (appex)        ↓
+                └─→ CryptoMakoS3 ─→ SigV4 + URLSession
+                └─→ CryptoMakoShared (settings, Keychain, identifiers)
 ```
+
+There is no AWS SDK and no SwiftNIO. `CryptoMakoS3` signs its own requests
+(`SigV4.swift`) and issues them through `URLSession`, because a File Provider
+extension is memory-capped and cannot afford an event-loop group, and
+`fetchContents` wants a download written straight to a file URL.
+
+The whole dependency graph is `cryptolib-swift`, `base32`, and
+`swift-argument-parser` (CLI only).
 
 `cloud-access-swift` is a reference implementation (iOS), not a dependency.
 
@@ -43,7 +53,12 @@ Root `dirId` is the empty string.
 
 ## Item identifiers (M2)
 
-- Directory: `d:<dirId>` (`d:` for root)
+- Directory: `d:<dirId>` (root maps to `NSFileProviderItemIdentifier.rootContainer`)
 - File: `f:<parentDirId>/<cipherName>`
 
 DirIds do not change when a folder is renamed or moved.
+
+A dirId carries no pointer to its parent, so `item(for:)` on a bare `d:<dirId>`
+cannot fill in `parentItemIdentifier` unaided. `VaultIndex` records
+`dirId → (parent, name)` as it enumerates and falls back to a breadth-first walk
+from the root on a cache miss.

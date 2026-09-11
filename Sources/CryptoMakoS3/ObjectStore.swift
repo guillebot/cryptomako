@@ -4,7 +4,16 @@ import Foundation
 public protocol ObjectStore: Sendable {
     func getObject(key: String) async throws -> Data
     func getObject(key: String, to fileURL: URL) async throws
+    func headObject(key: String) async throws -> ListedObject
     func listImmediate(prefix: String) async throws -> PrefixListing
+}
+
+extension ObjectStore {
+    /// Default HEAD: download the object. Real S3 stores override this.
+    public func headObject(key: String) async throws -> ListedObject {
+        let data = try await getObject(key: key)
+        return ListedObject(key: key, size: Int64(data.count), eTag: nil)
+    }
 }
 
 public struct PrefixListing: Sendable {

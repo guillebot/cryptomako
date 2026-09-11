@@ -17,3 +17,10 @@ Implement `createItem`, `modifyItem`, `deleteItem` on the File Provider only aft
 4. Reverse: create a file in Cryptomator, Refresh in CryptoMako, file appears.
 
 Conflicts: last-writer-wins with `If-Match` ETag when the endpoint supports it.
+
+## Bucket-scoped credentials
+
+Never call `CreateBucket` or `HeadBucket`. Real deployments hand CryptoMako a key
+scoped to one bucket — often one prefix inside a bucket that another tool owns —
+and a bucket-level probe turns into a spurious `AccessDenied` on the first write.
+Assume the bucket exists and let object operations report their own errors.
