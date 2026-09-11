@@ -1,0 +1,12 @@
+.build/
+.swiftpm/
+*.xcodeproj
+xcuserdata/
+.DS_Store
+.env
+.env.*
+poc.json
+fixtures/PASSWORD
+fixtures/vault/
+*.pem
+*.key
