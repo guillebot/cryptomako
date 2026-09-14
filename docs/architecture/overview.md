@@ -4,7 +4,7 @@
 
 ```
 CryptoMakoCLI ──┐
-CryptoMakoApp ──┼─→ CryptoMakoVault ─→ cryptolib-swift
+CryptoMako (app) ┼─→ CryptoMakoVault ─→ cryptolib-swift
 CryptoMakoFileProvider (appex)        ↓
                 └─→ CryptoMakoS3 ─→ SigV4 + URLSession
                 └─→ CryptoMakoShared (settings, Keychain, identifiers)

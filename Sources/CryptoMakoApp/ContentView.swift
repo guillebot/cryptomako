@@ -12,12 +12,18 @@ struct ContentView: View {
 
     @State private var status = Status.locked
     @State private var detail = ""
-    @State private var listing = ""
+    @State private var listingLines: [String] = []
     @State private var jti: String?
     @State private var busy = false
+    @State private var sessionUser = ""
+    @State private var sessionLocation = ""
 
     private var bundledApp: Bool {
         Bundle.main.bundleURL.pathExtension == "app"
+    }
+
+    private var isUnlocked: Bool {
+        status == .unlocked
     }
 
     enum Status: String {
@@ -37,27 +43,10 @@ struct ContentView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            Form {
-                TextField("Local vault directory", text: $settings.localVaultPath)
-                HStack {
-                    Button("Choose…") { chooseLocalVault() }
-                    Text("Leave empty to use S3.")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                }
-                TextField("Endpoint", text: $settings.endpoint)
-                    .disabled(settings.isLocal)
-                TextField("Region", text: $settings.region)
-                    .disabled(settings.isLocal)
-                TextField("Bucket", text: $settings.bucket)
-                    .disabled(settings.isLocal)
-                TextField("Prefix", text: $settings.prefix)
-                    .disabled(settings.isLocal)
-                TextField("Access key", text: $settings.accessKey)
-                    .disabled(settings.isLocal)
-                SecureField("Secret key", text: $secretKey)
-                    .disabled(settings.isLocal)
-                SecureField("Vault password", text: $password)
+            if isUnlocked {
+                sessionBanner
+            } else {
+                credentialsForm
             }
             controls
             Text(detail)
@@ -71,30 +60,97 @@ struct ContentView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                Text("CryptoMako").font(.title)
-                Spacer()
-                Text(status.rawValue)
-                    .font(.headline)
-                    .foregroundStyle(status.color)
+        HStack(alignment: .center, spacing: 14) {
+            BrandIcon.swiftUIImage
+                .resizable()
+                .interpolation(.high)
+                .frame(width: 56, height: 56)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
+            VStack(alignment: .leading, spacing: 4) {
+                HStack {
+                    Text("CryptoMako").font(.title)
+                    Spacer()
+                    Text(status.rawValue)
+                        .font(.headline)
+                        .foregroundStyle(status.color)
+                }
+                if isUnlocked {
+                    Text("Signed in as \(sessionUser)")
+                        .font(.subheadline.weight(.medium))
+                } else {
+                    Text("A Cryptomator format-8 vault, decrypted in-process.")
+                        .foregroundStyle(.secondary)
+                }
             }
-            Text("A Cryptomator format-8 vault, decrypted in-process.")
-                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var sessionBanner: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "person.crop.circle.fill")
+                .font(.system(size: 28))
+                .foregroundStyle(.teal)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(sessionUser)
+                    .font(.headline)
+                Text(sessionLocation)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Spacer()
+            Button("Lock") { lock() }
+                .disabled(busy)
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+    }
+
+    private var credentialsForm: some View {
+        Form {
+            TextField("Local vault directory", text: $settings.localVaultPath)
+            HStack {
+                Button("Choose…") { chooseLocalVault() }
+                Text("Leave empty to use S3.")
+                    .foregroundStyle(.secondary)
+                    .font(.caption)
+            }
+            TextField("Endpoint", text: $settings.endpoint)
+                .disabled(settings.isLocal)
+            TextField("Region", text: $settings.region)
+                .disabled(settings.isLocal)
+            TextField("Bucket", text: $settings.bucket)
+                .disabled(settings.isLocal)
+            TextField("Prefix", text: $settings.prefix)
+                .disabled(settings.isLocal)
+            TextField("Access key", text: $settings.accessKey)
+                .disabled(settings.isLocal)
+            SecureField("Secret key", text: $secretKey)
+                .disabled(settings.isLocal)
+            SecureField("Vault password", text: $password)
         }
     }
 
     private var controls: some View {
         HStack {
-            Button("Save config") { save() }
-            Button("Unlock") { Task { await unlock(list: false) } }
-                .disabled(busy)
-            Button("Unlock and list") { Task { await unlock(list: true) } }
-                .disabled(busy)
+            if !isUnlocked {
+                Button("Save config") { save() }
+                Button("Unlock") { Task { await unlock(listMode: .root) } }
+                    .disabled(busy)
+                Button("Unlock and list") { Task { await unlock(listMode: .recursive) } }
+                    .disabled(busy)
+            } else {
+                Button("List root") { Task { await unlock(listMode: .root) } }
+                    .disabled(busy)
+                Button("List recursive") { Task { await unlock(listMode: .recursive) } }
+                    .disabled(busy)
+            }
             Spacer()
             if bundledApp {
                 Button("Mount in Finder") { Task { await mount() } }
-                    .disabled(busy || jti == nil)
+                    .disabled(busy || jti == nil || !isUnlocked)
                 Button("Unmount") { Task { await unmount() } }
                     .disabled(busy || jti == nil)
             }
@@ -103,14 +159,29 @@ struct ContentView: View {
 
     private var listingView: some View {
         ScrollView {
-            Text(listing.isEmpty ? "No listing yet." : listing)
-                .font(.system(.body, design: .monospaced))
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .textSelection(.enabled)
+            LazyVStack(alignment: .leading, spacing: 2) {
+                if listingLines.isEmpty {
+                    Text("No listing yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(listingLines.enumerated()), id: \.offset) { _, line in
+                        Text(line)
+                            .font(.system(.body, design: .monospaced))
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                    }
+                }
+            }
         }
         .padding(8)
         .background(Color(nsColor: .textBackgroundColor))
         .clipShape(RoundedRectangle(cornerRadius: 6))
+    }
+
+    private enum ListMode {
+        case none
+        case root
+        case recursive
     }
 
     // MARK: - Persistence
@@ -151,14 +222,16 @@ struct ContentView: View {
         }
     }
 
-    private func save() {
+    private func save(persistSecrets: Bool = true) {
         do {
             try settings.save()
-            if !secretKey.isEmpty {
-                try CredentialStore.saveSharedOrLocal(secretKey, account: AppIdentifiers.secretKeyAccount)
-            }
-            if !password.isEmpty {
-                try CredentialStore.saveSharedOrLocal(password, account: AppIdentifiers.passwordAccount)
+            if persistSecrets {
+                if !secretKey.isEmpty {
+                    try CredentialStore.saveSharedOrLocal(secretKey, account: AppIdentifiers.secretKeyAccount)
+                }
+                if !password.isEmpty {
+                    try CredentialStore.saveSharedOrLocal(password, account: AppIdentifiers.passwordAccount)
+                }
             }
             detail = "Saved. Settings are plaintext JSON; secrets are in the Keychain."
         } catch {
@@ -166,32 +239,62 @@ struct ContentView: View {
         }
     }
 
+    private func resignFields() {
+        NSApp.keyWindow?.makeFirstResponder(nil)
+    }
+
+    private func lock() {
+        resignFields()
+        status = .locked
+        jti = nil
+        sessionUser = ""
+        sessionLocation = ""
+        listingLines = []
+        secretKey = ""
+        password = ""
+        settings = VaultSettings.load() ?? settings
+        secretKey = (try? CredentialStore.readSharedOrLocal(account: AppIdentifiers.secretKeyAccount)) ?? ""
+        password = (try? CredentialStore.readSharedOrLocal(account: AppIdentifiers.passwordAccount)) ?? ""
+        detail = "Locked. Credentials are required again to unlock."
+    }
+
     // MARK: - Vault
 
-    private func unlock(list: Bool) async {
+    @MainActor
+    private func unlock(listMode: ListMode) async {
         busy = true
         defer { busy = false }
         status = .working
-        listing = ""
+
+        if secretKey.isEmpty {
+            secretKey = (try? CredentialStore.readSharedOrLocal(account: AppIdentifiers.secretKeyAccount)) ?? ""
+        }
+        if password.isEmpty {
+            password = (try? CredentialStore.readSharedOrLocal(account: AppIdentifiers.passwordAccount)) ?? ""
+        }
 
         guard !password.isEmpty else {
-            status = .locked
+            status = isUnlocked ? .unlocked : .locked
             detail = "Vault password is required."
             return
         }
 
+        let snapshotSettings = settings
+        let snapshotSecret = secretKey
+        let snapshotPassword = password
+
         let store: any ObjectStore
         let location: VaultLocation
-        if settings.isLocal {
-            store = DirectoryObjectStore(root: URL(fileURLWithPath: settings.localVaultPath))
+        if snapshotSettings.isLocal {
+            store = DirectoryObjectStore(root: URL(fileURLWithPath: snapshotSettings.localVaultPath))
             location = VaultLocation.local(prefix: "")
         } else {
-            guard settings.isComplete, let endpoint = URL(string: settings.endpoint) else {
+            guard snapshotSettings.isComplete, let endpoint = URL(string: snapshotSettings.endpoint) else {
                 status = .locked
                 detail = "Endpoint, bucket, and access key are required (or choose a local vault)."
                 return
             }
-            guard !secretKey.isEmpty else {
+            guard !snapshotSecret.isEmpty else {
                 status = .locked
                 detail = "Secret key is required for S3."
                 return
@@ -199,50 +302,96 @@ struct ContentView: View {
             store = S3ObjectStore(
                 settings: S3Settings(
                     endpoint: endpoint,
-                    region: settings.region,
-                    bucket: settings.bucket,
-                    accessKey: settings.accessKey,
-                    secretKey: secretKey,
+                    region: snapshotSettings.region,
+                    bucket: snapshotSettings.bucket,
+                    accessKey: snapshotSettings.accessKey,
+                    secretKey: snapshotSecret,
                     pathStyle: true
                 )
             )
             location = VaultLocation(
                 endpoint: endpoint,
-                region: settings.region,
-                bucket: settings.bucket,
-                prefix: settings.prefix,
-                accessKey: settings.accessKey
+                region: snapshotSettings.region,
+                bucket: snapshotSettings.bucket,
+                prefix: snapshotSettings.prefix,
+                accessKey: snapshotSettings.accessKey
             )
         }
 
         do {
             let session = try await VaultSession.unlock(
                 location: location,
-                passphrase: password,
+                passphrase: snapshotPassword,
                 store: store
             )
-            status = .unlocked
-            jti = session.config.jti
+
             var lines = [
                 "format=\(session.config.format)",
                 "combo=\(session.config.cipherCombo)",
                 "root=\(session.rootCipherPrefix)",
                 "jti=\(session.config.jti ?? "none")",
             ]
-            if list {
+
+            switch listMode {
+            case .none:
+                break
+            case .root:
                 lines.append("")
-                for (path, node) in try await session.listRecursive(at: "/") {
+                for node in try await session.list(dirId: "") {
+                    lines.append(node.cleartextName + (node.kind == .directory ? "/" : ""))
+                }
+            case .recursive:
+                lines.append("")
+                let rows = try await session.listRecursive(at: "/", maxEntries: 2_000)
+                for (path, node) in rows {
                     lines.append(path + (node.kind == .directory ? "/" : ""))
                 }
+                if rows.count >= 2_000 {
+                    lines.append("… truncated at 2000 entries")
+                }
             }
-            listing = lines.joined(separator: "\n")
-            detail = settings.isLocal
-                ? "Unlock succeeded (local vault)."
-                : "Unlock succeeded."
-            save()
+
+            // Persist while we still have secrets in local vars, then drop focus
+            // before swapping the SecureField form out of the hierarchy.
+            do {
+                try snapshotSettings.save()
+                if !snapshotSecret.isEmpty {
+                    try CredentialStore.saveSharedOrLocal(snapshotSecret, account: AppIdentifiers.secretKeyAccount)
+                }
+                if !snapshotPassword.isEmpty {
+                    try CredentialStore.saveSharedOrLocal(snapshotPassword, account: AppIdentifiers.passwordAccount)
+                }
+            } catch {
+                detail = "Unlocked, but save failed: \(error.localizedDescription)"
+            }
+
+            resignFields()
+            secretKey = ""
+            password = ""
+
+            if snapshotSettings.isLocal {
+                let name = URL(fileURLWithPath: snapshotSettings.localVaultPath).lastPathComponent
+                sessionUser = name.isEmpty ? "local vault" : name
+                sessionLocation = snapshotSettings.localVaultPath
+            } else {
+                sessionUser = snapshotSettings.accessKey
+                let prefix = snapshotSettings.prefix.isEmpty ? "/" : snapshotSettings.prefix
+                sessionLocation = "\(snapshotSettings.bucket)\(prefix.hasPrefix("/") ? "" : "/")\(prefix) @ \(snapshotSettings.endpoint)"
+            }
+            jti = session.config.jti
+            listingLines = lines
+            status = .unlocked
+            if detail.hasPrefix("Unlocked, but save failed") == false {
+                detail = snapshotSettings.isLocal
+                    ? "Unlock succeeded (local vault)."
+                    : "Unlock succeeded."
+            }
         } catch {
             status = .locked
             jti = nil
+            sessionUser = ""
+            sessionLocation = ""
+            listingLines = []
             detail = error.localizedDescription
         }
         if let s3 = store as? S3ObjectStore {

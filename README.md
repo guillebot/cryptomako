@@ -2,7 +2,7 @@
 
 CryptoMako presents a [Cryptomator](https://cryptomator.org) vault stored on S3 (or S3-compatible storage) as plaintext. Licensed under **AGPLv3** (including paid distribution).
 
-The PoC is a CLI (`cryptomako`) plus a SwiftUI window (`CryptoMakoApp`) for config and status. A File Provider extension comes later (see `docs/30-m2-file-provider.md`). Decryption always happens in-process. CryptoMako never mounts ciphertext for Cryptomator/FUSE to sit on top of.
+The PoC is a CLI (`cryptomako`) plus a SwiftUI window (`CryptoMako`) for config and status. A File Provider extension comes later (see `docs/30-m2-file-provider.md`). Decryption always happens in-process. CryptoMako never mounts ciphertext for Cryptomator/FUSE to sit on top of.
 
 ## License
 
@@ -26,7 +26,7 @@ The full dependency graph is `cryptolib-swift`, `base32`, and
 cd ~/dev/cryptomako
 swift build
 swift run cryptomako --help
-swift run CryptoMakoApp   # config + status window
+swift run CryptoMako      # config + status window
 swift test                # offline tests, no network, no Apple ID
 make test                 # same
 make ci                   # release build + tests
@@ -36,7 +36,7 @@ make security             # Trivy + Grype (brew install trivy grype)
 cryptomako fixture
 export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < fixtures/PASSWORD)"
 swift run cryptomako ls --local fixtures/vault --path / --recursive
-swift run CryptoMakoApp
+swift run CryptoMako
 
 # M2: generate and compile the app + File Provider extension
 xcodegen generate

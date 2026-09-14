@@ -138,9 +138,48 @@ public final class VaultSession: @unchecked Sendable {
         return nodes
     }
 
-    public func listRecursive(at cleartextPath: String = "/") async throws -> [(String, VaultNode)] {
+    public func listRecursive(at cleartextPath: String = "/", maxEntries: Int = 5_000) async throws -> [(String, VaultNode)] {
         var results: [(String, VaultNode)] = []
-        try await walk(dirId: "", path: normalized(cleartextPath), into: &results)
+        results.reserveCapacity(min(maxEntries, 256))
+
+        let startPath = normalized(cleartextPath)
+        let startDirId: String
+        if startPath == "/" {
+            startDirId = ""
+        } else {
+            let node = try await resolve(cleartextPath: startPath)
+            guard node.kind == .directory, let child = node.dirId else {
+                throw VaultError.notAFile(startPath)
+            }
+            startDirId = child
+        }
+
+        // Explicit-stack DFS matches the previous recursive order without a
+        // call-stack overflow on deep trees, and respects maxEntries.
+        let rootNodes = try await list(dirId: startDirId)
+        var stack: [(dirId: String, path: String, nodes: [VaultNode], index: Int)] = [
+            (startDirId, startPath, rootNodes, 0),
+        ]
+        while !stack.isEmpty {
+            let top = stack.count - 1
+            if stack[top].index >= stack[top].nodes.count {
+                stack.removeLast()
+                continue
+            }
+            let node = stack[top].nodes[stack[top].index]
+            stack[top].index += 1
+
+            if results.count >= maxEntries {
+                return results
+            }
+            let parentPath = stack[top].path
+            let childPath = parentPath == "/" ? "/\(node.cleartextName)" : "\(parentPath)/\(node.cleartextName)"
+            results.append((childPath, node))
+            if node.kind == .directory, let childId = node.dirId {
+                let childNodes = try await list(dirId: childId)
+                stack.append((childId, childPath, childNodes, 0))
+            }
+        }
         return results
     }
 
@@ -194,17 +233,6 @@ public final class VaultSession: @unchecked Sendable {
             throw VaultError.notAFile(cleartextPath)
         }
         return node
-    }
-
-    private func walk(dirId: String, path: String, into results: inout [(String, VaultNode)]) async throws {
-        let nodes = try await list(dirId: dirId)
-        for node in nodes {
-            let childPath = path == "/" ? "/\(node.cleartextName)" : "\(path)/\(node.cleartextName)"
-            results.append((childPath, node))
-            if node.kind == .directory, let childId = node.dirId {
-                try await walk(dirId: childId, path: childPath, into: &results)
-            }
-        }
     }
 
     private func nodeForFileObject(name: String, parentDirId: String, object: ListedObject) async throws -> VaultNode? {

@@ -34,7 +34,7 @@ cryptomako fixture
 export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < fixtures/PASSWORD)"
 cryptomako ls --local fixtures/vault --path / --recursive
 cryptomako get --local fixtures/vault /hello.txt --output /tmp/hello.txt
-swift run CryptoMakoApp   # prefills fixtures/vault + fixtures/PASSWORD
+swift run CryptoMako   # prefills fixtures/vault + fixtures/PASSWORD
 ```
 
 The SwiftUI window hides **Mount in Finder** when it is not running from a `.app` bundle. Unlock and listing work against a local vault or S3.

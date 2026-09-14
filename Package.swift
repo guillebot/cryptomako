@@ -9,7 +9,7 @@ let package = Package(
     ],
     products: [
         .executable(name: "cryptomako", targets: ["CryptoMakoCLI"]),
-        .executable(name: "CryptoMakoApp", targets: ["CryptoMakoApp"]),
+        .executable(name: "CryptoMako", targets: ["CryptoMakoApp"]),
         .library(name: "CryptoMakoVault", targets: ["CryptoMakoVault"]),
         .library(name: "CryptoMakoS3", targets: ["CryptoMakoS3"]),
         .library(name: "CryptoMakoShared", targets: ["CryptoMakoShared"]),
@@ -52,6 +52,9 @@ let package = Package(
                 "CryptoMakoVault",
                 "CryptoMakoS3",
                 "CryptoMakoShared",
+            ],
+            resources: [
+                .process("Resources"),
             ]
         ),
         .testTarget(

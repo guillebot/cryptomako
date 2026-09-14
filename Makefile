@@ -1,4 +1,4 @@
-.PHONY: build test ci security sbom clean
+.PHONY: build test ci security sbom clean icon run
 
 build:
 	swift build -c release
@@ -15,6 +15,9 @@ security:
 icon:
 	chmod +x scripts/export-icon.sh
 	./scripts/export-icon.sh
+
+run:
+	swift run CryptoMako
 
 sbom:
 	@mkdir -p .build

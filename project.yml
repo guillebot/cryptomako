@@ -35,6 +35,10 @@ targets:
     platform: macOS
     sources:
       - path: Sources/CryptoMakoApp
+        excludes:
+          - Resources/**
+      - path: Sources/CryptoMakoApp/Resources
+        buildPhase: resources
       - path: Support/Brand/Assets.xcassets
     dependencies:
       - package: CryptoMako
