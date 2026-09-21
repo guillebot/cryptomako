@@ -27,7 +27,7 @@ settings:
     # xcodebuild command line). Without it the File Provider cannot serve files:
     # App Groups need a provisioning profile and a team prefix, and there is no
     # ad-hoc route around that. See docs/30-m2-file-provider.md.
-    DEVELOPMENT_TEAM: ""
+    DEVELOPMENT_TEAM: "H4K6YW7MQM"
 
 targets:
   CryptoMako:

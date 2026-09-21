@@ -40,13 +40,31 @@ final class VaultSettingsTests: XCTestCase {
         XCTAssertEqual(settings.bucket, "b")
         XCTAssertEqual(settings.localVaultPath, "")
         XCTAssertFalse(settings.isLocal)
+        XCTAssertEqual(settings.storageMode, .s3)
         XCTAssertTrue(settings.isComplete)
     }
 
     func testLocalPathIsCompleteWithoutS3() {
-        let settings = VaultSettings(localVaultPath: "/tmp/vault")
+        let settings = VaultSettings(storageMode: .local, localVaultPath: "/tmp/vault")
         XCTAssertTrue(settings.isLocal)
         XCTAssertTrue(settings.isComplete)
+    }
+
+    func testLegacyLocalPathImpliesLocalMode() throws {
+        let json = """
+        {"endpoint":"http://example:9000","region":"us-east-1","bucket":"b","prefix":"","accessKey":"k","localVaultPath":"/tmp/v"}
+        """
+        let settings = try JSONDecoder().decode(VaultSettings.self, from: Data(json.utf8))
+        XCTAssertEqual(settings.storageMode, .local)
+        XCTAssertTrue(settings.isLocal)
+    }
+
+    func testPrefixNormalizationAndPreview() {
+        var settings = VaultSettings(storageMode: .s3, bucket: "sch-backup", prefix: "cryptomako-poc")
+        XCTAssertEqual(settings.normalizedPrefix, "cryptomako-poc/")
+        XCTAssertEqual(settings.vaultObjectKeyPreview, "sch-backup/cryptomako-poc/vault.cryptomator")
+        settings.normalizeForSave()
+        XCTAssertEqual(settings.prefix, "cryptomako-poc/")
     }
 }
 

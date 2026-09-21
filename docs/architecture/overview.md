@@ -11,9 +11,11 @@ CryptoMakoFileProvider (appex)        ↓
 ```
 
 There is no AWS SDK and no SwiftNIO. `CryptoMakoS3` signs its own requests
-(`SigV4.swift`) and issues them through `URLSession`, because a File Provider
-extension is memory-capped and cannot afford an event-loop group, and
-`fetchContents` wants a download written straight to a file URL.
+(`SigV4.swift`) and issues them through an ephemeral `URLSession` (no URL
+cache), because a File Provider extension is memory-capped and cannot afford an
+event-loop group, `fetchContents` wants a download written straight to a file
+URL, and a shared URL cache can serve a stale `masterkey.cryptomator` after a
+vault rewrite.
 
 The whole dependency graph is `cryptolib-swift`, `base32`, and
 `swift-argument-parser` (CLI only).

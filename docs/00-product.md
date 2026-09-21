@@ -4,7 +4,7 @@ CryptoMako is a macOS companion that presents a Cryptomator vault stored on S3 a
 
 ## Thesis
 
-Decrypt inside CryptoMako (CLI now, File Provider later). Never expose ciphertext as a folder for Cryptomator desktop / FUSE-T / macFUSE to mount. Nested File Provider + FUSE is a known Finder deadlock.
+Decrypt inside CryptoMako (CLI, SwiftUI app, File Provider). Never expose ciphertext as a folder for Cryptomator desktop / FUSE-T / macFUSE to mount. Nested File Provider + FUSE is a known Finder deadlock.
 
 ## Naming
 
@@ -12,18 +12,20 @@ Decrypt inside CryptoMako (CLI now, File Provider later). Never expose ciphertex
 |------|--------|
 | Product | CryptoMako |
 | CLI | `cryptomako` |
-| Repo | `~/dev/cryptomako` |
-| Bundle ID (M2) | `net.gschimmel.cryptomako` |
+| App | `CryptoMako` |
+| Repo | `~/dev/cryptomako` / `github.com/guillebot/cryptomako` |
+| Bundle ID | `net.gschimmel.cryptomako` |
 | Extension | `net.gschimmel.cryptomako.FileProvider` |
-| App Group | `group.net.gschimmel.cryptomako` |
+| App Group | `{TEAM_ID}.group.net.gschimmel.cryptomako` |
 | License | AGPLv3 |
 
 ## Locked rules
 
 - Vault format **8** only; password unlock; one vault; one Mac.
-- **Host app GUI** (SwiftUI): view/edit connection config, unlock, show status and a listing. Secrets stay in the window / Keychain, never in `poc.json`. The File Provider (M2) is Finder; this window is how you configure and watch the vault.
+- **Host app GUI** (SwiftUI): Local vs S3 storage mode, edit connection config (including an explicit vault **prefix**), unlock, show status and a listing, Mount in Finder. Secrets stay in the window / Keychain, never in `poc.json`.
+- Prefer **HTTPS** S3 endpoints for the sandboxed app and extension (ATS).
 - Interop: anything written (M3) must open in stock Cryptomator and pass Directory Health Check with zero warnings.
-- Secrets never on argv: `CRYPTOMAKO_PASSWORD`, `CRYPTOMAKO_SECRET_KEY` (Keychain from M2).
+- Secrets never on argv: `CRYPTOMAKO_PASSWORD`, `CRYPTOMAKO_SECRET_KEY` (Keychain in the app).
 - DirId is the stable item id. Folder rename is O(1) (rewrite `dir.c9r`), not a prefix copy.
 - Every content encrypt uses a fresh header and nonces. No ciphertext reuse on save.
 - Manual refresh only in the PoC. No S3 changelog polling.

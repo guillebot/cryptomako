@@ -41,3 +41,8 @@ Spotlight will index cleartext names once files hydrate (M2). Disclose that in t
 ## JWT
 
 `vault.cryptomator` is a JWT signed with HMAC over the 512-bit raw masterkey (`aesMasterKey ‖ macMasterKey`). CryptoMako verifies the signature before trusting `format` / `cipherCombo` / `shorteningThreshold`.
+
+
+## S3 HTTP client
+
+`S3ObjectStore` uses an ephemeral `URLSession` with caching disabled. `URLSession.shared` can persist GET responses for `masterkey.cryptomator` / `vault.cryptomator`; after rewriting a vault prefix on the server, a stale cache makes unlock fail while `rclone`/boto still see the new objects.

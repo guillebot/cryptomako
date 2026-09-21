@@ -2,6 +2,8 @@
 
 Executable: `cryptomako`.
 
+Product binary: `swift run cryptomako` (lowercase). The `CryptoMako` product is the GUI app.
+
 Secrets: `CRYPTOMAKO_PASSWORD` and `CRYPTOMAKO_SECRET_KEY` (override env names with `--password-env` / `--secret-key-env`). Never pass passphrase or secret key on argv.
 
 ## Commands

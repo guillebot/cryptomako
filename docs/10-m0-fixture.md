@@ -10,12 +10,16 @@ Put the non-secret connection settings in `~/.config/cryptomako/poc.json`:
 
 ```json
 {
-  "endpoint": "http://your-minio-host:9000",
+  "storageMode": "s3",
+  "endpoint": "https://your-minio-host:9000",
   "region": "us-east-1",
   "bucket": "your-bucket",
+  "prefix": "cryptomako-poc/",
   "accessKey": "your-access-key"
 }
 ```
+
+Use HTTPS for the macOS app and File Provider (ATS). The CLI can still speak HTTP to a local throwaway MinIO.
 
 Then export `CRYPTOMAKO_SECRET_KEY` and `CRYPTOMAKO_PASSWORD` and skip to "Create the vault".
 
@@ -75,6 +79,10 @@ rclone copy fixtures/vault sch:sch-backup/cryptomako-poc/ -P
 export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < fixtures/PASSWORD)"
 swift run cryptomako unlock --prefix cryptomako-poc/
 ```
+
+If you replace an existing prefix on MinIO with a new vault (different `masterkey.cryptomator`), CryptoMako’s S3 client uses an ephemeral `URLSession` so it will not reuse a stale cached GET. Older builds that used `URLSession.shared` could keep unlocking against a cached masterkey and report a generic “unlock failed”.
+
+The vault **password** for the uploaded ciphertext must match that vault. Uploading `fixtures/vault` means using `fixtures/PASSWORD` (Keychain `vault-password` in the app), not an older MinIO vault’s passphrase.
 
 Stock Cryptomator desktop is still valid: create a vault locally, lock it, copy ciphertext to the same prefix. Either source must unlock in CryptoMako.
 

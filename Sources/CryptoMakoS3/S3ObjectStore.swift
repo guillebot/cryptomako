@@ -34,9 +34,19 @@ public final class S3ObjectStore: ObjectStore {
     private let settings: S3Settings
     private let session: URLSession
 
-    public init(settings: S3Settings, session: URLSession = .shared) {
+    public init(settings: S3Settings, session: URLSession? = nil) {
         self.settings = settings
-        self.session = session
+        if let session {
+            self.session = session
+        } else {
+            // MinIO GETs must never hit URLCache: a stale masterkey.cryptomator
+            // from before a vault rewrite makes unlock fail while boto/fresh
+            // sessions succeed.
+            let config = URLSessionConfiguration.ephemeral
+            config.requestCachePolicy = .reloadIgnoringLocalCacheData
+            config.urlCache = nil
+            self.session = URLSession(configuration: config)
+        }
     }
 
     /// Kept for symmetry with the previous NIO-backed client; `URLSession` needs no teardown.
