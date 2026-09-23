@@ -109,3 +109,9 @@ func (s *s3Store) Put(key string, data []byte) error {
 	// Fail-closed: Client.PutObject only succeeds on HTTP 2xx.
 	return s.client.PutObject(s.ctx, s.fullKey(key), data)
 }
+
+func (s *s3Store) Delete(key string) error {
+	// Fail-closed: Client.DeleteObject only succeeds on HTTP 2xx.
+	return s.client.DeleteObject(s.ctx, s.fullKey(key))
+}
+

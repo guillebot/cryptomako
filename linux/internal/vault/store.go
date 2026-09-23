@@ -13,6 +13,7 @@ type objectStore interface {
 	Exists(key string) bool
 	ListImmediate(prefix string) (objects []string, prefixes []string, err error)
 	Put(key string, data []byte) error
+	Delete(key string) error
 }
 
 type localStore struct {
@@ -112,3 +113,19 @@ func (s *localStore) Put(key string, data []byte) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+func (s *localStore) Delete(key string) error {
+	path, err := s.resolve(key)
+	if err != nil {
+		return err
+	}
+	err = os.Remove(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+

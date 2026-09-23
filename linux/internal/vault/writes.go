@@ -2,7 +2,9 @@ package vault
 
 import (
 	"fmt"
+	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -160,4 +162,148 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string) (files int, er
 		return nil
 	})
 	return files, err
+}
+
+// DeleteFile removes a cleartext file's ciphertext from the store. Fail-closed.
+func (s *Session) DeleteFile(cleartextPath string) error {
+	n, err := s.resolve(cleartextPath)
+	if err != nil {
+		return err
+	}
+	if n.kind != nodeFile {
+		return fmt.Errorf("%w: %s", errNotAFile, cleartextPath)
+	}
+	if strings.HasSuffix(n.cipherName, ".c9s") {
+		folder := strings.TrimSuffix(n.ciphertextKey, "contents.c9r")
+		_ = s.store.Delete(folder + "name.c9s") // best-effort companion
+		if err := s.store.Delete(n.ciphertextKey); err != nil {
+			return err
+		}
+		return nil
+	}
+	return s.store.Delete(n.ciphertextKey)
+}
+
+// DeletePath removes a file or directory (directories recursively). Fail-closed
+// on required remote deletes.
+func (s *Session) DeletePath(cleartextPath string) error {
+	n, err := s.resolve(cleartextPath)
+	if err != nil {
+		return err
+	}
+	switch n.kind {
+	case nodeFile, nodeSymlink:
+		return s.DeleteFile(cleartextPath)
+	case nodeDir:
+		return s.deleteDirectory(n, true)
+	default:
+		return fmt.Errorf("vault: cannot delete %s", cleartextPath)
+	}
+}
+
+func (s *Session) deleteDirectory(n node, recursive bool) error {
+	if n.kind != nodeDir || n.dirID == "" {
+		return fmt.Errorf("vault: not a directory")
+	}
+	children, err := s.listDir(n.dirID)
+	if err != nil {
+		return err
+	}
+	if len(children) > 0 {
+		if !recursive {
+			return fmt.Errorf("vault: directory not empty")
+		}
+		for _, ch := range children {
+			switch ch.kind {
+			case nodeDir:
+				if err := s.deleteDirectory(ch, true); err != nil {
+					return err
+				}
+			default:
+				if strings.HasSuffix(ch.cipherName, ".c9s") {
+					folder := strings.TrimSuffix(ch.ciphertextKey, "contents.c9r")
+					if ch.kind == nodeSymlink {
+						folder = strings.TrimSuffix(ch.ciphertextKey, "symlink.c9r")
+					}
+					_ = s.store.Delete(folder + "name.c9s")
+				}
+				if err := s.store.Delete(ch.ciphertextKey); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	// Parent dir marker
+	if n.ciphertextKey != "" {
+		if err := s.store.Delete(n.ciphertextKey); err != nil {
+			return err
+		}
+		if strings.HasSuffix(n.cipherName, ".c9s") {
+			folder := strings.TrimSuffix(n.ciphertextKey, "dir.c9r")
+			_ = s.store.Delete(folder + "name.c9s")
+		}
+	}
+	childPrefix, err := s.cryptor.dirPrefix(n.dirID)
+	if err != nil {
+		return err
+	}
+	_ = s.store.Delete(childPrefix + "dirid.c9r")
+	return nil
+}
+
+// Rename moves a cleartext file or directory. Fail-closed: destination put must
+// succeed before source delete; a failed delete surfaces as an error (no silent success).
+func (s *Session) Rename(oldPath, newPath string) error {
+	oldPath = normalizePath(oldPath)
+	newPath = normalizePath(newPath)
+	if oldPath == "/" || newPath == "/" {
+		return fmt.Errorf("vault: cannot rename root")
+	}
+	if oldPath == newPath {
+		return nil
+	}
+	if _, err := s.resolve(newPath); err == nil {
+		return fmt.Errorf("vault: already exists: %s", newPath)
+	}
+	n, err := s.resolve(oldPath)
+	if err != nil {
+		return err
+	}
+	switch n.kind {
+	case nodeFile:
+		r, err := s.Open(oldPath)
+		if err != nil {
+			return err
+		}
+		data, err := io.ReadAll(r)
+		r.Close()
+		if err != nil {
+			return err
+		}
+		if err := s.PutFile(newPath, data); err != nil {
+			return err
+		}
+		return s.DeleteFile(oldPath)
+	case nodeDir:
+		if err := s.EnsureDir(newPath); err != nil {
+			return err
+		}
+		children, err := s.List(oldPath, false)
+		if err != nil {
+			return err
+		}
+		for _, e := range children {
+			base := path.Base(e.Name)
+			if err := s.Rename(e.Name, joinClear(newPath, base)); err != nil {
+				return err
+			}
+		}
+		n2, err := s.resolve(oldPath)
+		if err != nil {
+			return err
+		}
+		return s.deleteDirectory(n2, false)
+	default:
+		return fmt.Errorf("vault: cannot rename %s", oldPath)
+	}
 }
