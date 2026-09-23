@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"path"
 
 	"github.com/guillebot/cryptomako/linux/internal/config"
 	"github.com/guillebot/cryptomako/linux/internal/vault"
@@ -43,7 +44,12 @@ var lsCmd = &cobra.Command{
 			return err
 		}
 		for _, e := range entries {
+			// Mac parity: non-recursive prints basename only (hello.txt, bin/);
+			// recursive prints absolute cleartext paths (/hello.txt, /bin/).
 			name := e.Name
+			if !flagLSRecursive {
+				name = path.Base(e.Name)
+			}
 			if e.IsDir {
 				name += "/"
 			}
