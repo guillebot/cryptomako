@@ -70,6 +70,7 @@ targets:
     info:
       path: Support/CryptoMako-Info.plist
       properties:
+        CFBundleDisplayName: CryptoMako
         CFBundleName: CryptoMako
         CFBundlePackageType: APPL
         CFBundleShortVersionString: $(MARKETING_VERSION)
@@ -102,6 +103,7 @@ targets:
     info:
       path: Support/CryptoMakoFileProvider-Info.plist
       properties:
+        CFBundleDisplayName: CryptoMako
         CFBundleName: CryptoMakoFileProvider
         CFBundlePackageType: XPC!
         CFBundleShortVersionString: $(MARKETING_VERSION)
