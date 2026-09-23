@@ -1,4 +1,4 @@
-﻿# CfAPI (Cloud Files) — Windows
+# CfAPI (Cloud Files) — Windows
 
 Live on Windows 11 (smoked on build 26100): **Register / Connect / recursive placeholders / FETCH_DATA hydrate**.
 Explorer can open a placeholder file and receive cleartext from a vault session.
@@ -45,7 +45,7 @@ Prefer **`cfapi unregister`** over killing the process so WinRT + CfAPI metadata
 | `FETCH_DATA` → vault `CatAsync` → `CfExecute(TRANSFER_DATA)` | OK smoke: hello.txt |
 | Fail-closed write gate | OK `AcknowledgeWriteOnlyIfRemoteOk` |
 | WinRT `StorageProviderSyncRootManager` | OK on windows TFM (`CryptoMako!SID!account`) |
-| NOTIFY_DELETE / NOTIFY_RENAME | Fail-closed ACK (ACCESS_DENIED) until vault mutation + remote 2xx |
+| NOTIFY_DELETE / NOTIFY_RENAME | OK vault DeleteAsync/RenameAsync then ACK SUCCESS; ACCESS_DENIED on failure |
 | S3-backed hydrate (non-local vault) | Same path once session attached |
 
 ## Fail-closed writes / delete / rename
@@ -56,5 +56,10 @@ local write → encrypt → S3 PutObject (2xx) → AcknowledgeWriteOnlyIfRemoteO
 ```
 
 NOTIFY_FILE_CLOSE does **not** acknowledge vault mutations.
-NOTIFY_DELETE / NOTIFY_RENAME currently ACK with `STATUS_CLOUD_FILE_ACCESS_DENIED`
-(TODO: allow after remote delete/rename 2xx).
+
+NOTIFY_DELETE / NOTIFY_RENAME call vault `DeleteAsync` / `RenameAsync` (fail-closed on store errors),
+then ACK `STATUS_SUCCESS` only on success; otherwise `STATUS_CLOUD_FILE_ACCESS_DENIED`.
+
+Remaining: placeholder `FileIdentity` may still hold the old cleartext path after a successful rename
+until re-populate (`CfUpdatePlaceholder` during NOTIFY_RENAME is follow-up). Writes on close are still
+not wired (CLOSE does not mutate).

@@ -12,7 +12,7 @@ namespace CryptoMako.CfApi;
 /// Windows Cloud Files provider (Vanara-backed P/Invoke).
 /// Register / Connect / placeholders / FETCH_DATA hydrate are live on Windows 10 1803+.
 /// WinRT StorageProviderSyncRootManager on CFAPI_WINRT builds (Explorer cloud glyph).
-/// Fail-closed: write/delete/rename notify never claims durable success without remote 2xx.
+/// Fail-closed: write/delete/rename notify ACK SUCCESS only after vault mutation (remote 2xx).
 /// </summary>
 public sealed class CloudFilesProvider : IDisposable
 {
@@ -21,7 +21,7 @@ public sealed class CloudFilesProvider : IDisposable
     public const string SyncRootIdPrefix = "CryptoMako!";
     public static readonly Guid ProviderId = new("C8A7E5D1-4B2F-4E9A-9C31-7F6D2A1B0E44");
 
-    // STATUS_CLOUD_FILE_ACCESS_DENIED — reject delete/rename until vault mutation is wired.
+    // STATUS_CLOUD_FILE_ACCESS_DENIED — fail-closed ACK when vault/remote mutation fails.
     private static readonly NTStatus StatusCloudFileAccessDenied = new(unchecked((int)0xC000CF0B));
 
     public string SyncRootPath { get; }
@@ -599,12 +599,143 @@ public sealed class CloudFilesProvider : IDisposable
     }
 
     /// <summary>
-    /// Fail-closed delete: ACK with ACCESS_DENIED until vault DeleteAsync is wired to remote 2xx.
-    /// TODO: after remote delete 2xx, ACK with STATUS_SUCCESS (and optionally mutate vault).
+    /// Maps a Windows filesystem path under the sync root to a vault cleartext path ("/a/b").
+    /// Returns null when the path is missing, outside the sync root, or is the sync root itself.
+    /// </summary>
+    public static string? TryMapFsPathToVaultCleartext(string syncRootPath, string? fsPath, string? volumeDosName = null)
+    {
+        if (string.IsNullOrWhiteSpace(fsPath))
+            return null;
+
+        var combined = CombineVolumeRelativePath(volumeDosName, fsPath.Trim());
+        string full;
+        try { full = Path.GetFullPath(combined); }
+        catch { return null; }
+
+        var root = Path.GetFullPath(syncRootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var fullTrim = full.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (fullTrim.Equals(root, StringComparison.OrdinalIgnoreCase))
+            return null; // never mutate vault for the sync root folder itself
+
+        var rootPrefix = root + Path.DirectorySeparatorChar;
+        if (!fullTrim.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var rel = fullTrim[rootPrefix.Length..].Replace('\\', '/');
+        if (string.IsNullOrEmpty(rel) || rel.Contains("..", StringComparison.Ordinal))
+            return null;
+        return "/" + rel;
+    }
+
+    /// <summary>Joins VolumeDosName (e.g. "C:") with a volume-relative path when needed.</summary>
+    public static string CombineVolumeRelativePath(string? volumeDosName, string path)
+    {
+        if (path.Length >= 2 && path[1] == ':')
+            return path;
+        if (string.IsNullOrWhiteSpace(volumeDosName))
+            return path;
+        var vol = volumeDosName.TrimEnd('\\', '/');
+        if (path.StartsWith('\\') || path.StartsWith('/'))
+            return vol + path.Replace('/', '\\');
+        return vol + "\\" + path.Replace('/', '\\');
+    }
+
+    /// <summary>
+    /// Vault delete used by NOTIFY_DELETE. True only when DeleteAsync completed (remote 2xx / local OK).
+    /// Directories use recursive:true so Explorer folder deletes stay durable.
+    /// </summary>
+    public static bool TryDeleteFromVault(VaultSession? session, string? cleartextPath)
+    {
+        if (session is null || string.IsNullOrWhiteSpace(cleartextPath) || cleartextPath == "/")
+            return false;
+        try
+        {
+            session.DeleteAsync(cleartextPath, recursive: true).GetAwaiter().GetResult();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Vault rename used by NOTIFY_RENAME. True only when RenameAsync completed (remote put+delete OK).
+    /// Moves outside the sync root / invalid targets return false (fail-closed).
+    /// </summary>
+    public static bool TryRenameInVault(VaultSession? session, string? fromCleartext, string? toCleartext)
+    {
+        if (session is null
+            || string.IsNullOrWhiteSpace(fromCleartext)
+            || string.IsNullOrWhiteSpace(toCleartext)
+            || fromCleartext == "/"
+            || toCleartext == "/")
+            return false;
+        try
+        {
+            session.RenameAsync(fromCleartext, toCleartext).GetAwaiter().GetResult();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Same gate as writes: never treat delete/rename as durable without remote success.</summary>
+    public static void AcknowledgeMutationOnlyIfRemoteOk(bool remoteHttp2xx) =>
+        AcknowledgeWriteOnlyIfRemoteOk(remoteHttp2xx);
+
+    private string? ResolveVaultPathFromCallback(in CF_CALLBACK_INFO info)
+    {
+        var identity = ReadFileIdentityPath(info);
+        if (!string.IsNullOrWhiteSpace(identity))
+        {
+            var norm = identity.Replace('\\', '/');
+            if (!norm.StartsWith('/'))
+                norm = "/" + norm.TrimStart('/');
+            return norm;
+        }
+
+        // Fallback: map NormalizedPath under sync root (REQUIRE_FULL_FILE_PATH → absolute).
+        var normalized = info.NormalizedPath;
+        return TryMapFsPathToVaultCleartext(SyncRootPath, normalized, info.VolumeDosName);
+    }
+
+    /// <summary>
+    /// NOTIFY_DELETE: mutate vault (remote 2xx), then ACK SUCCESS; any failure → ACCESS_DENIED.
     /// </summary>
     private static void OnNotifyDelete(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
     {
         _ = parameters;
+        var provider = FromContext(info);
+        var path = provider?.ResolveVaultPathFromCallback(info);
+        var ok = TryDeleteFromVault(provider?.Session, path);
+        AckDelete(info, ok);
+    }
+
+    /// <summary>
+    /// NOTIFY_RENAME: mutate vault (remote 2xx), then ACK SUCCESS; any failure → ACCESS_DENIED.
+    /// Note: placeholder FileIdentity may still hold the old cleartext path until re-populate
+    /// (CfUpdatePlaceholder during rename is a follow-up).
+    /// </summary>
+    private static void OnNotifyRename(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
+    {
+        var provider = FromContext(info);
+        var from = provider?.ResolveVaultPathFromCallback(info);
+        string? to = null;
+        if (provider is not null)
+        {
+            var target = parameters.Rename.TargetPath;
+            to = TryMapFsPathToVaultCleartext(provider.SyncRootPath, target, info.VolumeDosName);
+        }
+        var ok = TryRenameInVault(provider?.Session, from, to);
+        AckRename(info, ok);
+    }
+
+    private static void AckDelete(in CF_CALLBACK_INFO info, bool success)
+    {
         try
         {
             var opInfo = new CF_OPERATION_INFO
@@ -618,20 +749,15 @@ public sealed class CloudFilesProvider : IDisposable
                 new CF_OPERATION_PARAMETERS.ACKDELETE
                 {
                     Flags = CF_OPERATION_ACK_DELETE_FLAGS.CF_OPERATION_ACK_DELETE_FLAG_NONE,
-                    CompletionStatus = StatusCloudFileAccessDenied,
+                    CompletionStatus = success ? NTStatus.STATUS_SUCCESS : StatusCloudFileAccessDenied,
                 });
             CfExecute(opInfo, ref opParams);
         }
         catch { /* fail closed */ }
     }
 
-    /// <summary>
-    /// Fail-closed rename: ACK with ACCESS_DENIED until vault rename/move is wired to remote 2xx.
-    /// TODO: after remote rename 2xx, ACK with STATUS_SUCCESS.
-    /// </summary>
-    private static void OnNotifyRename(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
+    private static void AckRename(in CF_CALLBACK_INFO info, bool success)
     {
-        _ = parameters;
         try
         {
             var opInfo = new CF_OPERATION_INFO
@@ -645,12 +771,13 @@ public sealed class CloudFilesProvider : IDisposable
                 new CF_OPERATION_PARAMETERS.ACKRENAME
                 {
                     Flags = CF_OPERATION_ACK_RENAME_FLAGS.CF_OPERATION_ACK_RENAME_FLAG_NONE,
-                    CompletionStatus = StatusCloudFileAccessDenied,
+                    CompletionStatus = success ? NTStatus.STATUS_SUCCESS : StatusCloudFileAccessDenied,
                 });
             CfExecute(opInfo, ref opParams);
         }
         catch { /* fail closed */ }
     }
+
 }
 
 public sealed class CloudFilesStatus
