@@ -152,7 +152,14 @@ type pendingUpload struct {
 // Index save is best-effort and never fails the sync.
 // vaultFolderName empty → basename of localRoot (macOS BackupSource default);
 // multi-source sync passes BackupSource.vaultFolderName explicitly.
-func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences, statePath, vaultFolderName string) (files int, err error) {
+//
+// ctx cancellation (e.g. SIGINT/SIGTERM via signal.NotifyContext) stops scheduling
+// new puts; in-flight workers exit after their current file. Fail-closed remote
+// writes are unchanged; OS secret store is untouched.
+func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences, statePath, vaultFolderName string) (files int, err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	ex := config.DefaultBackupSyncExcludes()
 	if excludes != nil {
 		ex = *excludes
@@ -185,6 +192,9 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *conf
 		sinceSave int
 	)
 	err = filepath.WalkDir(localRoot, func(path string, d os.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if walkErr != nil {
 			return walkErr
 		}
@@ -243,6 +253,9 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *conf
 		return 0, err
 	}
 	if len(jobs) == 0 {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		return 0, nil
 	}
 
@@ -255,6 +268,9 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *conf
 	}
 	seenParents := map[string]struct{}{}
 	for _, job := range jobs {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
 		parent := path.Dir(job.clearPath)
 		if parent == "/" || parent == "." || parent == "" {
 			continue
@@ -273,7 +289,7 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *conf
 	mediumCh := make(chan pendingUpload, len(jobs))
 	largeCh := make(chan pendingUpload, len(jobs))
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	var (
@@ -355,7 +371,13 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *conf
 
 	mu.Lock()
 	defer mu.Unlock()
-	return uploaded, firstErr
+	if firstErr != nil {
+		return uploaded, firstErr
+	}
+	if err := ctx.Err(); err != nil {
+		return uploaded, err
+	}
+	return uploaded, nil
 }
 
 // DeleteFile removes a cleartext file's ciphertext from the store. Fail-closed.
