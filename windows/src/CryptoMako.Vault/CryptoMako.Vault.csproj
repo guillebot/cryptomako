@@ -1,0 +1,10 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>CryptoMako.Vault</RootNamespace>
+    <AssemblyName>CryptoMako.Vault</AssemblyName>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.4.0" />
+    <PackageReference Include="Dorssel.Security.Cryptography.AesExtra" Version="2.0.0" />
+  </ItemGroup>
+</Project>
