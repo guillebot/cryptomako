@@ -84,11 +84,23 @@ Then: `cryptomako unlock --config /path/to/settings.json`
 
 Secrets: env / Credential Manager only.
 
+## Backup Sync
+
+```bash
+dotnet run --project src/CryptoMako.Cli -- sync --local ../fixtures/vault \
+  --source /path/to/cleartext --vault-folder MyHost
+# uploads under /Backups/MyHost/… with excludes + size-tiered put workers
+```
+
+Workers / bandwidth / proxy: `%AppData%/CryptoMako/app-preferences.json` (Platforms-locked keys).
+Secrets: env or Windows Credential Manager (`CryptoMako/CRYPTOMAKO_*`).
+
 ## Acceptance
 
-- `dotnet test` green (golden unlock/ls/cat + SigV4 + settings)
+- `dotnet test` green (golden + SigV4 + settings + Backup Sync + proxy mapping)
 - Local CLI matches `fixtures/expected-ls.txt` and hello.txt
-- S3 client: get/list/put/delete over HTTPS with SigV4; unlock/ls/cat/get/stat wired for S3
+- S3 client: get/list/put/delete over HTTPS with SigV4; unlock/ls/cat/get/stat/sync wired
+- Proxy modes system|direct|custom applied to S3 HttpClient
 
 ## License
 

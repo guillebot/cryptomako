@@ -19,14 +19,15 @@ public sealed class Masterkey : IDisposable
         MacKey = macKey;
     }
 
+    public Masterkey Clone() =>
+        new((byte[])AesKey.Clone(), (byte[])MacKey.Clone());
+
     public void Dispose()
     {
         CryptographicZero(AesKey);
         CryptographicZero(MacKey);
     }
 
-    private static void CryptographicZero(byte[] data)
-    {
+    private static void CryptographicZero(byte[] data) =>
         System.Security.Cryptography.CryptographicOperations.ZeroMemory(data);
-    }
 }

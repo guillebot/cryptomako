@@ -52,6 +52,12 @@ public sealed class S3Settings
 /// </summary>
 public sealed class S3ObjectStore : IObjectStore, IDisposable
 {
+    public static HttpClient CreateHttpClient(CryptoMako.Vault.AppPreferences? prefs = null, string? proxyPassword = null)
+    {
+        prefs ??= new CryptoMako.Vault.AppPreferences();
+        return CryptoMako.Vault.ProxyHttp.CreateClient(prefs, proxyPassword);
+    }
+
     private readonly S3Settings _settings;
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;

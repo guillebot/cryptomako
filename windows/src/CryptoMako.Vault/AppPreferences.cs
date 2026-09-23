@@ -41,6 +41,21 @@ public sealed class AppPreferences
         if (SyncUploadCapMbps < 1) SyncUploadCapMbps = 1;
     }
 
+    public int ClampedSmallPutConcurrency => Math.Clamp(SyncSmallPutConcurrency, 1, 256);
+    public int ClampedMediumPutConcurrency => Math.Clamp(SyncMediumPutConcurrency, 1, 128);
+    public int ClampedLargePutConcurrency => Math.Clamp(SyncLargePutConcurrency, 1, 16);
+
+    /// <summary>Bytes/sec target for Sync pacing, or null when unlimited.</summary>
+    public double? SyncUploadBytesPerSecond
+    {
+        get
+        {
+            if (!LimitSyncUploadBandwidth || SyncUploadCapMbps <= 0) return null;
+            var mbps = Math.Max(1, SyncUploadCapMbps);
+            return mbps * 1_000_000 / 8;
+        }
+    }
+
     public static AppPreferences Deserialize(string json) =>
         JsonSerializer.Deserialize<AppPreferences>(json, VaultSettings.JsonOptions) ?? new AppPreferences();
 

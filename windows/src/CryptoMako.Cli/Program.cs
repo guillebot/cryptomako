@@ -20,6 +20,7 @@ static async Task<int> MainAsync(string[] args)
             "cat" => await CmdCatAsync(ParseOpts(args.AsSpan(1))),
             "get" => await CmdGetAsync(ParseOpts(args.AsSpan(1))),
             "stat" => await CmdStatAsync(ParseOpts(args.AsSpan(1))),
+            "sync" => await CmdSyncAsync(ParseOpts(args.AsSpan(1))),
             _ => Fail(2, $"unknown command: {args[0]}"),
         };
     }
@@ -85,15 +86,44 @@ static async Task<int> CmdStatAsync(Opts o)
     return 0;
 }
 
+static async Task<int> CmdSyncAsync(Opts o)
+{
+    if (o.Source is null) return Fail(2, "sync requires --source DIR");
+    if (o.VaultFolder is null) return Fail(2, "sync requires --vault-folder NAME");
+    await using var session = await OpenSessionAsync(o);
+    var prefs = LoadAppPreferences(o);
+    var excludes = new BackupSyncExcludes();
+    var statePath = o.SyncStatePath
+        ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CryptoMako",
+            "backup-sync-state.json");
+    var engine = new BackupSyncEngine();
+    var progress = new Progress<string>(p => Console.Error.WriteLine(p));
+    var result = await engine.SyncAsync(
+        session,
+        o.Source,
+        o.VaultFolder,
+        prefs,
+        excludes,
+        syncStatePath: statePath,
+        progress: progress);
+    Console.WriteLine($"uploaded={result.FilesUploaded}");
+    Console.WriteLine($"skipped={result.FilesSkipped}");
+    Console.WriteLine($"bytes={result.BytesUploaded}");
+    return 0;
+}
+
 static async Task<VaultSession> OpenSessionAsync(Opts o)
 {
-    var password = RequireEnv(o.PasswordEnv, "vault password");
+    var secrets = CompositeSecretStore.Default;
+    var password = RequireSecret(secrets, o.PasswordEnv, "vault password");
 
     if (!string.IsNullOrEmpty(o.Local))
         return VaultSession.UnlockLocal(o.Local, password);
 
     var settings = LoadSettings(o);
-    if (settings.IsLocal || !string.IsNullOrEmpty(o.Local))
+    if (settings.IsLocal)
     {
         var path = o.Local ?? settings.LocalVaultPath;
         if (string.IsNullOrEmpty(path))
@@ -101,7 +131,6 @@ static async Task<VaultSession> OpenSessionAsync(Opts o)
         return VaultSession.UnlockLocal(path, password);
     }
 
-    // S3 mode
     var endpoint = o.Endpoint ?? NullIfEmpty(settings.Endpoint)
         ?? throw new InvalidOperationException("missing --endpoint (or settings.json endpoint)");
     var region = o.Region ?? NullIfEmpty(settings.Region) ?? "us-east-1";
@@ -111,10 +140,13 @@ static async Task<VaultSession> OpenSessionAsync(Opts o)
         ?? throw new InvalidOperationException("missing --access-key (or settings.json accessKey)");
     var prefix = o.Prefix ?? settings.NormalizedPrefix;
     var pathStyle = o.VirtualHosted ? false : settings.PathStyle;
-    var secretKey = RequireEnv(o.SecretKeyEnv, "S3 secret key");
+    var secretKey = RequireSecret(secrets, o.SecretKeyEnv, "S3 secret key");
 
+    var prefs = LoadAppPreferences(o);
+    var proxyPassword = secrets.GetSecret(SecretAccounts.ProxyPassword);
+    var http = S3ObjectStore.CreateHttpClient(prefs, proxyPassword);
     var s3 = S3Settings.From(endpoint, region, bucket, accessKey, secretKey, pathStyle);
-    var store = new S3ObjectStore(s3);
+    var store = new S3ObjectStore(s3, http);
     var label = $"{bucket}/{VaultSession.NormalizePrefix(prefix)}";
     return await VaultSession.UnlockAsync(store, prefix, password, rootLabel: label);
 }
@@ -124,13 +156,12 @@ static VaultSettings LoadSettings(Opts o)
     if (!string.IsNullOrEmpty(o.ConfigPath) && File.Exists(o.ConfigPath))
         return VaultSettings.LoadFromFile(o.ConfigPath);
 
-    var defaults = new[]
-    {
-        o.ConfigPath,
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CryptoMako", "settings.json"),
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "cryptomako", "poc.json"),
-    };
-    foreach (var path in defaults)
+    foreach (var path in new[]
+             {
+                 o.ConfigPath,
+                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CryptoMako", "settings.json"),
+                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "cryptomako", "poc.json"),
+             })
     {
         if (!string.IsNullOrEmpty(path) && File.Exists(path))
             return VaultSettings.LoadFromFile(path);
@@ -138,21 +169,31 @@ static VaultSettings LoadSettings(Opts o)
     return new VaultSettings { StorageMode = "s3" };
 }
 
+static AppPreferences LoadAppPreferences(Opts o)
+{
+    var candidates = new List<string>();
+    if (!string.IsNullOrEmpty(o.PreferencesPath))
+        candidates.Add(o.PreferencesPath);
+    candidates.Add(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "CryptoMako", "app-preferences.json"));
+    foreach (var path in candidates)
+    {
+        if (File.Exists(path))
+        {
+            try { return AppPreferences.Deserialize(File.ReadAllText(path)); }
+            catch { /* fall through */ }
+        }
+    }
+    return new AppPreferences();
+}
+
 static Opts ParseOpts(ReadOnlySpan<string> args)
 {
-    string? local = null;
-    string? endpoint = null;
-    string? region = null;
-    string? bucket = null;
-    string? prefix = null;
-    string? accessKey = null;
-    string? configPath = null;
-    string? output = null;
-    string passwordEnv = "CRYPTOMAKO_PASSWORD";
-    string secretKeyEnv = "CRYPTOMAKO_SECRET_KEY";
+    string? local = null, endpoint = null, region = null, bucket = null, prefix = null, accessKey = null;
+    string? configPath = null, preferencesPath = null, output = null, source = null, vaultFolder = null, syncStatePath = null;
+    string passwordEnv = SecretAccounts.Password;
+    string secretKeyEnv = SecretAccounts.SecretKey;
     string path = "/";
-    bool recursive = false;
-    bool virtualHosted = false;
+    bool recursive = false, virtualHosted = false;
     string? positional = null;
 
     for (var i = 0; i < args.Length; i++)
@@ -167,9 +208,13 @@ static Opts ParseOpts(ReadOnlySpan<string> args)
             case "--prefix": prefix = NeedValue(args, ref i, a); break;
             case "--access-key": accessKey = NeedValue(args, ref i, a); break;
             case "--config": configPath = NeedValue(args, ref i, a); break;
+            case "--preferences": preferencesPath = NeedValue(args, ref i, a); break;
             case "--password-env": passwordEnv = NeedValue(args, ref i, a); break;
             case "--secret-key-env": secretKeyEnv = NeedValue(args, ref i, a); break;
             case "--path": path = NeedValue(args, ref i, a); break;
+            case "--source": source = NeedValue(args, ref i, a); break;
+            case "--vault-folder": vaultFolder = NeedValue(args, ref i, a); break;
+            case "--sync-state": syncStatePath = NeedValue(args, ref i, a); break;
             case "--output":
             case "-o":
                 output = NeedValue(args, ref i, a);
@@ -190,8 +235,9 @@ static Opts ParseOpts(ReadOnlySpan<string> args)
         }
     }
 
-    return new Opts(local, endpoint, region, bucket, prefix, accessKey, configPath,
-        passwordEnv, secretKeyEnv, path, recursive, virtualHosted, positional, output);
+    return new Opts(local, endpoint, region, bucket, prefix, accessKey, configPath, preferencesPath,
+        passwordEnv, secretKeyEnv, path, recursive, virtualHosted, positional, output,
+        source, vaultFolder, syncStatePath);
 }
 
 static string NeedValue(ReadOnlySpan<string> args, ref int i, string flag)
@@ -200,11 +246,12 @@ static string NeedValue(ReadOnlySpan<string> args, ref int i, string flag)
     return args[++i];
 }
 
-static string RequireEnv(string envName, string label)
+static string RequireSecret(ISecretStore store, string account, string label)
 {
-    var value = Environment.GetEnvironmentVariable(envName);
+    var value = store.GetSecret(account);
     if (string.IsNullOrEmpty(value))
-        throw new InvalidOperationException($"Set {envName} ({label}; never pass secrets on argv).");
+        throw new InvalidOperationException(
+            $"Set {account} via env or Credential Manager ({label}; never pass secrets on argv).");
     return value;
 }
 
@@ -224,11 +271,12 @@ static void PrintHelp()
         cryptomako — CryptoMako Windows CLI (Cryptomator format 8)
 
         Usage:
-          cryptomako unlock (--local DIR | --endpoint URL --bucket NAME --access-key KEY)
-          cryptomako ls    (--local DIR | S3 flags) [--path /] [-R]
-          cryptomako cat   (--local DIR | S3 flags) <cleartext-path>
-          cryptomako get   (--local DIR | S3 flags) <cleartext-path> --output FILE
-          cryptomako stat  (--local DIR | S3 flags) <cleartext-path>
+          cryptomako unlock (--local DIR | S3 flags)
+          cryptomako ls     (...) [--path /] [-R]
+          cryptomako cat    (...) <cleartext-path>
+          cryptomako get    (...) <cleartext-path> --output FILE
+          cryptomako stat   (...) <cleartext-path>
+          cryptomako sync   (...) --source DIR --vault-folder NAME
 
         Connection:
           --local DIR              Unlock a vault directory on disk
@@ -236,16 +284,19 @@ static void PrintHelp()
           --region NAME            AWS region (default us-east-1)
           --bucket NAME            Bucket name
           --prefix PATH            Vault folder prefix (trailing / added)
-          --access-key KEY         Access key id (non-secret; secret via env)
-          --virtual-hosted         Use virtual-hosted-style URLs (default: path-style)
-          --config FILE            Non-secret settings.json (Platforms-locked keys)
+          --access-key KEY         Access key id
+          --virtual-hosted         Virtual-hosted-style URLs (default: path-style)
+          --config FILE            Non-secret settings.json
+          --preferences FILE       Non-secret app-preferences.json (proxy / sync workers)
 
-        Secrets (never argv, never settings.json):
-          CRYPTOMAKO_PASSWORD      Vault passphrase (--password-env to override)
-          CRYPTOMAKO_SECRET_KEY    S3 secret (--secret-key-env to override)
+        Secrets (env or Windows Credential Manager; never argv / JSON):
+          CRYPTOMAKO_PASSWORD
+          CRYPTOMAKO_SECRET_KEY
+          CRYPTOMAKO_PROXY_PASSWORD
 
-        Settings file keys: storageMode, endpoint, region, bucket, prefix, accessKey,
-          localVaultPath, autoReconnect, pathStyle
+        Sync workers (app-preferences.json): syncSmallPutConcurrency (1–256, default 96),
+          syncMediumPutConcurrency (1–128, default 32), syncLargePutConcurrency (1–16, default 4),
+          limitSyncUploadBandwidth + syncUploadCapMbps (min 1).
         """);
 }
 
@@ -257,10 +308,14 @@ sealed record Opts(
     string? Prefix,
     string? AccessKey,
     string? ConfigPath,
+    string? PreferencesPath,
     string PasswordEnv,
     string SecretKeyEnv,
     string Path,
     bool Recursive,
     bool VirtualHosted,
     string? PositionalPath,
-    string? Output);
+    string? Output,
+    string? Source,
+    string? VaultFolder,
+    string? SyncStatePath);

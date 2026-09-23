@@ -3,7 +3,7 @@ using System.Text;
 namespace CryptoMako.Vault;
 
 /// <summary>Unlocked Cryptomator format-8 vault session over an <see cref="IObjectStore"/>.</summary>
-public sealed class VaultSession : IAsyncDisposable, IDisposable
+public sealed partial class VaultSession : IAsyncDisposable, IDisposable
 {
     public VaultMetadata Metadata { get; }
     /// <summary>Local root path when using <see cref="DirectoryObjectStore"/>; otherwise bucket/prefix label.</summary>
@@ -13,6 +13,7 @@ public sealed class VaultSession : IAsyncDisposable, IDisposable
     private readonly Masterkey _masterkey;
     private readonly Cryptor _cryptor;
     private readonly IObjectStore _store;
+    private readonly object _cryptorLock = new();
 
     private VaultSession(
         VaultMetadata metadata,
@@ -404,6 +405,14 @@ public sealed class VaultSession : IAsyncDisposable, IDisposable
 
     private static List<string> Split(string path) =>
         Normalize(path).Split('/', StringSplitOptions.RemoveEmptyEntries).ToList();
+
+    internal Cryptor MakeWorkerCryptor() => Cryptor.CreateWorker(_masterkey);
+
+    internal T WithCryptor<T>(Func<Cryptor, T> body)
+    {
+        lock (_cryptorLock)
+            return body(_cryptor);
+    }
 
     public void Dispose()
     {

@@ -12,25 +12,36 @@ public sealed class Cryptor : IDisposable
     public const int TagLen = 16;
     public const int CleartextChunkSize = 32 * 1024;
     private const int FileHeaderLegacyPayloadSize = 8;
-    private const int FileHeaderPayloadSize = FileHeaderLegacyPayloadSize + 32; // 40
-    public const int FileHeaderSize = NonceLen + FileHeaderPayloadSize + TagLen; // 68
+    private const int FileHeaderPayloadSize = FileHeaderLegacyPayloadSize + 32;
+    public const int FileHeaderSize = NonceLen + FileHeaderPayloadSize + TagLen;
 
     private readonly Masterkey _masterkey;
     private readonly AesSiv _siv;
+    private readonly bool _ownsMasterkey;
 
-    public Cryptor(Masterkey masterkey)
+    public Cryptor(Masterkey masterkey, bool ownsMasterkey = false)
     {
         _masterkey = masterkey;
+        _ownsMasterkey = ownsMasterkey;
         _siv = new AesSiv(masterkey.SivKey);
     }
+
+    public static Cryptor CreateWorker(Masterkey shared) =>
+        new(shared.Clone(), ownsMasterkey: true);
 
     public string EncryptDirId(ReadOnlySpan<byte> dirId)
     {
         var ciphertext = new byte[dirId.Length + 16];
-        // Dir-id SIV uses NO associated data (not an empty AD component).
         _siv.Encrypt(dirId.ToArray(), ciphertext);
-        var digest = SHA1.HashData(ciphertext);
-        return Base32Rfc4648.Encode(digest);
+        return Base32Rfc4648.Encode(SHA1.HashData(ciphertext));
+    }
+
+    public string EncryptFileName(string cleartextName, ReadOnlySpan<byte> dirId)
+    {
+        var clear = Encoding.UTF8.GetBytes(cleartextName.Normalize(NormalizationForm.FormC));
+        var ciphertext = new byte[clear.Length + 16];
+        _siv.Encrypt(clear, ciphertext, dirId.ToArray());
+        return EncodingUtil.ToBase64Url(ciphertext);
     }
 
     public string DecryptFileName(string ciphertextName, ReadOnlySpan<byte> dirId)
@@ -39,9 +50,72 @@ public sealed class Cryptor : IDisposable
         if (ciphertext.Length < 16)
             throw new CryptographicException("ciphertext name too short");
         var plaintext = new byte[ciphertext.Length - 16];
-        // Filenames always authenticate with AD = dirId bytes (empty dirId => one empty AD).
         _siv.Decrypt(ciphertext, plaintext, dirId.ToArray());
         return Encoding.UTF8.GetString(plaintext);
+    }
+
+    public byte[] EncryptContent(ReadOnlySpan<byte> cleartext)
+    {
+        var headerNonce = RandomNumberGenerator.GetBytes(NonceLen);
+        var fileKey = RandomNumberGenerator.GetBytes(32);
+        try
+        {
+            var headerClear = new byte[FileHeaderPayloadSize];
+            headerClear.AsSpan(0, FileHeaderLegacyPayloadSize).Fill(0xFF);
+            fileKey.CopyTo(headerClear.AsSpan(FileHeaderLegacyPayloadSize));
+
+            var headerCt = new byte[FileHeaderPayloadSize];
+            var headerTag = new byte[TagLen];
+            using (var gcm = new AesGcm(_masterkey.AesKey, TagLen))
+            {
+                gcm.Encrypt(headerNonce, headerClear, headerCt, headerTag, ReadOnlySpan<byte>.Empty);
+            }
+
+            using var output = new MemoryStream(FileHeaderSize + cleartext.Length + 64);
+            output.Write(headerNonce);
+            output.Write(headerCt);
+            output.Write(headerTag);
+
+            Span<byte> aad = stackalloc byte[8 + NonceLen];
+            var offset = 0;
+            ulong chunkNumber = 0;
+            while (offset < cleartext.Length || (cleartext.Length == 0 && chunkNumber == 0))
+            {
+                // Empty file: still no content chunks (Cryptomator writes header only).
+                if (cleartext.Length == 0)
+                    break;
+
+                var take = Math.Min(CleartextChunkSize, cleartext.Length - offset);
+                var plainChunk = cleartext.Slice(offset, take);
+                var chunkNonce = RandomNumberGenerator.GetBytes(NonceLen);
+                var chunkCt = new byte[take];
+                var chunkTag = new byte[TagLen];
+
+                BinaryPrimitives.WriteUInt64BigEndian(aad[..8], chunkNumber);
+                headerNonce.CopyTo(aad[8..]);
+
+                using (var gcm = new AesGcm(fileKey, TagLen))
+                {
+                    gcm.Encrypt(chunkNonce, plainChunk, chunkCt, chunkTag, aad);
+                }
+
+                output.Write(chunkNonce);
+                output.Write(chunkCt);
+                output.Write(chunkTag);
+
+                offset += take;
+                chunkNumber++;
+                if (offset >= cleartext.Length)
+                    break;
+            }
+
+            CryptographicOperations.ZeroMemory(headerClear);
+            return output.ToArray();
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(fileKey);
+        }
     }
 
     public byte[] DecryptContent(ReadOnlySpan<byte> ciphertext)
@@ -102,5 +176,10 @@ public sealed class Cryptor : IDisposable
         }
     }
 
-    public void Dispose() => _siv.Dispose();
+    public void Dispose()
+    {
+        _siv.Dispose();
+        if (_ownsMasterkey)
+            _masterkey.Dispose();
+    }
 }

@@ -34,6 +34,19 @@ public sealed class BackupSyncExcludes
         return FileExtensions.Contains(name[(dot + 1)..]);
     }
 
+    /// <summary>True when any path component is an excluded directory or the leaf is an excluded file.</summary>
+    public bool ShouldSkipRelativePath(string relativePath)
+    {
+        var parts = relativePath.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        for (var i = 0; i < parts.Length; i++)
+        {
+            var part = parts[i];
+            if (DirectoryNames.Contains(part)) return true;
+            if (i == parts.Length - 1 && ShouldSkipFile(part)) return true;
+        }
+        return false;
+    }
+
     public static BackupSyncExcludes Deserialize(string json) =>
         JsonSerializer.Deserialize<BackupSyncExcludes>(json, VaultSettings.JsonOptions) ?? new BackupSyncExcludes();
 
