@@ -100,8 +100,15 @@ public sealed class MasterkeyFile
         Span<byte> versionBe = stackalloc byte[4];
         BinaryPrimitives.WriteUInt32BigEndian(versionBe, (uint)Version);
         var calculated = HMACSHA256.HashData(macKey, versionBe);
-        if (!CryptographicOperations.FixedTimeEquals(calculated, VersionMac))
-            throw new InvalidDataException("incorrect version or versionMac");
+        try
+        {
+            if (!CryptographicOperations.FixedTimeEquals(calculated, VersionMac))
+                throw new InvalidDataException("incorrect version or versionMac");
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(calculated);
+        }
     }
 
     private sealed class Dto

@@ -100,7 +100,7 @@ dotnet run --project src/CryptoMako.Cli -- sync --local ../fixtures/vault \
 ```
 
 Workers / bandwidth / proxy: `%AppData%/CryptoMako/app-preferences.json` (Platforms-locked keys).
-Secrets: env or Windows Credential Manager (`CryptoMako/CRYPTOMAKO_*`).
+Secrets: env or Windows Credential Manager (`CryptoMako/CRYPTOMAKO_*`). Lock clears in-process passphrase UI + zeros masterkey / drops S3 secret ref (CredMan wipe deferred; see `docs/desktop.md`).
 
 ## Acceptance
 

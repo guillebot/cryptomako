@@ -36,6 +36,12 @@ Live **Cloud Files API** registration and Explorer placeholder mount are **Windo
 - Secrets: `cryptomako cred` → Credential Manager on Windows (`get` requires `--reveal`); env / `~/.config/cryptomako/secrets.json` on Mac.
 - Settings paths: `%AppData%/CryptoMako/settings.json` + `app-preferences.json` (Windows); `~/.config/cryptomako/` on Mac.
 
+### Secret lifetime (in-process)
+
+While unlocked, masterkey bytes live in `Masterkey`/`Cryptor` and the S3 secret access key string lives in `S3Settings` for SigV4. **Lock / Dispose** zeros masterkey buffers, clears the UI passphrase field, and drops the S3 `SecretKey` reference (`ClearSecretKey`). SigV4 signing keys and ephemeral HMAC intermediates are `ZeroMemory`'d after each request.
+
+**Not scrubbed (Medium residual):** .NET immutable strings (passphrase, S3 secret, proxy password in `NetworkCredential`) until GC; Credential Manager wipe on Lock is deferred (Lock = in-process only).
+
 ### autoReconnect
 
 When **auto-reconnect** is checked (VaultSettings `autoReconnect`, no new keys):

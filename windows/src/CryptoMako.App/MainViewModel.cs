@@ -184,6 +184,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         _session?.Dispose();
         _session = null;
+        Password = ""; // drop UI passphrase copy (CredMan wipe is deferred; in-process only)
         if (clearWantUnlocked)
             _userWantsUnlocked = false;
         Status = "locked";

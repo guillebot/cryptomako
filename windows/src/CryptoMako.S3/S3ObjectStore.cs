@@ -12,7 +12,8 @@ public sealed class S3Settings
     public required string Region { get; init; }
     public required string Bucket { get; init; }
     public required string AccessKey { get; init; }
-    public required string SecretKey { get; init; }
+    /// <summary>AWS secret access key. Cleared via <see cref="ClearSecretKey"/> on store dispose (string content not scrubbable).</summary>
+    public string SecretKey { get; private set; } = "";
     /// <summary>True = /bucket/key path-style (MinIO); false = virtual-hosted.</summary>
     public bool PathStyle { get; init; } = true;
 
@@ -45,6 +46,9 @@ public sealed class S3Settings
             PathStyle = pathStyle,
         };
     }
+
+    /// <summary>Drops the secret-key reference after unlock ends. Immutable string bytes may linger until GC.</summary>
+    public void ClearSecretKey() => SecretKey = "";
 }
 
 /// <summary>
@@ -233,20 +237,21 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
 
     public void Dispose()
     {
+        try { _settings.ClearSecretKey(); } catch { /* ignore */ }
         if (_ownsHttp)
             _http.Dispose();
     }
 }
 
 /// <summary>Back-compat alias used by early scaffold docs.</summary>
-public sealed class S3Client
+public sealed class S3Client : IDisposable
 {
     private readonly S3ObjectStore _store;
+    private readonly S3Settings _settings;
 
     public Uri Endpoint => _settings.Endpoint;
     public string Region => _settings.Region;
     public string Bucket => _settings.Bucket;
-    private readonly S3Settings _settings;
 
     public S3Client(string endpoint, string region, string bucket, string accessKey, string secretKey, bool pathStyle = true)
     {
@@ -258,4 +263,6 @@ public sealed class S3Client
 
     public Task EnsureReachableAsync(CancellationToken ct = default)
         => _store.ListImmediateAsync("", ct);
+
+    public void Dispose() => _store.Dispose();
 }

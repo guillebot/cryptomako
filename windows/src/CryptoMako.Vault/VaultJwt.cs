@@ -38,12 +38,20 @@ internal static class VaultJwt
 
         var signingInput = Encoding.UTF8.GetBytes(parts[0] + "." + parts[1]);
         var expected = HMACSHA256.HashData(rawKey, signingInput);
-        var actual = EncodingUtil.Base64Url(parts[2]);
-        if (!CryptographicOperations.FixedTimeEquals(expected, actual))
-            throw new UnauthorizedAccessException("Invalid vault.cryptomator JWT signature.");
+        try
+        {
+            var actual = EncodingUtil.Base64Url(parts[2]);
+            if (!CryptographicOperations.FixedTimeEquals(expected, actual))
+                throw new UnauthorizedAccessException("Invalid vault.cryptomator JWT signature.");
 
-        var payloadJson = Encoding.UTF8.GetString(EncodingUtil.Base64Url(parts[1]));
-        return JsonSerializer.Deserialize<Payload>(payloadJson)
-            ?? throw new InvalidDataException("empty vault.cryptomator payload");
+            var payloadJson = Encoding.UTF8.GetString(EncodingUtil.Base64Url(parts[1]));
+            return JsonSerializer.Deserialize<Payload>(payloadJson)
+                ?? throw new InvalidDataException("empty vault.cryptomator payload");
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(expected);
+            CryptographicOperations.ZeroMemory(signingInput);
+        }
     }
 }

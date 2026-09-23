@@ -63,15 +63,22 @@ public static class SigV4
             Hex(SHA256.HashData(Encoding.UTF8.GetBytes(canonicalRequest))));
 
         var signingKey = DerivedKey(credentials.SecretKey, dateStamp, credentials.Region, credentials.Service);
-        var signature = Hex(HmacSha256(signingKey, Encoding.UTF8.GetBytes(stringToSign)));
+        try
+        {
+            var signature = Hex(HmacSha256(signingKey, Encoding.UTF8.GetBytes(stringToSign)));
 
-        headers["Authorization"] =
-            "AWS4-HMAC-SHA256 " +
-            $"Credential={credentials.AccessKey}/{scope}, " +
-            $"SignedHeaders={signedHeaders}, " +
-            $"Signature={signature}";
+            headers["Authorization"] =
+                "AWS4-HMAC-SHA256 " +
+                $"Credential={credentials.AccessKey}/{scope}, " +
+                $"SignedHeaders={signedHeaders}, " +
+                $"Signature={signature}";
 
-        return headers;
+            return headers;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(signingKey);
+        }
     }
 
     public static string CanonicalPath(Uri url)
@@ -138,12 +145,29 @@ public static class SigV4
 
     public static byte[] DerivedKey(string secret, string dateStamp, string region, string service)
     {
+        // Zero each intermediate HMAC key; caller must ZeroMemory the returned signing key.
         var key = Encoding.UTF8.GetBytes("AWS4" + secret);
-        key = HmacSha256(key, Encoding.UTF8.GetBytes(dateStamp));
-        key = HmacSha256(key, Encoding.UTF8.GetBytes(region));
-        key = HmacSha256(key, Encoding.UTF8.GetBytes(service));
-        key = HmacSha256(key, Encoding.UTF8.GetBytes("aws4_request"));
-        return key;
+        try
+        {
+            var next = HmacSha256(key, Encoding.UTF8.GetBytes(dateStamp));
+            CryptographicOperations.ZeroMemory(key);
+            key = next;
+            next = HmacSha256(key, Encoding.UTF8.GetBytes(region));
+            CryptographicOperations.ZeroMemory(key);
+            key = next;
+            next = HmacSha256(key, Encoding.UTF8.GetBytes(service));
+            CryptographicOperations.ZeroMemory(key);
+            key = next;
+            next = HmacSha256(key, Encoding.UTF8.GetBytes("aws4_request"));
+            CryptographicOperations.ZeroMemory(key);
+            key = next;
+            return key;
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(key);
+            throw;
+        }
     }
 
     private static byte[] HmacSha256(byte[] key, byte[] data)

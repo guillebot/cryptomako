@@ -423,6 +423,11 @@ public sealed partial class VaultSession : IAsyncDisposable, IDisposable
             return body(_cryptor);
     }
 
+    /// <summary>
+    /// Zeros masterkey AesKey/MacKey (via Cryptor/Masterkey Dispose).
+    /// If Store is disposable (e.g. S3ObjectStore), also drops the SecretKey reference via ClearSecretKey.
+    /// Immutable passphrase / S3 secret / proxy password strings cannot be scrubbed from the managed heap.
+    /// </summary>
     public void Dispose()
     {
         _cryptor.Dispose();

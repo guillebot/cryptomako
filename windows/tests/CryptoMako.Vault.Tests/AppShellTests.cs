@@ -1,4 +1,5 @@
 using CryptoMako.Vault;
+using CryptoMako.S3;
 using CryptoMako.App;
 using CryptoMako.CfApi;
 using Xunit;
@@ -153,5 +154,26 @@ public class AppShellTests
         var result = await S3Probe.ProbeAsync(new VaultSettings { StorageMode = "local", LocalVaultPath = "/x" }, secretKey: null);
         Assert.Equal(ProbeLamp.Skip, result.Dns);
         Assert.Equal("local mode", result.Detail);
+    }
+
+    [Fact]
+    public async Task MainViewModel_LockAsync_clears_Password_field()
+    {
+        await using var vm = new MainViewModel(secrets: new EnvSecretStore());
+        vm.Password = "temporary-ui-passphrase";
+        Assert.Equal("temporary-ui-passphrase", vm.Password);
+        await vm.LockAsync();
+        Assert.Equal("", vm.Password);
+        Assert.False(vm.IsUnlocked);
+        Assert.Equal("locked", vm.Status);
+    }
+
+    [Fact]
+    public void S3Settings_ClearSecretKey_drops_reference()
+    {
+        var s = S3Settings.From("https://s3.example/", "us-east-1", "b", "AKIA", "supersecret", pathStyle: true);
+        Assert.Equal("supersecret", s.SecretKey);
+        s.ClearSecretKey();
+        Assert.Equal("", s.SecretKey);
     }
 }
