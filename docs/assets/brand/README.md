@@ -32,7 +32,7 @@ Locked user pick: `icon-master.png` (source of truth for the lock). App icons ar
 
 ## TODO (follow-ups)
 
-- [ ] Refresh `Support/Brand/Assets.xcassets/AppIcon.appiconset/*` and `Resources/AppIcon.png` from `icon-*.png` (dock / About still use the previous mark until that lands).
+- [x] Refresh `Support/Brand/Assets.xcassets/AppIcon.appiconset/*` and `Resources/AppIcon.png` from `icon-*.png` (Dock / About use cyan bucket+shield).
 - [x] Wire Windows Desktop tray to `tray-windows.png` (`windows/src/CryptoMako.Desktop/Assets/tray.png`).
 - [x] Wire Linux `.desktop` + hicolor icons from `icon-{48,256,512}.png` (see `linux/packaging/`).
 - [ ] Sync iOS + Android sibling app icons from this pack.
