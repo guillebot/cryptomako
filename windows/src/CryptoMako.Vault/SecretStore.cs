@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Runtime.Versioning;
 using System.Text;
 using System.Text.Json;
@@ -181,25 +182,34 @@ public sealed class WindowsCredentialStore : ISecretStore
         public static void CredWrite(string target, string secret)
         {
             var bytes = Encoding.UTF8.GetBytes(secret);
-            var blob = Marshal.AllocHGlobal(bytes.Length);
             try
             {
-                Marshal.Copy(bytes, 0, blob, bytes.Length);
-                var cred = new CREDENTIAL
+                var blob = Marshal.AllocHGlobal(bytes.Length);
+                try
                 {
-                    Type = CredTypeGeneric,
-                    TargetName = target,
-                    CredentialBlobSize = bytes.Length,
-                    CredentialBlob = blob,
-                    Persist = CredPersistLocalMachine,
-                    UserName = Environment.UserName,
-                };
-                if (!CredWriteW(ref cred, 0))
-                    throw new InvalidOperationException($"CredWrite failed: {Marshal.GetLastWin32Error()}");
+                    Marshal.Copy(bytes, 0, blob, bytes.Length);
+                    var cred = new CREDENTIAL
+                    {
+                        Type = CredTypeGeneric,
+                        TargetName = target,
+                        CredentialBlobSize = bytes.Length,
+                        CredentialBlob = blob,
+                        Persist = CredPersistLocalMachine,
+                        UserName = Environment.UserName,
+                    };
+                    if (!CredWriteW(ref cred, 0))
+                        throw new InvalidOperationException($"CredWrite failed: {Marshal.GetLastWin32Error()}");
+                }
+                finally
+                {
+                    for (var i = 0; i < bytes.Length; i++)
+                        Marshal.WriteByte(blob, i, 0);
+                    Marshal.FreeHGlobal(blob);
+                }
             }
             finally
             {
-                Marshal.FreeHGlobal(blob);
+                CryptographicOperations.ZeroMemory(bytes);
             }
         }
 
@@ -214,8 +224,15 @@ public sealed class WindowsCredentialStore : ISecretStore
                 if (cred.CredentialBlob == IntPtr.Zero || cred.CredentialBlobSize <= 0)
                     return null;
                 var bytes = new byte[cred.CredentialBlobSize];
-                Marshal.Copy(cred.CredentialBlob, bytes, 0, bytes.Length);
-                return Encoding.UTF8.GetString(bytes);
+                try
+                {
+                    Marshal.Copy(cred.CredentialBlob, bytes, 0, bytes.Length);
+                    return Encoding.UTF8.GetString(bytes);
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(bytes);
+                }
             }
             finally
             {

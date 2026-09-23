@@ -33,7 +33,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         Preferences = File.Exists(AppPaths.PreferencesPath)
             ? AppPreferences.Deserialize(File.ReadAllText(AppPaths.PreferencesPath))
             : new AppPreferences();
-        _password = _secrets.GetSecret(SecretAccounts.Password) ?? "";
+        // Do not preload passphrase into the bindable Password field (crash-dump / UI lifetime).
+        // UnlockAsync / auto-reconnect read CRYPTOMAKO_PASSWORD from the secret store when empty.
     }
 
     public VaultSettings Settings { get; private set; }
@@ -125,6 +126,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if (string.IsNullOrEmpty(Password))
             throw new InvalidOperationException("password empty");
         _secrets.SetSecret(SecretAccounts.Password, Password);
+        Password = ""; // drop plaintext from UI binding after persist
         AppendLog($"saved {SecretAccounts.Password} to {(WindowsCredentialStore.IsSupported ? "Credential Manager" : "process env")}");
     }
 
@@ -160,6 +162,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             }
 
             _userWantsUnlocked = true;
+            Password = ""; // passphrase only needed for unlock; store keeps it if saved
             Status = $"unlocked format={_session.Metadata.Format} {_session.RootPath}";
             OnPropertyChanged(nameof(IsUnlocked));
             OnPropertyChanged(nameof(StatusTrayLabel));

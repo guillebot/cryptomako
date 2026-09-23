@@ -349,7 +349,7 @@ static int CmdCred(ReadOnlySpan<string> args)
 
             Usage:
               cryptomako cred list
-              cryptomako cred get <account>
+              cryptomako cred get <account> --reveal   # prints secret; refuse without --reveal
               cryptomako cred set <account>     # secret on stdin (one line); never argv
               cryptomako cred delete <account>
 
@@ -377,6 +377,16 @@ static int CmdCred(ReadOnlySpan<string> args)
         {
             if (args.Length < 2) return Fail(2, "cred get requires <account>");
             var account = NormalizeAccount(args[1]);
+            var reveal = false;
+            for (var i = 2; i < args.Length; i++)
+            {
+                if (args[i] is "--reveal" or "-r")
+                    reveal = true;
+                else
+                    return Fail(2, $"unknown cred get flag: {args[i]}");
+            }
+            if (!reveal)
+                return Fail(2, "refusing to print secret; pass --reveal (avoid shells/logs that capture stdout)");
             var value = store.GetSecret(account);
             if (string.IsNullOrEmpty(value))
                 return Fail(1, $"missing: {account}");
@@ -566,6 +576,7 @@ static void PrintHelp()
 
         Credentials:
           cryptomako cred list|get|set|delete <account>
+          get requires --reveal (prints secret to stdout)
           set reads secret from stdin (never argv)
         """);
 }

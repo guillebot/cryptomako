@@ -4,6 +4,7 @@ using CryptoMako.Vault;
 using Vanara.PInvoke;
 using static Vanara.PInvoke.CldApi;
 using static Vanara.PInvoke.Kernel32;
+using System.Security.Cryptography;
 
 namespace CryptoMako.CfApi;
 
@@ -506,42 +507,56 @@ public sealed class CloudFilesProvider : IDisposable
                 throw new InvalidOperationException("no vault session");
 
             var clear = provider.Session.CatAsync(path).GetAwaiter().GetResult();
-            var offset = parameters.FetchData.RequiredFileOffset;
-            var length = parameters.FetchData.RequiredLength;
-            if (offset < 0 || offset > clear.LongLength)
-                throw new InvalidOperationException("bad fetch offset");
-            var available = clear.LongLength - offset;
-            var toSend = (long)Math.Min((ulong)available, length > 0 ? (ulong)length : (ulong)available);
-            if (toSend < 0) toSend = 0;
-
-            var slice = new byte[toSend];
-            if (toSend > 0)
-                Buffer.BlockCopy(clear, (int)offset, slice, 0, (int)toSend);
-
-            var handle = GCHandle.Alloc(slice, GCHandleType.Pinned);
             try
             {
-                var opInfo = new CF_OPERATION_INFO
+                var offset = parameters.FetchData.RequiredFileOffset;
+                var length = parameters.FetchData.RequiredLength;
+                if (offset < 0 || offset > clear.LongLength)
+                    throw new InvalidOperationException("bad fetch offset");
+                var available = clear.LongLength - offset;
+                var toSend = (long)Math.Min((ulong)available, length > 0 ? (ulong)length : (ulong)available);
+                if (toSend < 0) toSend = 0;
+
+                var slice = new byte[toSend];
+                try
                 {
-                    StructSize = (uint)Marshal.SizeOf<CF_OPERATION_INFO>(),
-                    Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_DATA,
-                    ConnectionKey = info.ConnectionKey,
-                    TransferKey = info.TransferKey,
-                };
-                var opParams = CF_OPERATION_PARAMETERS.Create(
-                    new CF_OPERATION_PARAMETERS.TRANSFERDATA
+                    if (toSend > 0)
+                        Buffer.BlockCopy(clear, (int)offset, slice, 0, (int)toSend);
+
+                    var handle = GCHandle.Alloc(slice, GCHandleType.Pinned);
+                    try
                     {
-                        Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
-                        CompletionStatus = NTStatus.STATUS_SUCCESS,
-                        Buffer = handle.AddrOfPinnedObject(),
-                        Offset = offset,
-                        Length = toSend,
-                    });
-                CfExecute(opInfo, ref opParams).ThrowIfFailed();
+                        var opInfo = new CF_OPERATION_INFO
+                        {
+                            StructSize = (uint)Marshal.SizeOf<CF_OPERATION_INFO>(),
+                            Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_DATA,
+                            ConnectionKey = info.ConnectionKey,
+                            TransferKey = info.TransferKey,
+                        };
+                        var opParams = CF_OPERATION_PARAMETERS.Create(
+                            new CF_OPERATION_PARAMETERS.TRANSFERDATA
+                            {
+                                Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
+                                CompletionStatus = NTStatus.STATUS_SUCCESS,
+                                Buffer = handle.AddrOfPinnedObject(),
+                                Offset = offset,
+                                Length = toSend,
+                            });
+                        CfExecute(opInfo, ref opParams).ThrowIfFailed();
+                    }
+                    finally
+                    {
+                        handle.Free();
+                    }
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(slice);
+                }
             }
             finally
             {
-                handle.Free();
+                CryptographicOperations.ZeroMemory(clear);
             }
         }
         catch (Exception)

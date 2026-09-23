@@ -89,7 +89,7 @@ Secrets: env / Credential Manager only.
 - **Desktop (Avalonia) + tray:** `dotnet run --project src/CryptoMako.Desktop` — Vault / Backup / Settings; tray unlock/lock/probe/open/quit (close hides to tray). See `docs/desktop.md`.
 - **CfAPI:** `cryptomako cfapi register|unregister` live on Windows 11; Connect/hydrate still blocked (`docs/cfapi.md`).
 - **Parity checklist:** `docs/parity.md` · packaging: `docs/packaging.md`.
-- **Credentials CLI:** `cryptomako cred list|get|set|delete` (stdin for set; Credential Manager on Windows).
+- **Credentials CLI:** `cryptomako cred list|get|set|delete` (stdin for set; `get` needs `--reveal`; Credential Manager on Windows).
 
 ## Backup Sync
 

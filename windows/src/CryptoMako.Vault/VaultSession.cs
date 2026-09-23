@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 
 namespace CryptoMako.Vault;
@@ -78,7 +79,15 @@ public sealed partial class VaultSession : IAsyncDisposable, IDisposable
         try
         {
             var jwt = Encoding.UTF8.GetString(jwtBytes).Trim();
-            payload = VaultJwt.Verify(jwt, masterkey.RawKey);
+            var rawKey = masterkey.RawKey;
+            try
+            {
+                payload = VaultJwt.Verify(jwt, rawKey);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(rawKey);
+            }
         }
         catch
         {

@@ -33,7 +33,7 @@ Live **Cloud Files API** registration and Explorer placeholder mount are **Windo
 
 ## Windows-native notes
 
-- Secrets: `cryptomako cred` → Credential Manager on Windows; env / `~/.config/cryptomako/secrets.json` on Mac.
+- Secrets: `cryptomako cred` → Credential Manager on Windows (`get` requires `--reveal`); env / `~/.config/cryptomako/secrets.json` on Mac.
 - Settings paths: `%AppData%/CryptoMako/settings.json` + `app-preferences.json` (Windows); `~/.config/cryptomako/` on Mac.
 
 ### autoReconnect
