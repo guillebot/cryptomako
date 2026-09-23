@@ -48,6 +48,10 @@ var sourcesAddCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		vaultFolder, _ := cmd.Flags().GetString("vault-folder")
 		store := config.LoadBackupSources(flagSourcesFile)
+		// Platforms consensus (Windows #12): soft-warn on nested/overlapping add; still allow.
+		if warn := config.SoftWarnOnAdd(store.Sources, args[0]); warn != "" {
+			fmt.Fprintln(os.Stderr, warn)
+		}
 		src, added, err := store.Add(args[0], vaultFolder)
 		if err != nil {
 			return err

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/guillebot/cryptomako/linux/internal/config"
@@ -46,6 +47,10 @@ Per-file fingerprints (size + contentModification) live in
 backup-sync-state.json; unchanged files are skipped. Fingerprints update
 only after a successful put (fail-closed).
 
+Nested/overlapping sources (one resolved path prefixes another) soft-warn on
+"sources add" and hard-fail here before any unlock or remote put (Windows #12
+parity). No new shared settings keys.
+
 Ctrl-C / SIGTERM cancels in-flight sync (stops scheduling new puts; workers
 finish or exit; process returns a cancelled error). Session is closed on exit;
 OS secret store is untouched.`,
@@ -53,6 +58,14 @@ OS secret store is untouched.`,
 		targets, err := config.ResolveSyncTargets(flagSyncSource, flagSyncDest, flagSyncSources)
 		if err != nil {
 			return err
+		}
+		// Platforms consensus (Windows #12): hard-fail nested overlaps before unlock/puts
+		// when syncing from backup-sources.json (omit --source).
+		if strings.TrimSpace(flagSyncSource) == "" {
+			store := config.LoadBackupSources(flagSyncSources)
+			if err := config.ThrowIfOverlapping(store.Sources); err != nil {
+				return err
+			}
 		}
 		cfg, err := config.Resolve(config.Request{
 			LocalPath:    flagLocal,
