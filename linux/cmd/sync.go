@@ -1,7 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
+	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/guillebot/cryptomako/linux/internal/config"
 	"github.com/guillebot/cryptomako/linux/internal/vault"
@@ -40,7 +44,11 @@ CRYPTOMAKO_PROXY_PASSWORD.
 
 Per-file fingerprints (size + contentModification) live in
 backup-sync-state.json; unchanged files are skipped. Fingerprints update
-only after a successful put (fail-closed).`,
+only after a successful put (fail-closed).
+
+Ctrl-C / SIGTERM cancels in-flight sync (stops scheduling new puts; workers
+finish or exit; process returns a cancelled error). Session is closed on exit;
+OS secret store is untouched.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		targets, err := config.ResolveSyncTargets(flagSyncSource, flagSyncDest, flagSyncSources)
 		if err != nil {
@@ -71,9 +79,12 @@ only after a successful put (fail-closed).`,
 		}
 		defer session.Close()
 
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+
 		total := 0
 		for _, t := range targets {
-			n, err := session.SyncCleartextTree(t.SourcePath, t.DestPrefix, &excludes, &prefs, flagSyncState, t.VaultFolderName)
+			n, err := session.SyncCleartextTree(ctx, t.SourcePath, t.DestPrefix, &excludes, &prefs, flagSyncState, t.VaultFolderName)
 			if err != nil {
 				return fmt.Errorf("sync %s → %s: %w", t.SourcePath, t.DestPrefix, err)
 			}
