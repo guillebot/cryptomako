@@ -2,7 +2,7 @@
 
 Linux port of [CryptoMako](https://github.com/guillebot/cryptomako): S3-compatible bucket → Cryptomator **format 8** vault over **HTTPS**, cleartext UX locally, unrecognizable names+contents in the bucket.
 
-Lives under `linux/` in the main repo (not a sibling). Shares `fixtures/` with macOS as the golden vault once Platforms locks cryptolib.
+Lives under `linux/` in the main repo (not a sibling). Shares `fixtures/` with macOS as the golden vault (format 8 / SIV_GCM).
 
 ## Surfaces (roadmap)
 
@@ -38,12 +38,15 @@ go build -o cryptomako .
 ```bash
 export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < ../fixtures/PASSWORD)"
 
-# Local vault directory (layout / unlock stub — crypto pending Platforms)
+# Local format-8 SIV_GCM vault (golden vs fixtures/)
 ./cryptomako unlock --local ../fixtures/vault
+# format: 8
+# cipherCombo: SIV_GCM
+# rootPrefix: d/FQ/QG7OOSQNZM6BJDZAIENVAOACYROMHW/
 
-# After cryptolib lands:
-# ./cryptomako ls --local ../fixtures/vault --path / -R
-# ./cryptomako cat --local ../fixtures/vault /hello.txt
+./cryptomako ls --local ../fixtures/vault --path / --recursive | diff -u ../fixtures/expected-ls.txt -
+./cryptomako cat --local ../fixtures/vault /hello.txt
+# → hello cryptomako
 ```
 
 Remote (S3) needs non-secret config plus the secret env:
@@ -74,12 +77,14 @@ Default path: `$XDG_CONFIG_HOME/cryptomako/config.json` or `~/.config/cryptomako
 | Package | Role |
 |---------|------|
 | `internal/s3` | SigV4 HTTPS client: GetObject, PutObject, DeleteObject, ListObjectsV2 |
-| `internal/vault` | Format-8 unlock/layout interfaces — **crypto stubbed** |
+| `internal/vault` | Format-8 **SIV_GCM** unlock / ls / cat (local FS; S3 TODO) |
 | `internal/config` | XDG config + env secrets |
 
 ## Crypto status
 
-Decrypt / cleartext `ls` / `cat` are **stubbed** until Platforms locks cryptolib and golden tests against `fixtures/`. Do not treat unlock metadata as proof of interoperability yet. Wrong-password behaviour and fixture acceptance land with real crypto.
+Local **format 8 / SIV_GCM** unlock, cleartext `ls`, and `cat` are implemented in `internal/vault` (scrypt + AES-KW masterkey, JWT verify with enc||mac, AES-SIV names/dirIds, AES-GCM content, `.c9s` name shortening). Golden tests run against `../fixtures/` when `PASSWORD` is present.
+
+S3 unlock still TODO (use `--local`). Remote put/delete remain fail-closed in the S3 client.
 
 ## License
 
