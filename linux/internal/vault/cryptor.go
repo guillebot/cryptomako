@@ -19,7 +19,7 @@ import (
 const (
 	gcmNonceSize       = 12
 	gcmTagSize         = 16
-	headerPayloadSize  = 40 // 8 reserved + 32 content key
+	headerPayloadSize  = 40                                            // 8 reserved + 32 content key
 	headerSize         = gcmNonceSize + headerPayloadSize + gcmTagSize // 68
 	chunkClearSize     = 32 * 1024
 	chunkOverhead      = gcmNonceSize + gcmTagSize
@@ -104,7 +104,7 @@ func (c *Cryptor) DecryptContent(ciphertext []byte) ([]byte, error) {
 		return nil, errCorrupt
 	}
 	headerNonce := ciphertext[:gcmNonceSize]
-	headerCT := ciphertext[gcmNonceSize : headerSize]
+	headerCT := ciphertext[gcmNonceSize:headerSize]
 
 	block, err := aes.NewCipher(c.mk.EncKey)
 	if err != nil {
@@ -122,7 +122,10 @@ func (c *Cryptor) DecryptContent(ciphertext []byte) ([]byte, error) {
 	if len(payload) != headerPayloadSize {
 		return nil, errCorrupt
 	}
-	contentKey := payload[8:]
+	contentKey := make([]byte, 32)
+	copy(contentKey, payload[8:])
+	defer wipe(contentKey)
+	wipe(payload) // header plaintext no longer needed
 
 	contentBlock, err := aes.NewCipher(contentKey)
 	if err != nil {
@@ -179,7 +182,6 @@ func (c *Cryptor) DecryptContentFrom(r io.Reader) ([]byte, error) {
 	return c.DecryptContent(all)
 }
 
-
 // EncryptContent encrypts cleartext to SIV_GCM ciphertext (header + chunks).
 func (c *Cryptor) EncryptContent(clear []byte) ([]byte, error) {
 	headerNonce := make([]byte, gcmNonceSize)
@@ -190,6 +192,7 @@ func (c *Cryptor) EncryptContent(clear []byte) ([]byte, error) {
 	if _, err := rand.Read(contentKey); err != nil {
 		return nil, err
 	}
+	defer wipe(contentKey)
 	payload := make([]byte, headerPayloadSize)
 	for i := 0; i < 8; i++ {
 		payload[i] = 0xFF

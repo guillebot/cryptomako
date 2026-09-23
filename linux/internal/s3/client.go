@@ -39,6 +39,9 @@ func New(settings Settings) (*Client, error) {
 	if !strings.HasPrefix(strings.ToLower(settings.Endpoint), "https://") {
 		return nil, fmt.Errorf("s3: HTTPS required (got %q)", settings.Endpoint)
 	}
+	if u, err := url.Parse(settings.Endpoint); err == nil && u.User != nil {
+		return nil, fmt.Errorf("s3: endpoint must not include userinfo")
+	}
 	if settings.Bucket == "" {
 		return nil, fmt.Errorf("s3: empty bucket")
 	}
@@ -197,6 +200,15 @@ func (c *Client) SetHTTPClient(h *http.Client) {
 	if h != nil {
 		c.http = h
 	}
+}
+
+// WipeCredentials blanks SecretKey (and AccessKey) held on the client.
+func (c *Client) WipeCredentials() {
+	if c == nil {
+		return
+	}
+	c.settings.SecretKey = ""
+	c.settings.AccessKey = ""
 }
 
 func (c *Client) creds() Credentials {

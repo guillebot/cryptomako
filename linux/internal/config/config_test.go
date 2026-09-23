@@ -125,3 +125,61 @@ func TestDefaultConfigPathUsesXDG(t *testing.T) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
+
+func TestResolveScrubsSecretEnv(t *testing.T) {
+	t.Setenv(EnvPassword, "pw-scrub")
+	t.Setenv(EnvSecretKey, "sk-scrub")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"endpoint":"https://minio.example","bucket":"b","accessKey":"ak"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Resolve(Request{ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Passphrase != "pw-scrub" || cfg.SecretKey != "sk-scrub" {
+		t.Fatalf("cfg secrets missing: %+v", cfg)
+	}
+	if os.Getenv(EnvPassword) != "" || os.Getenv(EnvSecretKey) != "" {
+		t.Fatal("expected secret env vars unset after Resolve")
+	}
+}
+
+func TestRejectEndpointUserinfo(t *testing.T) {
+	t.Setenv(EnvPassword, "pw")
+	t.Setenv(EnvSecretKey, "sk")
+	_, err := Resolve(Request{
+		Endpoint:  "https://ak:secret@minio.example",
+		Bucket:    "b",
+		AccessKey: "ak",
+	})
+	if err == nil {
+		t.Fatal("expected userinfo rejection")
+	}
+}
+
+func TestRejectExpandedSecretsInJSON(t *testing.T) {
+	t.Setenv(EnvPassword, "pw")
+	t.Setenv(EnvSecretKey, "sk")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"endpoint":"https://x","bucket":"b","accessKey":"ak","passphrase":"nope"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Resolve(Request{ConfigPath: path})
+	if err == nil {
+		t.Fatal("expected reject passphrase in JSON")
+	}
+}
+
+func TestClearSecrets(t *testing.T) {
+	cfg := Config{Passphrase: "p", SecretKey: "s", AccessKey: "a"}
+	cfg.ClearSecrets()
+	if cfg.Passphrase != "" || cfg.SecretKey != "" {
+		t.Fatalf("secrets remain: %+v", cfg)
+	}
+	if cfg.AccessKey != "a" {
+		t.Fatal("access key should remain")
+	}
+}

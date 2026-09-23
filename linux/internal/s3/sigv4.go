@@ -100,6 +100,9 @@ func SignRequest(req *http.Request, creds Credentials, payloadHash string, now t
 
 	signingKey := deriveKey(creds.SecretKey, dateStamp, creds.Region, creds.service())
 	signature := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
+	for i := range signingKey {
+		signingKey[i] = 0
+	}
 
 	auth := fmt.Sprintf(
 		"AWS4-HMAC-SHA256 Credential=%s/%s, SignedHeaders=%s, Signature=%s",

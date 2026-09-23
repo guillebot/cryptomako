@@ -79,6 +79,7 @@ func DescribeProxy(prefs AppPreferences) string {
 func NewHTTPClient(prefs AppPreferences) *http.Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	ApplyProxy(transport, prefs, ProxyPassword())
+	ScrubProxyPasswordEnv()
 	return &http.Client{
 		Transport: transport,
 		Timeout:   10 * time.Minute,

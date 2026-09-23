@@ -117,10 +117,7 @@ func ParseAppPreferences(data []byte) (AppPreferences, error) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return AppPreferences{}, err
 	}
-	for _, banned := range []string{
-		"password", "secretKey", "secret_key", "secretAccessKey",
-		"proxyPassword", "proxy_password",
-	} {
+	for _, banned := range bannedSecretJSONKeys {
 		if _, ok := raw[banned]; ok {
 			return AppPreferences{}, fmt.Errorf("app-preferences must not contain %q (use env %s for proxy password)", banned, EnvProxyPassword)
 		}
@@ -136,6 +133,8 @@ func ParseAppPreferences(data []byte) (AppPreferences, error) {
 
 // LoadAppPreferences reads path (default XDG). Missing/unreadable → defaults
 // (same soft-fail as macOS AppPreferences.load).
+// If the file contains banned secret keys, soft-fail still applies (defaults)
+// but a warning is written to stderr so secrets are not silently ignored on disk.
 func LoadAppPreferences(path string) AppPreferences {
 	if path == "" {
 		path = DefaultPreferencesPath()
@@ -146,6 +145,9 @@ func LoadAppPreferences(path string) AppPreferences {
 	}
 	p, err := ParseAppPreferences(data)
 	if err != nil {
+		if strings.Contains(err.Error(), "must not contain") {
+			fmt.Fprintf(os.Stderr, "cryptomako: refusing secret keys in %s (%v); using defaults\n", path, err)
+		}
 		return DefaultAppPreferences()
 	}
 	return p

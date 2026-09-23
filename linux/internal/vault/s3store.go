@@ -104,7 +104,6 @@ func isNotFound(err error) bool {
 	return strings.Contains(msg, "HTTP 404") || strings.Contains(msg, "NoSuchKey")
 }
 
-
 func (s *s3Store) Put(key string, data []byte) error {
 	// Fail-closed: Client.PutObject only succeeds on HTTP 2xx.
 	return s.client.PutObject(s.ctx, s.fullKey(key), data)
@@ -115,3 +114,9 @@ func (s *s3Store) Delete(key string) error {
 	return s.client.DeleteObject(s.ctx, s.fullKey(key))
 }
 
+func (s *s3Store) WipeSecrets() {
+	if s == nil || s.client == nil {
+		return
+	}
+	s.client.WipeCredentials()
+}
