@@ -1,4 +1,5 @@
 import XCTest
+import Security
 
 @testable import CryptoMakoShared
 @testable import CryptoMakoVault
@@ -80,7 +81,13 @@ final class CredentialStoreTests: XCTestCase {
     func testLocalSaveReadDelete() throws {
         let account = "test-\(UUID().uuidString)"
         defer { CredentialStore.delete(account: account, useAccessGroup: false) }
-        try CredentialStore.save("secret-value", account: account, useAccessGroup: false)
+        do {
+            try CredentialStore.save("secret-value", account: account, useAccessGroup: false)
+        } catch CredentialStore.StoreError.unhandled(let status) where status == errSecMissingEntitlement {
+            // GitHub Actions / unsigned hosts lack Keychain entitlements (-34018).
+            // Do not weaken production Keychain; skip the round-trip when unavailable.
+            throw XCTSkip("Keychain unavailable in this environment (errSecMissingEntitlement / -34018)")
+        }
         XCTAssertEqual(try CredentialStore.read(account: account, useAccessGroup: false), "secret-value")
         CredentialStore.delete(account: account, useAccessGroup: false)
         XCTAssertThrowsError(try CredentialStore.read(account: account, useAccessGroup: false))

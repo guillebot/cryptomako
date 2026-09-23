@@ -1,0 +1,7 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: cryptomako
+Source: https://github.com/guillebot/cryptomako
+
+Files: *
+Copyright: CryptoMako contributors
+License: AGPL-3.0-only

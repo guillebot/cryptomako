@@ -25,6 +25,76 @@ jobs:
       - name: Test
         run: swift test --parallel
 
+  linux-go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: linux/go.sum
+
+      - name: Test
+        working-directory: linux
+        run: go test ./...
+
+      - name: Build
+        working-directory: linux
+        run: go build -o cryptomako .
+
+  linux-fuse-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: linux/go.sum
+
+      - name: Install fuse3
+        run: sudo apt-get update && sudo apt-get install -y fuse3
+
+      - name: Build CLI
+        working-directory: linux
+        run: go build -o cryptomako .
+
+      - name: FUSE smoke (ro + rw)
+        working-directory: linux
+        env:
+          CRYPTOMAKO_PASSWORD: ci-fuse-smoke-password
+          CRYPTOMAKO_BIN: ${{ github.workspace }}/linux/cryptomako
+          CRYPTOMAKO_FUSE_RW: "1"
+        run: ./scripts/fuse-smoke.sh
+
+
+  linux-deb:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache-dependency-path: linux/go.sum
+
+      - name: Build .deb
+        working-directory: linux
+        run: ./packaging/build-deb.sh
+        env:
+          VERSION: "0.1.0"
+
+      - name: Upload .deb artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: cryptomako-deb
+          path: linux/packaging/dist/*.deb
+          if-no-files-found: error
+
   security:
     runs-on: ubuntu-latest
     permissions:
@@ -51,7 +121,7 @@ jobs:
         id: grype
         uses: anchore/scan-action@v6
         with:
-          path: Package.resolved
+          path: .
           fail-build: true
           severity-cutoff: high
           output-format: sarif
