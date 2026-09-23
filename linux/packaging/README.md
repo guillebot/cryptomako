@@ -1,7 +1,11 @@
 # Linux packaging
 
-Thin `.deb` for the CryptoMako CLI: binary + man page + this README snippet.
+Thin `.deb` for the CryptoMako CLI: binary + man page + `.desktop` + hicolor icons + this README snippet.
 **No secrets** are packaged. User config stays under XDG (`~/.config/cryptomako/`).
+
+Launcher icon is the shared brand mark from `docs/assets/brand/icon-{48,256,512}.png`
+(installed under `/usr/share/icons/hicolor/.../apps/cryptomako.png`). Do **not** use
+`linux-desktop.png` as `Icon=` — that file is a wide docs preview.
 
 ## Build the `.deb`
 
@@ -12,7 +16,7 @@ From `linux/`:
 # → packaging/dist/cryptomako_${VERSION}_${ARCH}.deb
 
 # Optional overrides:
-VERSION=0.1.0 ARCH=amd64 ./packaging/build-deb.sh
+VERSION=1.0.0 ARCH=amd64 ./packaging/build-deb.sh
 ```
 
 Requires **dpkg-deb** (Debian/Ubuntu) or **nfpm**. The script cross-compiles
@@ -53,6 +57,8 @@ without Platforms. Path-style S3 is locked on (`pathStyle` default `true`).
 | `/usr/bin/cryptomako` | Go binary (`CGO_ENABLED=0`) |
 | `/usr/share/man/man1/cryptomako.1.gz` | Man page |
 | `/usr/share/doc/cryptomako/` | copyright + packaging README |
+| `/usr/share/applications/cryptomako.desktop` | Desktop entry (`Name=CryptoMako`, `Icon=cryptomako`, `Terminal=true`) |
+| `/usr/share/icons/hicolor/{48x48,256x256,512x512}/apps/cryptomako.png` | Brand mark (from `docs/assets/brand/icon-*.png`) |
 | `Depends:` | `fuse3` |
 | conffiles | none (user XDG config only) |
 
@@ -60,7 +66,7 @@ without Platforms. Path-style S3 is locked on (`pathStyle` default `true`).
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o cryptomako .
-ARCH=amd64 VERSION=0.1.0 nfpm package -f packaging/nfpm.yaml -p deb -t packaging/dist
+ARCH=amd64 VERSION=1.0.0 nfpm package -f packaging/nfpm.yaml -p deb -t packaging/dist
 ```
 
 CI uploads the `.deb` as a workflow artifact (`cryptomako-deb`).

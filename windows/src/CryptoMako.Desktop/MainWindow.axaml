@@ -1,0 +1,127 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:app="using:CryptoMako.App"
+        x:Class="CryptoMako.Desktop.MainWindow"
+        x:DataType="app:MainViewModel"
+        x:CompileBindings="False"
+        Title="CryptoMako"
+        Width="820" Height="640"
+        MinWidth="640" MinHeight="480">
+  <DockPanel Margin="12">
+    <TextBlock DockPanel.Dock="Bottom" Margin="0,8,0,0" Text="{Binding Status}" />
+
+    <TabControl>
+      <TabItem Header="Vault">
+        <ScrollViewer>
+          <StackPanel Spacing="8" Margin="0,8">
+            <TextBlock Text="Vault" FontSize="18" FontWeight="SemiBold" />
+            <TextBlock TextWrapping="Wrap" Opacity="0.8"
+                       Text="Unlock a Cryptomator format-8 vault (local or S3). Secrets never go in settings.json." />
+
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Content="Mode: Local" Click="OnModeLocal" />
+              <Button Content="Mode: S3" Click="OnModeS3" />
+              <TextBlock VerticalAlignment="Center" Text="{Binding Settings.StorageMode}" />
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Local path" Width="100" VerticalAlignment="Center" />
+              <TextBox Width="520" Text="{Binding Settings.LocalVaultPath}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Endpoint" Width="100" VerticalAlignment="Center" />
+              <TextBox Width="520" Text="{Binding Settings.Endpoint}" Watermark="https://" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Region" Width="100" VerticalAlignment="Center" />
+              <TextBox Width="160" Text="{Binding Settings.Region}" />
+              <TextBlock Text="Bucket" VerticalAlignment="Center" Margin="8,0,0,0" />
+              <TextBox Width="180" Text="{Binding Settings.Bucket}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Prefix" Width="100" VerticalAlignment="Center" />
+              <TextBox Width="240" Text="{Binding Settings.Prefix}" />
+              <TextBlock Text="Access key" VerticalAlignment="Center" Margin="8,0,0,0" />
+              <TextBox Width="200" Text="{Binding Settings.AccessKey}" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Password" Width="100" VerticalAlignment="Center" />
+              <TextBox Width="280" Text="{Binding Password}" PasswordChar="•" />
+              <CheckBox IsChecked="{Binding Settings.PathStyle}" Content="path-style" />
+              <CheckBox IsChecked="{Binding Settings.AutoReconnect}" Content="auto-reconnect" Click="OnAutoReconnectClick" />
+            </StackPanel>
+
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Content="Save settings" Click="OnSaveSettings" />
+              <Button Content="Save password" Click="OnSavePassword" />
+              <Button Content="Unlock" Click="OnUnlock" />
+              <Button Content="Lock" Click="OnLock" />
+              <Button Content="Probe S3" Click="OnProbe" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Content="Connect Explorer" Click="OnConnectExplorer" />
+              <Button Content="Disconnect Explorer" Click="OnDisconnectExplorer" />
+              <TextBlock VerticalAlignment="Center" Opacity="0.75"
+                         Text="Soft CfAPI viewer (Windows). Lock disconnects automatically." />
+            </StackPanel>
+
+            <TextBlock Text="Log" FontWeight="SemiBold" Margin="0,12,0,0" />
+            <TextBox Text="{Binding Log}" AcceptsReturn="True" Height="200" IsReadOnly="True"
+                     TextWrapping="Wrap" FontFamily="Menlo, Consolas, monospace" />
+          </StackPanel>
+        </ScrollViewer>
+      </TabItem>
+
+      <TabItem Header="Backup">
+        <StackPanel Spacing="8" Margin="0,8">
+          <TextBlock Text="Backup Sync" FontSize="18" FontWeight="SemiBold" />
+          <TextBlock TextWrapping="Wrap" Opacity="0.8"
+                     Text="Encrypt local folders into Backups/{folder}/. Fail-closed remote puts." />
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="Source" Width="100" VerticalAlignment="Center" />
+            <TextBox Width="520" Text="{Binding BackupSource}" Watermark="/path/to/cleartext" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="Vault folder" Width="100" VerticalAlignment="Center" />
+            <TextBox Width="240" Text="{Binding VaultFolder}" />
+          </StackPanel>
+          <Button Content="Sync now" HorizontalAlignment="Left" Click="OnSync" />
+        </StackPanel>
+      </TabItem>
+
+      <TabItem Header="Settings">
+        <StackPanel Spacing="8" Margin="0,8">
+          <TextBlock Text="Preferences" FontSize="18" FontWeight="SemiBold" />
+          <TextBlock TextWrapping="Wrap" Opacity="0.8"
+                     Text="Platforms-locked keys. Proxy password: CRYPTOMAKO_PROXY_PASSWORD." />
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="Proxy mode" Width="140" VerticalAlignment="Center" />
+            <TextBox Width="120" Text="{Binding Preferences.ProxyMode}" Watermark="system|direct|custom" />
+            <TextBox Width="180" Text="{Binding Preferences.ProxyHost}" Watermark="host" />
+            <TextBox Width="80" Text="{Binding Preferences.ProxyPort}" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="Proxy user" Width="140" VerticalAlignment="Center" />
+            <TextBox Width="200" Text="{Binding Preferences.ProxyUsername}" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <CheckBox IsChecked="{Binding Preferences.LimitSyncUploadBandwidth}" Content="Limit upload" />
+            <TextBlock Text="Mbps" VerticalAlignment="Center" />
+            <TextBox Width="80" Text="{Binding Preferences.SyncUploadCapMbps}" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="Workers S/M/L" Width="140" VerticalAlignment="Center" />
+            <TextBox Width="60" Text="{Binding Preferences.SyncSmallPutConcurrency}" />
+            <TextBox Width="60" Text="{Binding Preferences.SyncMediumPutConcurrency}" />
+            <TextBox Width="60" Text="{Binding Preferences.SyncLargePutConcurrency}" />
+          </StackPanel>
+          <Button Content="Save preferences" HorizontalAlignment="Left" Click="OnSaveSettings" />
+          <TextBlock Margin="0,16,0,0" Opacity="0.75" TextWrapping="Wrap"
+                     Text="Tray / status-item lamps: use Probe S3 on the Vault tab (dns/tcp/https/list). Full tray host is Windows-oriented; Avalonia builds on macOS for UI smoke." />
+          <TextBlock Opacity="0.75" TextWrapping="Wrap"
+                     Text="Cloud Files (CfAPI) scaffold: see docs/cfapi.md and project CryptoMako.CfApi. Registration requires Windows." />
+        </StackPanel>
+      </TabItem>
+    </TabControl>
+  </DockPanel>
+</Window>

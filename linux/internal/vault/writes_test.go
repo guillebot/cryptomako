@@ -1,6 +1,9 @@
 package vault
 
 import (
+	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -39,7 +42,7 @@ func TestSyncRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
-	n, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath, "")
+	n, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -221,7 +224,7 @@ func TestSyncRespectsExcludes(t *testing.T) {
 
 	ex := config.DefaultBackupSyncExcludes()
 	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
-	n, err := s.SyncCleartextTree(clearDir, "/", &ex, nil, statePath, "")
+	n, err := s.SyncCleartextTree(context.Background(), clearDir, "/", &ex, nil, statePath, "")
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -241,7 +244,6 @@ func TestSyncRespectsExcludes(t *testing.T) {
 		t.Fatal("excluded .pyc should not exist")
 	}
 }
-
 
 func TestSyncHonorsPreferencesConcurrencyAndBandwidth(t *testing.T) {
 	pass, ok := fixturePassword(t)
@@ -279,7 +281,7 @@ func TestSyncHonorsPreferencesConcurrencyAndBandwidth(t *testing.T) {
 		t.Fatal("expected bandwidth limiter when limit enabled")
 	}
 	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
-	n, err := s.SyncCleartextTree(clearDir, "/prefs-sync", nil, &prefs, statePath, "")
+	n, err := s.SyncCleartextTree(context.Background(), clearDir, "/prefs-sync", nil, &prefs, statePath, "")
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -287,7 +289,6 @@ func TestSyncHonorsPreferencesConcurrencyAndBandwidth(t *testing.T) {
 		t.Fatalf("synced %d", n)
 	}
 }
-
 
 func TestSyncSkipsUnchangedFingerprint(t *testing.T) {
 	pass := "fp-skip-pass"
@@ -305,7 +306,7 @@ func TestSyncSkipsUnchangedFingerprint(t *testing.T) {
 	}
 	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
 
-	n1, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath, "")
+	n1, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
 	if err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
@@ -319,7 +320,7 @@ func TestSyncSkipsUnchangedFingerprint(t *testing.T) {
 		t.Fatalf("missing fingerprint for %s in %#v", key, st.Files)
 	}
 
-	n2, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath, "")
+	n2, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
 	if err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
@@ -344,7 +345,7 @@ func TestSyncRewritesWhenSizeOrMtimeChanges(t *testing.T) {
 	}
 	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
 
-	if n, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
+	if n, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
 		t.Fatalf("first: n=%d err=%v", n, err)
 	}
 
@@ -352,7 +353,7 @@ func TestSyncRewritesWhenSizeOrMtimeChanges(t *testing.T) {
 	if err := os.WriteFile(note, []byte("v2-longer\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
+	if n, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
 		t.Fatalf("size change: n=%d err=%v", n, err)
 	}
 	r, err := s.Open("/note.txt")
@@ -374,7 +375,7 @@ func TestSyncRewritesWhenSizeOrMtimeChanges(t *testing.T) {
 	if err := os.Chtimes(note, newMtime, newMtime); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
+	if n, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
 		t.Fatalf("mtime change: n=%d err=%v", n, err)
 	}
 }
@@ -408,7 +409,7 @@ func TestSyncPutFailureDoesNotUpdateFingerprint(t *testing.T) {
 	key := config.BackupSyncStateKey(folder, "note.txt")
 
 	store.failPut = true
-	n, err := s2.SyncCleartextTree(clearDir, "/", nil, nil, statePath, "")
+	n, err := s2.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
 	if err == nil {
 		t.Fatal("expected put failure")
 	}
@@ -421,7 +422,7 @@ func TestSyncPutFailureDoesNotUpdateFingerprint(t *testing.T) {
 	}
 
 	store.failPut = false
-	if n, err := s2.SyncCleartextTree(clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
+	if n, err := s2.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
 		t.Fatalf("retry: n=%d err=%v", n, err)
 	}
 	st = config.LoadBackupSyncState(statePath)
@@ -456,7 +457,7 @@ func TestSyncMultiSourceVaultFolderRouting(t *testing.T) {
 	}
 	total := 0
 	for _, job := range jobs {
-		n, err := s.SyncCleartextTree(job.SourcePath, job.DestPrefix, nil, nil, statePath, job.VaultFolderName)
+		n, err := s.SyncCleartextTree(context.Background(), job.SourcePath, job.DestPrefix, nil, nil, statePath, job.VaultFolderName)
 		if err != nil {
 			t.Fatalf("%s: %v", job.VaultFolderName, err)
 		}
@@ -501,9 +502,35 @@ func TestSyncMultiSourceVaultFolderRouting(t *testing.T) {
 
 	// Second pass should skip unchanged for both vault folders.
 	for _, job := range jobs {
-		n, err := s.SyncCleartextTree(job.SourcePath, job.DestPrefix, nil, nil, statePath, job.VaultFolderName)
+		n, err := s.SyncCleartextTree(context.Background(), job.SourcePath, job.DestPrefix, nil, nil, statePath, job.VaultFolderName)
 		if err != nil || n != 0 {
 			t.Fatalf("skip %s: n=%d err=%v", job.VaultFolderName, n, err)
 		}
+	}
+}
+
+func TestSyncCleartextTreeCancelledContext(t *testing.T) {
+	root := t.TempDir()
+	pass := "cancel-sync-pass"
+	s, err := CreateFormat8(root, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	clearDir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		if err := os.WriteFile(filepath.Join(clearDir, fmt.Sprintf("f%d.txt", i)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	n, err := s.SyncCleartextTree(ctx, clearDir, "/", nil, nil, statePath, "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got n=%d err=%v", n, err)
 	}
 }
