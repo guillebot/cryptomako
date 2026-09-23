@@ -37,7 +37,7 @@ func TestSyncRoundTrip(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sub, "note.txt"), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	n, err := s.SyncCleartextTree(clearDir, "/", nil)
+	n, err := s.SyncCleartextTree(clearDir, "/", nil, nil)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -218,7 +218,7 @@ func TestSyncRespectsExcludes(t *testing.T) {
 	}
 
 	ex := config.DefaultBackupSyncExcludes()
-	n, err := s.SyncCleartextTree(clearDir, "/", &ex)
+	n, err := s.SyncCleartextTree(clearDir, "/", &ex, nil)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -236,5 +236,50 @@ func TestSyncRespectsExcludes(t *testing.T) {
 	}
 	if _, err := s.Open("/x.pyc"); err == nil {
 		t.Fatal("excluded .pyc should not exist")
+	}
+}
+
+
+func TestSyncHonorsPreferencesConcurrencyAndBandwidth(t *testing.T) {
+	pass, ok := fixturePassword(t)
+	if !ok {
+		t.Skip("fixtures/PASSWORD missing")
+	}
+	srcVault := filepath.Join(fixturesDir(t), "vault")
+	dstVault := t.TempDir()
+	if err := copyTree(srcVault, dstVault); err != nil {
+		t.Fatal(err)
+	}
+	s, err := Unlock(config.Config{LocalRoot: dstVault, Passphrase: pass})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	clearDir := t.TempDir()
+	for i := 0; i < 5; i++ {
+		name := filepath.Join(clearDir, "f"+string(rune('a'+i))+".txt")
+		if err := os.WriteFile(name, []byte("prefs-sync\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prefs := config.DefaultAppPreferences()
+	prefs.SyncSmallPutConcurrency = 2
+	prefs.SyncMediumPutConcurrency = 1
+	prefs.SyncLargePutConcurrency = 1
+	prefs.LimitSyncUploadBandwidth = true
+	prefs.SyncUploadCapMbps = 100 // high enough not to dominate test time
+	if prefs.ClampedSmallPutConcurrency() != 2 {
+		t.Fatalf("clamp small = %d", prefs.ClampedSmallPutConcurrency())
+	}
+	if config.UploadBandwidthLimiterFromPreferences(prefs) == nil {
+		t.Fatal("expected bandwidth limiter when limit enabled")
+	}
+	n, err := s.SyncCleartextTree(clearDir, "/prefs-sync", nil, &prefs)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if n != 5 {
+		t.Fatalf("synced %d", n)
 	}
 }

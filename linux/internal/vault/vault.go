@@ -76,6 +76,9 @@ func Unlock(cfg config.Config) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	// AppPreferences proxyMode → HTTP(S) transport (system/direct/custom).
+	prefs := config.LoadAppPreferences("")
+	client.SetHTTPClient(config.NewHTTPClient(prefs))
 	return unlockWithStore(cfg, newS3StoreFrom(client, cfg.Prefix))
 }
 

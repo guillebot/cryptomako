@@ -1,12 +1,14 @@
 package vault
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/guillebot/cryptomako/linux/internal/config"
@@ -123,20 +125,41 @@ func (s *Session) putFileInDir(parentDirID, name string, clear []byte) error {
 	return s.store.Put(parentPrefix+encName, ct)
 }
 
+// Size tiers match macOS / Windows BackupSyncEngine (cleartext bytes).
+const (
+	MediumFileBytes = 256 * 1024
+	LargeFileBytes  = 32 * 1024 * 1024
+)
+
+type pendingUpload struct {
+	absPath   string
+	clearPath string
+	size      int64
+}
+
 // SyncCleartextTree walks localRoot and encrypts every file into the vault
 // under destPrefix (absolute cleartext path, default "/").
 // Excludes honor macOS BackupSyncExcludes (directoryNames / fileNames / fileExtensions).
 // Pass a zero value or DefaultBackupSyncExcludes(); nil pointer uses defaults.
-func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *config.BackupSyncExcludes) (files int, err error) {
+// prefs nil → DefaultAppPreferences (size-tiered concurrency + optional bandwidth pacing).
+func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences) (files int, err error) {
 	ex := config.DefaultBackupSyncExcludes()
 	if excludes != nil {
 		ex = *excludes
 	}
+	p := config.DefaultAppPreferences()
+	if prefs != nil {
+		p = *prefs
+	}
+	p.ClampSyncWorkers()
+
 	destPrefix = normalizePath(destPrefix)
 	localRoot, err = filepath.Abs(localRoot)
 	if err != nil {
 		return 0, err
 	}
+
+	var jobs []pendingUpload
 	err = filepath.WalkDir(localRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -168,17 +191,125 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *conf
 		if d.IsDir() {
 			return s.EnsureDir(clearPath)
 		}
-		data, err := os.ReadFile(path)
+		info, err := d.Info()
 		if err != nil {
 			return err
 		}
-		if err := s.PutFile(clearPath, data); err != nil {
-			return err
-		}
-		files++
+		jobs = append(jobs, pendingUpload{absPath: path, clearPath: clearPath, size: info.Size()})
 		return nil
 	})
-	return files, err
+	if err != nil {
+		return 0, err
+	}
+	if len(jobs) == 0 {
+		return 0, nil
+	}
+
+	// Ensure destination + unique parents sequentially so parallel PutFile
+	// workers do not race createDirectory on the same cleartext folder.
+	if destPrefix != "/" {
+		if err := s.EnsureDir(destPrefix); err != nil {
+			return 0, err
+		}
+	}
+	seenParents := map[string]struct{}{}
+	for _, job := range jobs {
+		parent := path.Dir(job.clearPath)
+		if parent == "/" || parent == "." || parent == "" {
+			continue
+		}
+		if _, ok := seenParents[parent]; ok {
+			continue
+		}
+		seenParents[parent] = struct{}{}
+		if err := s.EnsureDir(parent); err != nil {
+			return 0, err
+		}
+	}
+
+	limiter := config.UploadBandwidthLimiterFromPreferences(p)
+	smallCh := make(chan pendingUpload, len(jobs))
+	mediumCh := make(chan pendingUpload, len(jobs))
+	largeCh := make(chan pendingUpload, len(jobs))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var (
+		mu       sync.Mutex
+		uploaded int
+		firstErr error
+	)
+	setErr := func(e error) {
+		if e == nil {
+			return
+		}
+		mu.Lock()
+		if firstErr == nil {
+			firstErr = e
+			cancel()
+		}
+		mu.Unlock()
+	}
+
+	worker := func(ch <-chan pendingUpload) {
+		for job := range ch {
+			if ctx.Err() != nil {
+				continue
+			}
+			if limiter != nil {
+				limiter.Acquire(job.size)
+			}
+			data, err := os.ReadFile(job.absPath)
+			if err != nil {
+				setErr(err)
+				continue
+			}
+			if err := s.PutFile(job.clearPath, data); err != nil {
+				setErr(err)
+				continue
+			}
+			mu.Lock()
+			uploaded++
+			mu.Unlock()
+		}
+	}
+
+	var wg sync.WaitGroup
+	start := func(n int, ch <-chan pendingUpload) {
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				worker(ch)
+			}()
+		}
+	}
+	start(p.ClampedSmallPutConcurrency(), smallCh)
+	start(p.ClampedMediumPutConcurrency(), mediumCh)
+	start(p.ClampedLargePutConcurrency(), largeCh)
+
+	for _, job := range jobs {
+		if ctx.Err() != nil {
+			break
+		}
+		switch {
+		case job.size >= LargeFileBytes:
+			largeCh <- job
+		case job.size >= MediumFileBytes:
+			mediumCh <- job
+		default:
+			smallCh <- job
+		}
+	}
+	close(smallCh)
+	close(mediumCh)
+	close(largeCh)
+	wg.Wait()
+
+	mu.Lock()
+	defer mu.Unlock()
+	return uploaded, firstErr
 }
 
 // DeleteFile removes a cleartext file's ciphertext from the store. Fail-closed.

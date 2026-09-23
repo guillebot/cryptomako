@@ -12,6 +12,7 @@ var (
 	flagSyncSource      string
 	flagSyncDest        string
 	flagSyncExcludes    string
+	flagSyncPreferences string
 )
 
 var syncCmd = &cobra.Command{
@@ -23,7 +24,11 @@ on non-2xx. Existing cleartext names are overwritten.
 
 Path excludes honor macOS BackupSyncExcludes keys (directoryNames / fileNames /
 fileExtensions) from ~/.config/cryptomako/backup-sync-excludes.json (or
---excludes). Defaults match the macOS app when the file is absent.`,
+--excludes). Defaults match the macOS app when the file is absent.
+
+Sync concurrency and optional upload pacing come from app-preferences.json
+(same keys as macOS AppPreferences). Proxy password is env-only
+CRYPTOMAKO_PROXY_PASSWORD.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if flagSyncSource == "" {
 			return fmt.Errorf("missing --source")
@@ -46,13 +51,14 @@ fileExtensions) from ~/.config/cryptomako/backup-sync-excludes.json (or
 		if err != nil {
 			return err
 		}
+		prefs := config.LoadAppPreferences(flagSyncPreferences)
 		session, err := vault.Unlock(cfg)
 		if err != nil {
 			return err
 		}
 		defer session.Close()
 
-		n, err := session.SyncCleartextTree(flagSyncSource, flagSyncDest, &excludes)
+		n, err := session.SyncCleartextTree(flagSyncSource, flagSyncDest, &excludes, &prefs)
 		if err != nil {
 			return err
 		}
@@ -65,5 +71,6 @@ func init() {
 	syncCmd.Flags().StringVar(&flagSyncSource, "source", "", "Local cleartext directory to encrypt")
 	syncCmd.Flags().StringVar(&flagSyncDest, "dest", "/", "Cleartext destination path inside the vault")
 	syncCmd.Flags().StringVar(&flagSyncExcludes, "excludes", "", "backup-sync-excludes.json path (default XDG)")
+	syncCmd.Flags().StringVar(&flagSyncPreferences, "preferences", "", "app-preferences.json path (default XDG)")
 	Root.AddCommand(syncCmd)
 }

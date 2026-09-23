@@ -106,13 +106,43 @@ Same keys as macOS `BackupSyncExcludes` / `backup-sync-excludes.json`:
 Default path: `~/.config/cryptomako/backup-sync-excludes.json`. Missing file → macOS defaults.
 Override with `cryptomako sync --excludes /path/to/backup-sync-excludes.json`.
 
+### App preferences (proxy + Sync workers)
+
+Same JSON keys as macOS `Sources/CryptoMakoShared/AppPreferences.swift` (app-group
+`app-preferences.json`). Linux XDG path:
+
+`~/.config/cryptomako/app-preferences.json` (or `$XDG_CONFIG_HOME/cryptomako/app-preferences.json`).
+
+| Key | Type | Default | Notes |
+|-----|------|---------|-------|
+| `proxyMode` | string | `system` | `system` \| `direct` \| `custom` |
+| `proxyHost` | string | `""` | custom proxy hostname |
+| `proxyPort` | int | `8080` | custom proxy port |
+| `proxyUsername` | string | `""` | custom proxy user (non-secret) |
+| `limitSyncUploadBandwidth` | bool | `false` | pace Backup Sync puts |
+| `syncUploadCapMbps` | float | `50` | decimal Mbps when limit on (clamped ≥ 1 on save) |
+| `syncSmallPutConcurrency` | int | `96` | clamp 1–256 |
+| `syncMediumPutConcurrency` | int | `32` | clamp 1–128 |
+| `syncLargePutConcurrency` | int | `4` | clamp 1–16 |
+
+**Proxy password:** env only `CRYPTOMAKO_PROXY_PASSWORD` (macOS uses Keychain). Never put secrets in JSON.
+
+- `proxyMode=system` → honor `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY`
+- `proxyMode=direct` → bypass proxies
+- `proxyMode=custom` → HTTP proxy at `proxyHost:proxyPort` (applied to the S3 HTTPS client)
+
+Backup Sync size tiers (cleartext bytes, same as macOS/Windows): small < 256 KiB, medium < 32 MiB, large ≥ 32 MiB.
+Override prefs path: `cryptomako sync --preferences /path/to/app-preferences.json`.
+
+GUI for editing these preferences is **N/A** on Linux CLI (edit JSON or copy from macOS/Windows).
+
 ## Packages
 
 | Package | Role |
 |---------|------|
 | `internal/s3` | SigV4 HTTPS client: GetObject, PutObject, DeleteObject, ListObjectsV2 |
 | `internal/vault` | Format-8 **SIV_GCM** unlock / ls / cat (local FS + S3 SigV4) |
-| `internal/config` | XDG config + env secrets |
+| `internal/config` | XDG config, AppPreferences, Backup Sync excludes, env secrets |
 
 ## Crypto status
 
@@ -135,9 +165,12 @@ JSON (`~/.config/cryptomako/config.json`) — **no secrets**:
 
 Backup Sync excludes file (separate): `directoryNames`, `fileNames`, `fileExtensions`.
 
-Env secrets: `CRYPTOMAKO_PASSWORD`, `CRYPTOMAKO_SECRET_KEY`.
+App preferences file (separate): `proxyMode`, `proxyHost`, `proxyPort`, `proxyUsername`,
+`limitSyncUploadBandwidth`, `syncUploadCapMbps`, sync*PutConcurrency (see table above).
 
-Proposed to Platforms before inventing new keys. Current set matches macOS `ConnectionConfigLoader` / `BackupSyncExcludes` / docs/10-m0-fixture.md.
+Env secrets: `CRYPTOMAKO_PASSWORD`, `CRYPTOMAKO_SECRET_KEY`, `CRYPTOMAKO_PROXY_PASSWORD` (custom proxy only).
+
+Proposed to Platforms before inventing new keys. Current set matches macOS `ConnectionConfigLoader` / `BackupSyncExcludes` / `AppPreferences` / docs/10-m0-fixture.md.
 
 ## Docker
 
