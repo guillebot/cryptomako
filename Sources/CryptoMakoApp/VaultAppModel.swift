@@ -613,6 +613,12 @@ final class VaultAppModel: ObservableObject {
             detail = "Add at least one folder."
             return
         }
+        do {
+            try BackupPathOverlap.throwIfOverlapping(backupSources)
+        } catch {
+            detail = error.localizedDescription
+            return
+        }
         guard RcloneDriver.isAvailable else {
             detail = "rclone not found — brew install rclone"
             return
@@ -685,12 +691,25 @@ final class VaultAppModel: ObservableObject {
         panel.message = "Choose folders to sync into the vault (under Backups/)"
         panel.prompt = "Add"
         guard panel.runModal() == .OK else { return }
+        var softWarn: String?
         for url in panel.urls {
             let path = url.path
-            if backupSources.contains(where: { $0.path == path }) { continue }
-            backupSources.append(BackupSource(path: path))
+            // Deduplicate by resolved path when possible (parity with Windows Resolve).
+            let resolved: String
+            do { resolved = try BackupPathOverlap.resolve(path) }
+            catch { resolved = path }
+            if backupSources.contains(where: {
+                (try? BackupPathOverlap.resolve($0.path)) == resolved || $0.path == path
+            }) { continue }
+            if softWarn == nil {
+                softWarn = BackupPathOverlap.softWarnOnAdd(existing: backupSources, candidatePath: path)
+            }
+            backupSources.append(BackupSource(path: (try? BackupPathOverlap.resolve(path)) ?? path))
         }
         persistBackupSources()
+        if let softWarn {
+            detail = softWarn
+        }
     }
 
     func removeBackupSource(_ id: String) {
@@ -718,6 +737,14 @@ final class VaultAppModel: ObservableObject {
             }
             sources = backupSources
             detail = "Syncing all backup folders into vault (Backups/…) via direct remote puts…"
+        }
+        // Soft-warn was at add time; Sync hard-fails on nested overlap (Windows parity).
+        // Single-source sync is a one-element set (no overlap possible).
+        do {
+            try BackupPathOverlap.throwIfOverlapping(sources)
+        } catch {
+            detail = error.localizedDescription
+            return
         }
         backupSync.sync(sources: sources, session: session)
         watchBackupSyncForFinderRefresh()
