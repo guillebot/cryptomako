@@ -11,48 +11,84 @@ Lives under `windows/` in the main repo (not a sibling). Shares `fixtures/` with
 | **Explorer (CfAPI / Cloud Files)** | Browse + small transfers. Local materialization is **never** “backed up.” |
 | **Backup Sync** | Large trees: walk → encrypt → remote put. Fail-closed. |
 
-This folder’s first milestone is the **CLI** (`unlock` / `ls` / `cat`) against `../fixtures/vault`.
-
 ## Requirements
 
 - .NET 8 SDK
 - Vault password in `CRYPTOMAKO_PASSWORD` (never argv; never JSON)
-- S3 secret (later) in `CRYPTOMAKO_SECRET_KEY` or Windows Credential Manager
+- S3 secret in `CRYPTOMAKO_SECRET_KEY` (Credential Manager later)
+- S3 endpoints **https only** (http rejected)
 
 ## Build
 
-```powershell
-cd windows
-dotnet build
-dotnet run --project src/CryptoMako.Cli -- unlock --local ..\fixtures\vault
-```
-
-On macOS (dev host):
-
 ```bash
 cd windows
+export PATH="$HOME/.dotnet:$PATH"   # macOS/Linux host
 dotnet build
+dotnet test
+```
+
+## Local golden vault
+
+```bash
 export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < ../fixtures/PASSWORD)"
 dotnet run --project src/CryptoMako.Cli -- unlock --local ../fixtures/vault
 dotnet run --project src/CryptoMako.Cli -- ls --local ../fixtures/vault --path / -R
+dotnet run --project src/CryptoMako.Cli -- cat --local ../fixtures/vault /hello.txt
+dotnet run --project src/CryptoMako.Cli -- get --local ../fixtures/vault /hello.txt -o /tmp/hello.txt
+dotnet run --project src/CryptoMako.Cli -- stat --local ../fixtures/vault /hello.txt
 ```
 
-## Acceptance (W0 / W1)
+## S3 / MinIO (no live bucket required for unit tests)
 
-- `dotnet test` green (golden unlock + recursive ls + cat)
-- `ls --local ../fixtures/vault --path / -R` matches `../fixtures/expected-ls.txt`
-- `cat --local ../fixtures/vault /hello.txt` matches fixture bytes (`hello cryptomako\n`)
-- Wrong password → exit 1, no key material in the message
-- Crypto: Cryptomator format 8 SIV_GCM (scrypt + AES-KW + AES-SIV names + SIV_GCM content), mirrored from cryptolib-swift
+```bash
+export CRYPTOMAKO_PASSWORD='…'
+export CRYPTOMAKO_SECRET_KEY='…'
+dotnet run --project src/CryptoMako.Cli -- unlock \
+  --endpoint https://minio.example:9000 \
+  --region us-east-1 \
+  --bucket vaults \
+  --prefix team/demo/ \
+  --access-key minio \
+  # path-style by default; add --virtual-hosted for AWS-style URLs
 
-## Config shape (draft — post to Platforms before inventing keys)
+dotnet run --project src/CryptoMako.Cli -- ls \
+  --endpoint https://minio.example:9000 --bucket vaults --prefix team/demo/ \
+  --access-key minio --path / -R
+```
 
-Non-secret JSON (e.g. `%AppData%/CryptoMako/settings.json`):
+Or put non-secret fields in `%AppData%/CryptoMako/settings.json` / `~/.config/cryptomako/poc.json`:
 
-- `endpoint`, `region`, `bucket`, `prefix` (vault folder containing `vault.cryptomator`)
-- `accessKey`
+```json
+{
+  "storageMode": "s3",
+  "endpoint": "https://minio.example:9000",
+  "region": "us-east-1",
+  "bucket": "vaults",
+  "prefix": "team/demo/",
+  "accessKey": "minio",
+  "localVaultPath": "",
+  "autoReconnect": false,
+  "pathStyle": true
+}
+```
 
-Secrets: OS store / env only.
+Then: `cryptomako unlock --config /path/to/settings.json`
+
+## Settings keys (Platforms-locked — do not invent)
+
+**VaultSettings:** `storageMode`, `endpoint`, `region`, `bucket`, `prefix`, `accessKey`, `localVaultPath`, `autoReconnect`, `pathStyle`
+
+**AppPreferences:** `proxyMode`, `proxyHost`, `proxyPort`, `proxyUsername`, `limitSyncUploadBandwidth`, `syncUploadCapMbps`, `syncSmallPutConcurrency`, `syncMediumPutConcurrency`, `syncLargePutConcurrency`
+
+**Excludes:** `directoryNames`, `fileNames`, `fileExtensions`
+
+Secrets: env / Credential Manager only.
+
+## Acceptance
+
+- `dotnet test` green (golden unlock/ls/cat + SigV4 + settings)
+- Local CLI matches `fixtures/expected-ls.txt` and hello.txt
+- S3 client: get/list/put/delete over HTTPS with SigV4; unlock/ls/cat/get/stat wired for S3
 
 ## License
 

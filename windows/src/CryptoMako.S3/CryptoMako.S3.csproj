@@ -3,4 +3,7 @@
     <RootNamespace>CryptoMako.S3</RootNamespace>
     <AssemblyName>CryptoMako.S3</AssemblyName>
   </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CryptoMako.Vault\CryptoMako.Vault.csproj" />
+  </ItemGroup>
 </Project>
