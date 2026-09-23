@@ -150,7 +150,9 @@ type pendingUpload struct {
 // Unchanged files are skipped; fingerprints update only after a successful put
 // (fail-closed). statePath empty → ~/.config/cryptomako/backup-sync-state.json.
 // Index save is best-effort and never fails the sync.
-func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences, statePath string) (files int, err error) {
+// vaultFolderName empty → basename of localRoot (macOS BackupSource default);
+// multi-source sync passes BackupSource.vaultFolderName explicitly.
+func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences, statePath, vaultFolderName string) (files int, err error) {
 	ex := config.DefaultBackupSyncExcludes()
 	if excludes != nil {
 		ex = *excludes
@@ -166,7 +168,10 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *conf
 	if err != nil {
 		return 0, err
 	}
-	vaultFolder := config.VaultFolderNameForSource(localRoot)
+	vaultFolder := strings.TrimSpace(vaultFolderName)
+	if vaultFolder == "" {
+		vaultFolder = config.VaultFolderNameForSource(localRoot)
+	}
 	state := config.LoadBackupSyncState(statePath)
 	var stateMu sync.Mutex
 	defer func() {

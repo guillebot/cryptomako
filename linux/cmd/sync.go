@@ -14,14 +14,21 @@ var (
 	flagSyncExcludes    string
 	flagSyncPreferences string
 	flagSyncState       string
+	flagSyncSources     string
 )
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Encrypt a local cleartext tree into the vault (fail-closed puts)",
-	Long: `Walk --source and encrypt each file into the unlocked vault under --dest.
-Directory markers and ciphertext are written via store.Put; S3 puts fail closed
-on non-2xx. Existing cleartext names are overwritten.
+	Short: "Encrypt local cleartext tree(s) into the vault (fail-closed puts)",
+	Long: `Walk cleartext source(s) and encrypt each file into the unlocked vault.
+
+With --source: sync that directory to --dest (default "/"). Fingerprint keys use
+the source basename as vaultFolder (macOS BackupSource default).
+
+With no --source: if ~/.config/cryptomako/backup-sources.json has entries, sync
+each source to cleartext /Backups/{vaultFolderName}/ (macOS Backup Sync
+convention), using that vaultFolderName for fingerprints. If the store is empty,
+errors with help to add sources or pass --source/--dest.
 
 Path excludes honor macOS BackupSyncExcludes keys (directoryNames / fileNames /
 fileExtensions) from ~/.config/cryptomako/backup-sync-excludes.json (or
@@ -35,8 +42,9 @@ Per-file fingerprints (size + contentModification) live in
 backup-sync-state.json; unchanged files are skipped. Fingerprints update
 only after a successful put (fail-closed).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if flagSyncSource == "" {
-			return fmt.Errorf("missing --source")
+		targets, err := config.ResolveSyncTargets(flagSyncSource, flagSyncDest, flagSyncSources)
+		if err != nil {
+			return err
 		}
 		cfg, err := config.Resolve(config.Request{
 			LocalPath:    flagLocal,
@@ -63,20 +71,28 @@ only after a successful put (fail-closed).`,
 		}
 		defer session.Close()
 
-		n, err := session.SyncCleartextTree(flagSyncSource, flagSyncDest, &excludes, &prefs, flagSyncState)
-		if err != nil {
-			return err
+		total := 0
+		for _, t := range targets {
+			n, err := session.SyncCleartextTree(t.SourcePath, t.DestPrefix, &excludes, &prefs, flagSyncState, t.VaultFolderName)
+			if err != nil {
+				return fmt.Errorf("sync %s → %s: %w", t.SourcePath, t.DestPrefix, err)
+			}
+			fmt.Printf("synced %d file(s) from %s into %s\n", n, t.SourcePath, t.DestPrefix)
+			total += n
 		}
-		fmt.Printf("synced %d file(s) into %s\n", n, flagSyncDest)
+		if len(targets) > 1 {
+			fmt.Printf("synced %d file(s) across %d source(s)\n", total, len(targets))
+		}
 		return nil
 	},
 }
 
 func init() {
-	syncCmd.Flags().StringVar(&flagSyncSource, "source", "", "Local cleartext directory to encrypt")
-	syncCmd.Flags().StringVar(&flagSyncDest, "dest", "/", "Cleartext destination path inside the vault")
+	syncCmd.Flags().StringVar(&flagSyncSource, "source", "", "Local cleartext directory to encrypt (omit to use backup-sources.json)")
+	syncCmd.Flags().StringVar(&flagSyncDest, "dest", "/", "Cleartext destination path inside the vault (with --source only)")
 	syncCmd.Flags().StringVar(&flagSyncExcludes, "excludes", "", "backup-sync-excludes.json path (default XDG)")
 	syncCmd.Flags().StringVar(&flagSyncPreferences, "preferences", "", "app-preferences.json path (default XDG)")
 	syncCmd.Flags().StringVar(&flagSyncState, "sync-state", "", "backup-sync-state.json path (default XDG)")
+	syncCmd.Flags().StringVar(&flagSyncSources, "sources", "", "backup-sources.json path (default XDG)")
 	Root.AddCommand(syncCmd)
 }

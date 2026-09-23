@@ -29,7 +29,19 @@ FUSE cleartext mount (default read-only;
 for writable fail-closed puts/deletes).
 .TP
 .B sync
-Encrypt a local tree into the vault (honors Backup Sync excludes).
+Encrypt local tree(s) into the vault. With no
+.B --source
+uses
+.I backup-sources.json
+(each →
+.BR /Backups/vaultFolderName/ ).
+Honors Backup Sync excludes/state.
+.TP
+.B sources
+Manage
+.I backup-sources.json
+(
+.BR list / add / remove ).
 .TP
 .B fixture
 Create a minimal format-8 vault for smoke tests.
@@ -70,6 +82,13 @@ Non-secret connection settings (
 .BR prefix ,
 .BR accessKey ,
 .BR pathStyle ).
+.TP
+.I ~/.config/cryptomako/backup-sources.json
+Backup sources (
+.BR id ,
+.BR path ,
+.BR vaultFolderName ,
+.BR addedAt ), macOS-compatible.
 .TP
 .I ~/.config/cryptomako/backup-sync-excludes.json
 Backup Sync excludes (
