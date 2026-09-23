@@ -49,7 +49,9 @@ enum RcloneDriver {
 
     static var isAvailable: Bool { executableURL != nil }
 
-    static var versionLine: String {
+    /// Cached — `statusSummary` / SwiftUI can call this on every redraw; spawning
+    /// `rclone version` synchronously was freezing the main thread (seen in samples).
+    private static let cachedVersionLine: String = {
         guard let url = executableURL else { return "rclone missing" }
         let proc = Process()
         proc.executableURL = url
@@ -66,7 +68,9 @@ enum RcloneDriver {
         } catch {
             return "rclone error: \(error.localizedDescription)"
         }
-    }
+    }()
+
+    static var versionLine: String { cachedVersionLine }
 
     /// Copy local folder into the cleartext FUSE mount. Blocks until rclone exits.
     @discardableResult
