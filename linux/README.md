@@ -166,6 +166,9 @@ Same schema as macOS `Sources/CryptoMakoShared/BackupSources.swift` (app-group
 
 `cryptomako sync` **without** `--source` syncs each entry to cleartext `/Backups/{vaultFolderName}/` and keys fingerprints with that `vaultFolderName`. Empty store → helpful error (use `--source`/`--dest` or `sources add`).
 
+**Nested / overlapping sources** (Platforms consensus, Windows [#12](https://github.com/guillebot/cryptomako/pull/12) parity): `sources add` **soft-warns** when a resolved path nests under (or over) another; `sync` **hard-fails** before unlock/puts if any overlap remains. Comparison uses absolute + symlink-resolved paths (case-sensitive on Linux). No new shared `settings.json` / preferences keys.
+
+
 Thin CLI (preferred over hand-editing):
 
 ```bash
