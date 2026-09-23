@@ -65,11 +65,34 @@ public sealed partial class MainWindow : Window
         {
             ExplorerBadgeText.Text = "Explorer: connected";
             ExplorerBadge.Background = new SolidColorBrush(Color.FromArgb(255, 20, 140, 80));
+            ExplorerPathLink.Content = "Open " + AppPaths.SyncRootPath;
         }
         else
         {
             ExplorerBadgeText.Text = "Explorer: off";
             ExplorerBadge.Background = (Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"];
+            ExplorerPathLink.Content = "Open sync root";
+        }
+
+        RefreshBackupProgressUi();
+    }
+
+    private void RefreshBackupProgressUi()
+    {
+        var visible = _vm.IsBackupSyncRunning
+                      || !string.IsNullOrEmpty(_vm.BackupPhase)
+                      || _vm.BackupProgressPercent > 0;
+        BackupProgressPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
+        BackupProgressBar.Value = _vm.BackupProgressPercent;
+        BackupProgressLabelText.Text = string.IsNullOrEmpty(_vm.BackupProgressLabel)
+            ? (_vm.IsBackupSyncRunning ? "Syncing…" : "")
+            : _vm.BackupProgressLabel;
+        BackupSpeedText.Text = string.IsNullOrEmpty(_vm.BackupSpeedLabel) ? "" : ("Speed: " + _vm.BackupSpeedLabel);
+        BackupEtaText.Text = _vm.BackupEtaLabel ?? "";
+        BackupCurrentPathText.Text = _vm.BackupCurrentPath ?? "";
+        if (_vm.BackupPhase is "done" or "cancelled" or "error")
+        {
+            // Keep panel visible with final status; hide after next idle refresh if cleared.
         }
     }
 
@@ -211,12 +234,15 @@ public sealed partial class MainWindow : Window
         StorageModeText.Text = _vm.Settings.StorageMode;
     }
 
-    private void OnSaveSettings(object sender, RoutedEventArgs e)
+    private async void OnSaveSettings(object sender, RoutedEventArgs e)
     {
         try
         {
             PushToVm();
             _vm.SaveSettings();
+            // Endpoint/settings change: refresh lamps immediately (monitor continues ~20s).
+            await _vm.ProbeAsync();
+            RefreshStatusStrip();
         }
         catch (Exception ex) { VmLog(ex); }
     }
@@ -327,6 +353,7 @@ public sealed partial class MainWindow : Window
         {
             if (Application.Current is App app)
                 await app.ConnectExplorerManualAsync();
+            RefreshStatusStrip();
         }
         catch (Exception ex) { VmLog(ex); }
     }
@@ -337,10 +364,46 @@ public sealed partial class MainWindow : Window
         {
             if (Application.Current is App app)
                 app.DisconnectExplorerManual();
+            RefreshStatusStrip();
         }
         catch (Exception ex) { VmLog(ex); }
     }
 
-    private static void VmLog(Exception ex) => System.Diagnostics.Debug.WriteLine(ex);
+    private async void OnExplorerBadgeClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (Application.Current is not App app) return;
+            if (!_vm.IsExplorerViewerConnected)
+            {
+                if (!_vm.IsUnlocked)
+                    throw new InvalidOperationException("unlock vault first");
+                await app.ConnectExplorerManualAsync();
+            }
+            else
+            {
+                app.OpenExplorerSyncRoot();
+            }
+            RefreshStatusStrip();
+        }
+        catch (Exception ex) { VmLog(ex); }
+    }
+
+    private void OnOpenExplorerPath(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (Application.Current is App app)
+                app.OpenExplorerSyncRoot();
+        }
+        catch (Exception ex) { VmLog(ex); }
+    }
+
+    private void VmLog(Exception ex)
+    {
+        System.Diagnostics.Debug.WriteLine(ex);
+        _vm.LogLine(ex.Message.Replace('\n', ' '));
+        RefreshStatusStrip();
+    }
 
 }

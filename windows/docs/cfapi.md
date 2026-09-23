@@ -119,3 +119,7 @@ Search indexer: not tuned this pass (AllowPinning + Partial hydrate is enough fo
 3. Search indexer / offline availability UX not tuned beyond AllowPinning + AutoDehydrationAllowed.
 4. WinRT `GetCurrentSyncRoots` empty on some hosts while Cf+registry path still provides Explorer awareness ? investigate WinRT Register reliability.
 5. Automatic remote-dir polling is not built-in; call `cfapi refresh-dir` (or `RefreshDirectoryAsync`) after known remote mutations to re-enable on-demand FETCH and create missing children.
+
+## Desktop soft viewer note
+
+`ExplorerViewerController` must leave `CfConnectSyncRoot` connected while the vault is unlocked and the viewer is bound. **Register without Connect** (or Disconnect without Unregister while Explorer is browsing the root) yields Explorer errors such as *The cloud operation is invalid* / empty listings. Populate-placeholder failures are soft; hard connect failures unregister to avoid orphans.

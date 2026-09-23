@@ -159,17 +159,19 @@ public partial class App : Application
         {
             await _explorer.ConnectAsync();
         }
-        catch (PlatformNotSupportedException)
+        catch (PlatformNotSupportedException ex)
         {
             // Soft viewer requires Windows Cloud Files.
+            _vm.LogLine("CfAPI not available: " + ex.Message.Replace('\n', ' '));
         }
         catch (Exception ex)
         {
             // Soft CfAPI fail must NOT clear vault-unlocked (macOS soft Finder semantics).
+            _vm.LogLine("CfAPI connect (soft): " + ex.Message.Replace('\n', ' '));
             System.Diagnostics.Debug.WriteLine(ex);
         }
         RefreshTrayLabels();
-        _mainWindow?.RefreshStatusStrip();
+        _mainWindow?.DispatcherQueue.TryEnqueue(() => _mainWindow?.RefreshStatusStrip());
     }
 
     internal async Task ConnectExplorerManualAsync()
@@ -179,14 +181,27 @@ public partial class App : Application
             throw new InvalidOperationException("unlock vault first");
         await _explorer.ConnectAsync();
         RefreshTrayLabels();
-        _mainWindow?.RefreshStatusStrip();
+        _mainWindow?.DispatcherQueue.TryEnqueue(() => _mainWindow?.RefreshStatusStrip());
     }
 
     internal void DisconnectExplorerManual()
     {
         _explorer?.Disconnect();
+        _vm?.LogLine("CfAPI Explorer disconnected");
         RefreshTrayLabels();
-        _mainWindow?.RefreshStatusStrip();
+        _mainWindow?.DispatcherQueue.TryEnqueue(() => _mainWindow?.RefreshStatusStrip());
+    }
+
+    /// <summary>Open sync-root folder in File Explorer when connected (badge / Open link).</summary>
+    internal void OpenExplorerSyncRoot()
+    {
+        if (_explorer is null || _vm is null) return;
+        if (!_vm.IsExplorerViewerConnected)
+        {
+            _vm.LogLine("Explorer viewer not connected — unlock + Connect Explorer first");
+            return;
+        }
+        _explorer.TryOpenSyncRootInExplorer();
     }
 
     internal void Quit()

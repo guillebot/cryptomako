@@ -59,6 +59,17 @@ Backup tab **Browse…** uses WinRT `FolderPicker` + `InitializeWithWindow` (Sto
 
 After successful **Unlock**, Desktop binds live `CloudFilesProvider` to `MainViewModel.ExplorerViewer` (auto + **Connect Explorer**). **Lock** cancels Backup Sync, then `DisconnectExplorerViewer()` (disconnect + clear binding). **CredMan is not wiped.** Sync-root unregister happens on process exit / explicit tear-down, not Lock.
 
+**Connect Explorer** keeps `CfConnectSyncRoot` alive even if placeholder seed fails (soft populate) — a registered-but-disconnected sync root makes Explorer show *cloud operation is invalid*. On hard connect failure the controller unregisters to avoid orphans. Success opens File Explorer at `%LOCALAPPDATA%\CryptoMako\SyncRoot`. The status-strip Explorer badge and **Open sync root** link open that folder when connected.
+
+### Auto Probe S3
+
+Background connectivity monitor (≈20s, same cadence as macOS) updates dns/tcp/https/list lamps via `LastProbe` (manual **Probe S3** unchanged). Overlapping probes are debounced; UI is not blocked.
+
+### Backup Sync progress
+
+Backup tab shows a ProgressBar plus percent / files / bytes / speed / ETA / current path while Sync runs (macOS BackupSyncEngine parity). Metrics settle on complete / cancel / error.
+
+
 ### Brand icons
 
 - Window / app: `Assets/AppIcon.ico` from `docs/assets/brand/icon-{16,32,48,256}.png`

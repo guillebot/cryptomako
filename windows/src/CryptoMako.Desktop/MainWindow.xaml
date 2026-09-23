@@ -41,10 +41,12 @@
             <Ellipse x:Name="LampList" Width="12" Height="12" Fill="Gray" />
           </StackPanel>
         </StackPanel>
-        <Border x:Name="ExplorerBadge" Grid.Column="1" CornerRadius="6" Padding="8,4"
-                Background="{ThemeResource SubtleFillColorSecondaryBrush}" VerticalAlignment="Center">
+        <Button x:Name="ExplorerBadge" Grid.Column="1" Padding="8,4" CornerRadius="6"
+                Click="OnExplorerBadgeClick" VerticalAlignment="Center"
+                Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                ToolTipService.ToolTip="Open sync root in Explorer (connects if needed)">
           <TextBlock x:Name="ExplorerBadgeText" Text="Explorer: off" FontSize="12" />
-        </Border>
+        </Button>
       </Grid>
     </Border>
 
@@ -113,6 +115,8 @@
             <StackPanel Orientation="Horizontal" Spacing="8">
               <Button Content="Connect Explorer" Click="OnConnectExplorer" />
               <Button Content="Disconnect Explorer" Click="OnDisconnectExplorer" />
+              <HyperlinkButton x:Name="ExplorerPathLink" Content="Open sync root"
+                               Click="OnOpenExplorerPath" VerticalAlignment="Center" />
               <TextBlock VerticalAlignment="Center" Opacity="0.75"
                          Text="Soft CfAPI viewer. Lock disconnects automatically (no CredMan wipe)." />
             </StackPanel>
@@ -146,6 +150,15 @@
             <Button Content="Clear sources" Click="OnClearBackupSources" />
           </StackPanel>
           <Button Content="Sync now" HorizontalAlignment="Left" Click="OnSync" Style="{StaticResource AccentButtonStyle}" />
+          <StackPanel x:Name="BackupProgressPanel" Spacing="4" Visibility="Collapsed">
+            <TextBlock x:Name="BackupProgressLabelText" FontWeight="SemiBold" />
+            <ProgressBar x:Name="BackupProgressBar" Minimum="0" Maximum="100" Height="8" />
+            <StackPanel Orientation="Horizontal" Spacing="16">
+              <TextBlock x:Name="BackupSpeedText" Opacity="0.8" />
+              <TextBlock x:Name="BackupEtaText" Opacity="0.8" />
+            </StackPanel>
+            <TextBlock x:Name="BackupCurrentPathText" Opacity="0.7" TextWrapping="Wrap" />
+          </StackPanel>
         </StackPanel>
       </PivotItem>
 
