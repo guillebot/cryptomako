@@ -1,11 +1,18 @@
 import Foundation
 
 /// S3-backed blob store used by the vault layer.
+///
+/// Product mode is **remote-only**: durable success means `putObject` / `deleteObject`
+/// completed on this store (MinIO/S3). Local `DirectoryObjectStore` is for tests and
+/// explicit Local mode only — never treat CloudStorage materialization as the vault.
 public protocol ObjectStore: Sendable {
     func getObject(key: String) async throws -> Data
     func getObject(key: String, to fileURL: URL) async throws
     func headObject(key: String) async throws -> ListedObject
     func listImmediate(prefix: String) async throws -> PrefixListing
+    func putObject(key: String, data: Data) async throws
+    func putObject(key: String, from fileURL: URL) async throws
+    func deleteObject(key: String) async throws
 }
 
 extension ObjectStore {
@@ -13,6 +20,11 @@ extension ObjectStore {
     public func headObject(key: String) async throws -> ListedObject {
         let data = try await getObject(key: key)
         return ListedObject(key: key, size: Int64(data.count), eTag: nil)
+    }
+
+    public func putObject(key: String, from fileURL: URL) async throws {
+        let data = try Data(contentsOf: fileURL)
+        try await putObject(key: key, data: data)
     }
 }
 

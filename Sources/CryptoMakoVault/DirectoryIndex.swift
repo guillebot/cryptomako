@@ -33,9 +33,16 @@ public actor DirectoryIndex {
         return nodes
     }
 
-    public func directoryInfo(dirId: String) async throws -> DirInfo? {
+    public func directoryInfo(dirId: String, hintParent: String? = nil) async throws -> DirInfo? {
         if let known = parents[dirId] {
             return known
+        }
+        if let hintParent {
+            // Seed from the parent embedded in the item id (no full vault walk).
+            _ = try await children(of: hintParent)
+            if let known = parents[dirId] {
+                return known
+            }
         }
         try await walkFromRoot(looking: dirId)
         return parents[dirId]
@@ -50,8 +57,8 @@ public actor DirectoryIndex {
         switch identifier {
         case .root:
             return nil
-        case .directory(let dirId):
-            guard let info = try await directoryInfo(dirId: dirId) else { return nil }
+        case .directory(let dirId, let hintParent):
+            guard let info = try await directoryInfo(dirId: dirId, hintParent: hintParent) else { return nil }
             return VaultNode(
                 cleartextName: info.name,
                 kind: .directory,

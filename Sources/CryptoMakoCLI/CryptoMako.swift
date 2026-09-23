@@ -115,6 +115,10 @@ func openSession(_ opts: ConnectionOptions) async throws -> OpenedVault {
     if let root = config.localRoot {
         store = DirectoryObjectStore(root: root)
     } else {
+        let netPrefs = AppPreferences.load()
+        let proxyPassword = try? CredentialStore.readSharedOrLocal(
+            account: AppIdentifiers.proxyPasswordAccount
+        )
         store = S3ObjectStore(
             settings: S3Settings(
                 endpoint: config.endpoint,
@@ -123,7 +127,8 @@ func openSession(_ opts: ConnectionOptions) async throws -> OpenedVault {
                 accessKey: config.accessKey,
                 secretKey: config.secretKey,
                 pathStyle: config.pathStyle
-            )
+            ),
+            configureSession: { netPrefs.applyProxy(to: $0, password: proxyPassword) }
         )
     }
     let session = try await VaultSession.unlock(

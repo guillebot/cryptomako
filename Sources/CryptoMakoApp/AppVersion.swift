@@ -6,7 +6,7 @@ import Foundation
 /// from Xcode (`MARKETING_VERSION` / `CURRENT_PROJECT_VERSION`). SwiftPM
 /// `swift run` has neither, so we fall back to a stable label.
 enum AppVersion {
-    /// Marketing version, e.g. `0.1.0`.
+    /// Marketing version, e.g. `1.0.0`.
     static var marketing: String {
         if let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String,
            !short.isEmpty,
@@ -14,7 +14,7 @@ enum AppVersion {
         {
             return short
         }
-        return "0.1.0-dev"
+        return "1.0.0-dev"
     }
 
     /// Build number when present (Xcode), otherwise omitted from display.
@@ -28,7 +28,7 @@ enum AppVersion {
         return build
     }
 
-    /// e.g. `0.1.0 (1)` or `0.1.0-dev (swift run)`.
+    /// e.g. `1.0.0 (100)` or `1.0.0-dev (swift run)`.
     static var displayString: String {
         if let build {
             return "\(marketing) (\(build))"

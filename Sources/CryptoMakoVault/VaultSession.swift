@@ -8,18 +8,70 @@ public final class VaultSession: @unchecked Sendable {
     public let cryptor: Cryptor
     public let rootCipherPrefix: String
 
-    private let store: any ObjectStore
+    let store: any ObjectStore
+    /// Kept so Backup Sync can mint per-task Cryptors and encrypt in parallel.
+    private let masterkey: Masterkey
+    private let scheme: CryptorScheme
+    /// Shared `cryptor` is not documented as concurrent-safe. Serialize name/dir-id
+    /// ops on it; content encrypt uses `makeWorkerCryptor()` off this lock.
+    private let cryptorLock = NSLock()
 
-    public init(location: VaultLocation, config: VaultConfig, cryptor: Cryptor, store: any ObjectStore) throws {
+    public init(
+        location: VaultLocation,
+        config: VaultConfig,
+        cryptor: Cryptor,
+        masterkey: Masterkey,
+        scheme: CryptorScheme,
+        store: any ObjectStore
+    ) throws {
         self.location = location
         self.config = config
         self.cryptor = cryptor
+        self.masterkey = masterkey
+        self.scheme = scheme
         self.store = store
         self.rootCipherPrefix = try DirLayout.ciphertextDirectoryPrefix(
             prefix: location.prefix,
             cryptor: cryptor,
             dirId: ""
         )
+    }
+
+    /// Run a section on the shared cryptor exclusively (names / dir-id hashing).
+    func withCryptor<T>(_ body: () throws -> T) rethrows -> T {
+        cryptorLock.lock()
+        defer { cryptorLock.unlock() }
+        return try body()
+    }
+
+    /// Private Cryptor for parallel content encrypt/decrypt (own Masterkey copy).
+    func makeWorkerCryptor() -> Cryptor {
+        let mk = Masterkey.createFromRaw(rawKey: masterkey.rawKey)
+        return Cryptor(masterkey: mk, scheme: scheme)
+    }
+
+    /// Concurrent GCD queue for blocking `encryptContent` so Sync tasks do not
+    /// saturate Swift's cooperative thread pool (that starvation collapsed
+    /// URLSession PUT concurrency to ~1 and left the uplink at ~1 Mbps).
+    private static let contentEncryptQueue = DispatchQueue(
+        label: "net.gschimmel.cryptomako.content-encrypt",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
+
+    /// Encrypt cleartext→ciphertext off the cooperative pool.
+    func encryptContentOffPool(from clearURL: URL, to cipherURL: URL) async throws {
+        let worker = makeWorkerCryptor()
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            Self.contentEncryptQueue.async {
+                do {
+                    try worker.encryptContent(from: clearURL, to: cipherURL)
+                    cont.resume()
+                } catch {
+                    cont.resume(throwing: error)
+                }
+            }
+        }
     }
 
     public static func unlock(
@@ -93,15 +145,89 @@ public final class VaultSession: @unchecked Sendable {
             jti: payload.jti,
             kid: try? VaultJWT.decodeUnverified(jwt).0.kid
         )
-        return try VaultSession(location: location, config: config, cryptor: cryptor, store: store)
+        return try VaultSession(location: location, config: config, cryptor: cryptor, masterkey: masterkey, scheme: scheme, store: store)
+    }
+
+
+    /// Cleartext **file** names only (no `dir.c9r` / symlink GETs).
+    /// Backup Sync bootstrap-skip used full `list`, which for every subdirectory
+    /// issued a serial GET — that prep phase never reached puts and left the
+    /// uplink near idle while Sync said "running".
+    public func listFileNames(dirId: String = "") async throws -> Set<String> {
+        let dirPrefix = try withCryptor {
+            try DirLayout.ciphertextDirectoryPrefix(
+                prefix: location.prefix,
+                cryptor: cryptor,
+                dirId: dirId
+            )
+        }
+        let listing = try await store.listImmediate(prefix: dirPrefix)
+        var names = Set<String>()
+        for object in listing.objects {
+            let name = relativeName(object.key, prefix: dirPrefix)
+            guard !name.contains("/"), !name.isEmpty, name != "dirid.c9r" else { continue }
+            guard name.hasSuffix(".c9r") else { continue }
+            let cipherBare = String(name.dropLast(4))
+            guard let clear = try? withCryptor({
+                try cryptor.decryptFileName(cipherBare, dirId: Data(dirId.utf8))
+            }) else { continue }
+            names.insert(clear)
+        }
+        // Shortened files live under `.c9s/` prefixes; one name.c9s GET each.
+        // Rare vs full-tree dir.c9r fan-out — only resolve when present.
+        for common in listing.commonPrefixes {
+            let folderName = relativeName(common, prefix: dirPrefix)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            guard folderName.hasSuffix(".c9s") else { continue }
+            let folderPrefix = common.hasSuffix("/") ? common : common + "/"
+            guard let nameBytes = try? await store.getObject(key: folderPrefix + "name.c9s") else { continue }
+            let longName = String(data: nameBytes, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let cipherBare = longName.hasSuffix(".c9r") ? String(longName.dropLast(4)) : longName
+            // Only count as a file if contents exist (dirs also use .c9s).
+            guard (try? await store.headObject(key: folderPrefix + "contents.c9r")) != nil else { continue }
+            guard let clear = try? withCryptor({
+                try cryptor.decryptFileName(cipherBare, dirId: Data(dirId.utf8))
+            }) else { continue }
+            names.insert(clear)
+        }
+        return names
+    }
+
+    /// O(1) lookup: encrypt expected cipher name and GET `dir.c9r` (no full LIST).
+    public func existingDirectoryId(parentDirId: String, cleartextName: String) async throws -> String? {
+        let name = cleartextName.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty, !name.contains("/") else { return nil }
+        let dirMarkerKey: String = try withCryptor {
+            let encName = try cryptor.encryptFileName(name, dirId: Data(parentDirId.utf8)) + ".c9r"
+            let parentPrefix = try DirLayout.ciphertextDirectoryPrefix(
+                prefix: location.prefix,
+                cryptor: cryptor,
+                dirId: parentDirId
+            )
+            let display = encName.count > config.shorteningThreshold
+                ? DirLayout.shortenedName(ciphertextFileName: encName)
+                : encName
+            return parentPrefix + display + "/dir.c9r"
+        }
+        do {
+            let data = try await store.getObject(key: dirMarkerKey)
+            let id = String(data: data, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return id.isEmpty ? nil : id
+        } catch ObjectStoreError.notFound {
+            return nil
+        }
     }
 
     public func list(dirId: String = "") async throws -> [VaultNode] {
-        let dirPrefix = try DirLayout.ciphertextDirectoryPrefix(
-            prefix: location.prefix,
-            cryptor: cryptor,
-            dirId: dirId
-        )
+        let dirPrefix = try withCryptor {
+            try DirLayout.ciphertextDirectoryPrefix(
+                prefix: location.prefix,
+                cryptor: cryptor,
+                dirId: dirId
+            )
+        }
         let listing = try await store.listImmediate(prefix: dirPrefix)
         var nodes: [VaultNode] = []
 
@@ -201,7 +327,7 @@ public final class VaultSession: @unchecked Sendable {
             .appendingPathComponent("cryptomako-\(UUID().uuidString).c9r")
         defer { try? FileManager.default.removeItem(at: cipherURL) }
         try await store.getObject(key: node.ciphertextKey, to: cipherURL)
-        try cryptor.decryptContent(from: cipherURL, to: destination)
+        try withCryptor { try cryptor.decryptContent(from: cipherURL, to: destination) }
     }
 
     public func resolve(cleartextPath: String) async throws -> VaultNode {
@@ -239,7 +365,7 @@ public final class VaultSession: @unchecked Sendable {
         let cipherBare = String(name.dropLast(4)) // strip .c9r
         let clear: String
         do {
-            clear = try cryptor.decryptFileName(cipherBare, dirId: Data(parentDirId.utf8))
+            clear = try withCryptor { try cryptor.decryptFileName(cipherBare, dirId: Data(parentDirId.utf8)) }
         } catch {
             return nil
         }
@@ -266,7 +392,7 @@ public final class VaultSession: @unchecked Sendable {
         let cipherBare = String(cipherName.dropLast(4))
         let clear: String
         do {
-            clear = try cryptor.decryptFileName(cipherBare, dirId: Data(parentDirId.utf8))
+            clear = try withCryptor { try cryptor.decryptFileName(cipherBare, dirId: Data(parentDirId.utf8)) }
         } catch {
             return nil
         }
@@ -316,7 +442,7 @@ public final class VaultSession: @unchecked Sendable {
         }
         let clear: String
         do {
-            clear = try cryptor.decryptFileName(cipherBare, dirId: Data(parentDirId.utf8))
+            clear = try withCryptor { try cryptor.decryptFileName(cipherBare, dirId: Data(parentDirId.utf8)) }
         } catch {
             return nil
         }

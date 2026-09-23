@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 public struct S3Settings: Sendable {
@@ -32,21 +33,53 @@ public struct S3Settings: Sendable {
 /// straight to a file URL.
 public final class S3ObjectStore: ObjectStore {
     private let settings: S3Settings
-    private let session: URLSession
+    /// Pool of URLSessions. CFNetwork HTTP/2 multiplexes an entire session onto
+    /// one TCP connection per host; Zscaler-style middleboxes often rate-limit
+    /// that single flow to ~1 Mbps. Separate sessions → separate TCP connections
+    /// so Backup Sync concurrency can actually fill the uplink.
+    private let sessions: [URLSession]
+    private let sessionPickLock = NSLock()
+    private var sessionPick: Int = 0
 
-    public init(settings: S3Settings, session: URLSession? = nil) {
+    /// - Parameter configureSession: Optional mutator for each pooled
+    ///   `URLSessionConfiguration` (e.g. apply app-group proxy preferences).
+    ///   Invoked before the session is created; not used when `session` is injected.
+    public init(
+        settings: S3Settings,
+        session: URLSession? = nil,
+        configureSession: ((URLSessionConfiguration) -> Void)? = nil
+    ) {
         self.settings = settings
         if let session {
-            self.session = session
+            self.sessions = [session]
         } else {
             // MinIO GETs must never hit URLCache: a stale masterkey.cryptomator
             // from before a vault rewrite makes unlock fail while boto/fresh
             // sessions succeed.
-            let config = URLSessionConfiguration.ephemeral
-            config.requestCachePolicy = .reloadIgnoringLocalCacheData
-            config.urlCache = nil
-            self.session = URLSession(configuration: config)
+            func makeConfig() -> URLSessionConfiguration {
+                let config = URLSessionConfiguration.ephemeral
+                config.requestCachePolicy = .reloadIgnoringLocalCacheData
+                config.urlCache = nil
+                // Per-session cap; pool size multiplies total connections under HTTP/2.
+                config.httpMaximumConnectionsPerHost = 8
+                config.httpShouldUsePipelining = true
+                config.timeoutIntervalForRequest = 600
+                config.timeoutIntervalForResource = 86_400
+                configureSession?(config)
+                return config
+            }
+            // 16 sessions × 8 conn/host ≈ plenty of parallel TCP flows through a
+            // middlebox that throttles per connection.
+            self.sessions = (0..<16).map { _ in URLSession(configuration: makeConfig()) }
         }
+    }
+
+    private func nextSession() -> URLSession {
+        sessionPickLock.lock()
+        defer { sessionPickLock.unlock() }
+        let s = sessions[sessionPick % sessions.count]
+        sessionPick &+= 1
+        return s
     }
 
     /// Kept for symmetry with the previous NIO-backed client; `URLSession` needs no teardown.
@@ -76,7 +109,7 @@ public final class S3ObjectStore: ObjectStore {
         let request = try signedRequest(method: "GET", key: key, query: [])
         let (tempURL, response): (URL, URLResponse)
         do {
-            (tempURL, response) = try await session.download(for: request)
+            (tempURL, response) = try await nextSession().download(for: request)
         } catch {
             throw ObjectStoreError.transport(describe(error))
         }
@@ -120,9 +153,51 @@ public final class S3ObjectStore: ObjectStore {
         return PrefixListing(objects: objects, commonPrefixes: prefixes)
     }
 
+
+    public func putObject(key: String, data: Data) async throws {
+        // Hash the body so MinIO/S3 accept the SigV4 signature. Success means
+        // the remote object exists — never treat a local CloudStorage write as done.
+        let digest = SHA256.hash(data: data)
+        let payloadHash = digest.map { String(format: "%02x", $0) }.joined()
+        var request = try signedRequest(method: "PUT", key: key, query: [], payloadHash: payloadHash)
+        request.httpBody = data
+        request.setValue(String(data.count), forHTTPHeaderField: "Content-Length")
+        let (body, response) = try await send(request, key: key)
+        try check(response, key: key, body: body)
+        // PUT HTTP 2xx is durable success. The follow-up HEAD doubled RTT per object
+        // and starved Backup Sync on latency-bound uplinks (small-file death << 1 Mbps).
+    }
+
+    /// Stream ciphertext from disk with UNSIGNED-PAYLOAD (no full-file RAM + SHA256).
+    /// Overrides the protocol default that `Data(contentsOf:)` + hashed put — that path
+    /// was a primary Backup Sync throughput / memory bottleneck.
+    public func putObject(key: String, from fileURL: URL) async throws {
+        let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        var request = try signedRequest(
+            method: "PUT",
+            key: key,
+            query: [],
+            payloadHash: "UNSIGNED-PAYLOAD"
+        )
+        request.setValue(String(size), forHTTPHeaderField: "Content-Length")
+        let response: URLResponse
+        do {
+            (_, response) = try await nextSession().upload(for: request, fromFile: fileURL)
+        } catch {
+            throw ObjectStoreError.transport(describe(error))
+        }
+        try check(response, key: key, body: nil)
+    }
+
+    public func deleteObject(key: String) async throws {
+        let request = try signedRequest(method: "DELETE", key: key, query: [])
+        let (body, response) = try await send(request, key: key)
+        try check(response, key: key, body: body)
+    }
+
     // MARK: - Request building
 
-    private func signedRequest(method: String, key: String, query: [URLQueryItem]) throws -> URLRequest {
+    private func signedRequest(method: String, key: String, query: [URLQueryItem], payloadHash: String = SigV4.emptyPayloadSHA256) throws -> URLRequest {
         guard var components = URLComponents(url: settings.endpoint, resolvingAgainstBaseURL: false) else {
             throw ObjectStoreError.transport("bad endpoint")
         }
@@ -150,7 +225,8 @@ public final class S3ObjectStore: ObjectStore {
                 accessKey: settings.accessKey,
                 secretKey: settings.secretKey,
                 region: settings.region
-            )
+            ),
+            payloadHash: payloadHash
         )
         for (name, value) in headers {
             request.setValue(value, forHTTPHeaderField: name)
@@ -160,7 +236,7 @@ public final class S3ObjectStore: ObjectStore {
 
     private func send(_ request: URLRequest, key: String) async throws -> (Data, URLResponse) {
         do {
-            return try await session.data(for: request)
+            return try await nextSession().data(for: request)
         } catch {
             throw ObjectStoreError.transport(describe(error))
         }

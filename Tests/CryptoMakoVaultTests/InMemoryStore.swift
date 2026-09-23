@@ -36,4 +36,14 @@ final class InMemoryStore: ObjectStore, @unchecked Sendable {
         }
         return PrefixListing(objects: objects, commonPrefixes: prefixes.sorted())
     }
+
+    func putObject(key: String, data: Data) async throws {
+        objects[key] = data
+    }
+
+    func deleteObject(key: String) async throws {
+        guard objects.removeValue(forKey: key) != nil else {
+            throw ObjectStoreError.notFound(key)
+        }
+    }
 }

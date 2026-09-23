@@ -1,4 +1,5 @@
 import AppKit
+import CryptoMakoShared
 import SwiftUI
 
 @main
@@ -9,7 +10,7 @@ struct CryptoMakoApp: App {
         WindowGroup("CryptoMako") {
             ContentView()
                 .environmentObject(delegate.model)
-                .frame(minWidth: 560, minHeight: 520)
+                .frame(minWidth: 560, minHeight: 360)
         }
         .windowResizability(.contentMinSize)
         .commands {
@@ -36,6 +37,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItemController: StatusItemController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if CommandLine.arguments.contains("--cleanup-mount") {
+            Task { @MainActor in
+                await model.unmountAllDomains(cleanupLeftoverFolder: true)
+                print(model.detail)
+                NSApp.terminate(nil)
+            }
+            return
+        }
+        if CommandLine.arguments.contains("--refresh-finder") {
+            // Remount after normal load/auto-unlock below (do not return early).
+            Task { @MainActor in
+                for _ in 0..<40 {
+                    if model.isUnlocked { break }
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                if !model.isUnlocked {
+                    _ = await model.unlockFromMenu()
+                }
+                await model.refreshFinderMount()
+                print(model.detail)
+            }
+        }
+        if CommandLine.arguments.contains("--start-backup-sync") {
+            Task { @MainActor in
+                for _ in 0..<40 {
+                    if model.isUnlocked { break }
+                    try? await Task.sleep(nanoseconds: 250_000_000)
+                }
+                if !model.isUnlocked {
+                    _ = await model.unlockFromMenu()
+                }
+                model.startBackupSync()
+                print("backup-sync started: \(model.detail)")
+            }
+        }
         // Accessory: Dock icon hidden; window opens from the status item.
         NSApp.setActivationPolicy(.accessory)
         if let icon = BrandIcon.image {
@@ -49,6 +85,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItemController = controller
 
         model.load()
+        model.refreshTransfers()
+        DistributedNotificationCenter.default.addObserver(
+            forName: TransferMetrics.didChangeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.model.refreshTransfers()
+            }
+        }
+        // Agents / scripts: `post net.gschimmel.cryptomako.refreshFinder` to remount.
+        DistributedNotificationCenter.default.addObserver(
+            forName: Notification.Name("net.gschimmel.cryptomako.refreshFinder"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                await self?.model.refreshFinderMount()
+            }
+        }
+        // Agents / scripts: `post net.gschimmel.cryptomako.startBackupSync` to run Sync all.
+        DistributedNotificationCenter.default.addObserver(
+            forName: Notification.Name("net.gschimmel.cryptomako.startBackupSync"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self else { return }
+                if !self.model.isUnlocked {
+                    _ = await self.model.unlockFromMenu()
+                }
+                self.model.startBackupSync()
+            }
+        }
+        // Poll so tooltip stays live even if a notification is missed across processes.
+        Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            Task { @MainActor in
+                self?.model.refreshTransfers()
+            }
+        }
         showMainWindow()
     }
 
@@ -65,13 +141,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @MainActor
     func showMainWindow() {
+        // Accessory policy can leave WindowGroup unmaterialized; briefly go regular
+        // so SwiftUI creates the scene, then order it front.
+        if NSApp.activationPolicy() == .accessory, NSApp.windows.isEmpty {
+            NSApp.setActivationPolicy(.regular)
+        }
         NSApp.activate(ignoringOtherApps: true)
         for window in NSApp.windows where window.canBecomeMain {
             window.makeKeyAndOrderFront(nil)
             return
         }
-        // SwiftUI may not have materialized the WindowGroup yet; open via dockless reopen path.
         NSApp.windows.first?.makeKeyAndOrderFront(nil)
+        // Fallback: ask AppKit to reopen (creates WindowGroup for accessory apps).
+        if NSApp.windows.isEmpty {
+            _ = NSApp.delegate?.applicationShouldHandleReopen?(NSApp, hasVisibleWindows: false)
+            for window in NSApp.windows {
+                window.makeKeyAndOrderFront(nil)
+            }
+        }
     }
 
     @MainActor

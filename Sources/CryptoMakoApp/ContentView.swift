@@ -3,25 +3,57 @@ import CryptoMakoShared
 import SwiftUI
 
 struct ContentView: View {
+    @State private var deleteRootName = "backupsfotosfamilia"
+    @State private var confirmDeleteRoot = false
     @EnvironmentObject private var model: VaultAppModel
 
     var body: some View {
+        TabView {
+            vaultTab
+                .tabItem { Label("Vault", systemImage: "lock.rectangle.stack") }
+            BackupView(syncEngine: model.backupSync)
+                .environmentObject(model)
+                .tabItem { Label("Backup", systemImage: "externaldrive.badge.timemachine") }
+            SettingsView()
+                .environmentObject(model)
+                .tabItem { Label("Settings", systemImage: "gearshape") }
+        }
+        .frame(minWidth: 620, minHeight: 360)
+        .onAppear {
+            // AppDelegate already called load() at launch. Only reconcile Finder lamp here.
+            Task { await model.refreshMountState() }
+        }
+    }
+
+    private var vaultTab: some View {
         VStack(alignment: .leading, spacing: 12) {
-            header
-            if model.isUnlocked {
-                sessionBanner
-            } else {
-                credentialsForm
+            // Keep chrome visible when the window is short; listing shrinks away first.
+            VStack(alignment: .leading, spacing: 12) {
+                header
+                if !model.connectivityBanner.isEmpty {
+                    connectivityBanner
+                }
+                transferStrip
+                if model.isUnlocked {
+                    sessionBanner
+                } else {
+                    credentialsForm
+                }
+                controls
+                Text(model.detail)
+                    .font(.caption)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            controls
-            Text(model.detail)
-                .font(.caption)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
+            .fixedSize(horizontal: false, vertical: true)
+
             listingView
+                .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
+                .layoutPriority(0)
         }
         .padding(20)
-        .onAppear { model.load() }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private var header: some View {
@@ -32,13 +64,21 @@ struct ContentView: View {
                 .frame(width: 56, height: 56)
                 .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
                 .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(alignment: .center, spacing: 10) {
                     Text("CryptoMako").font(.title)
                     Spacer()
                     Text(model.status.rawValue)
                         .font(.headline)
                         .foregroundStyle(model.status.color)
+                    if model.isUnlocked {
+                        Button("Lock") { model.lock() }
+                            .disabled(model.busy)
+                    } else {
+                        Button("Unlock") { Task { await model.unlock(listMode: .root) } }
+                            .disabled(model.busy)
+                            .keyboardShortcut(.defaultAction)
+                    }
                 }
                 if model.isUnlocked {
                     Text("Signed in as \(model.sessionUser)")
@@ -47,8 +87,103 @@ struct ContentView: View {
                     Text("A Cryptomator format-8 vault, decrypted in-process.")
                         .foregroundStyle(.secondary)
                 }
+                pipelineStatus
             }
         }
+    }
+
+    private var pipelineStatus: some View {
+        HStack(spacing: 16) {
+            stageLamp(
+                symbol: model.storageLampSymbol,
+                title: model.storageLampLabel,
+                subtitle: model.storageConnectivitySubtitle,
+                lamp: model.storageLamp
+            )
+            stageLamp(
+                symbol: "lock.open.fill",
+                title: "Vault",
+                subtitle: model.vaultLamp == .on ? "Unlocked" : (model.vaultLamp == .pending ? "Unlocking…" : "Locked"),
+                lamp: model.vaultLamp
+            )
+            stageLamp(
+                symbol: "macwindow",
+                title: "Finder",
+                subtitle: model.finderLamp == .on ? "Mounted" : "Not mounted",
+                lamp: model.finderLamp
+            )
+            Spacer(minLength: 0)
+        }
+        .padding(.top, 2)
+    }
+
+    private func stageLamp(symbol: String, title: String, subtitle: String, lamp: VaultAppModel.StageLamp) -> some View {
+        HStack(spacing: 8) {
+            ZStack {
+                Circle()
+                    .fill(lamp.color.opacity(0.18))
+                    .frame(width: 28, height: 28)
+                Image(systemName: symbol)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(lamp.color)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .help("\(title): \(subtitle)")
+    }
+
+
+    private var connectivityBanner: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "wifi.slash")
+                .foregroundStyle(.red)
+            Text(model.connectivityBanner)
+                .font(.callout)
+                .foregroundStyle(.red)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+        .padding(10)
+        .background(Color.red.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityLabel("S3 connectivity warning")
+    }
+
+    private var transferStrip: some View {
+        let x = model.transfer
+        return HStack(spacing: 14) {
+            Label(
+                x.inFlight > 0 ? "Uploading \(x.inFlight)" : "Remote idle",
+                systemImage: x.inFlight > 0 ? "arrow.up.circle.fill" : "checkmark.circle"
+            )
+            .foregroundStyle(x.inFlight > 0 ? Color.orange : Color.secondary)
+            Text("\(x.completedPuts) files · \(TransferSnapshot.formatBytes(x.bytesUploaded))")
+                .foregroundStyle(.secondary)
+            let liveRate = x.liveUploadBytesPerSecond()
+            if liveRate > 0 {
+                Text(TransferSnapshot.formatRate(liveRate))
+                    .foregroundStyle(.secondary)
+            }
+            if let name = x.currentName, x.inFlight > 0 {
+                Text(name)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
+            if x.failedPuts > 0 {
+                Text("\(x.failedPuts) failed")
+                    .foregroundStyle(.red)
+            }
+        }
+        .font(.caption)
+        .help(x.tooltip)
     }
 
     private var sessionBanner: some View {
@@ -65,8 +200,15 @@ struct ContentView: View {
                     .textSelection(.enabled)
             }
             Spacer()
-            Button("Lock") { model.lock() }
-                .disabled(model.busy)
+            Toggle(
+                "Auto reconnect",
+                isOn: Binding(
+                    get: { model.settings.autoReconnect },
+                    set: { model.settings.autoReconnect = $0; model.onAutoReconnectChanged() }
+                )
+            )
+            .toggleStyle(.checkbox)
+            .help("Reconnect when the S3 endpoint becomes reachable again.")
         }
         .padding(12)
         .background(Color(nsColor: .controlBackgroundColor))
@@ -106,6 +248,15 @@ struct ContentView: View {
             }
 
             SecureField("Vault password", text: $model.password)
+
+            Toggle(
+                "Automatic connect / reconnect",
+                isOn: Binding(
+                    get: { model.settings.autoReconnect },
+                    set: { model.settings.autoReconnect = $0; model.onAutoReconnectChanged() }
+                )
+            )
+            .help("Unlock on launch and reconnect when the S3 endpoint becomes reachable again (VPN/internet).")
         }
     }
 
@@ -113,44 +264,299 @@ struct ContentView: View {
         HStack {
             if !model.isUnlocked {
                 Button("Save config") { model.save() }
-                Button("Unlock") { Task { await model.unlock(listMode: .root) } }
-                    .disabled(model.busy)
                 Button("Unlock and list") { Task { await model.unlock(listMode: .recursive) } }
                     .disabled(model.busy)
             } else {
-                Button("List root") { Task { await model.unlock(listMode: .root) } }
+                Button("List root") { Task { await model.refreshListing(listMode: .root) } }
                     .disabled(model.busy)
-                Button("List recursive") { Task { await model.unlock(listMode: .recursive) } }
+                Button("List recursive") { Task { await model.refreshListing(listMode: .recursive) } }
                     .disabled(model.busy)
             }
             Spacer()
             if model.bundledApp {
-                Button("Mount in Finder") { Task { await model.mount() } }
-                    .disabled(model.busy || model.jti == nil || !model.isUnlocked)
-                Button("Unmount") { Task { await model.unmount() } }
-                    .disabled(model.busy || model.jti == nil)
+                Text(model.isMounted ? "Finder: Mounted" : (model.isUnlocked ? "Finder: Mounting…" : "Finder: Off"))
+                    .font(.caption)
+                    .foregroundStyle(model.isMounted ? Color.green : Color.secondary)
+                Menu("Finder") {
+                    Button("Mount") { Task { await model.mount() } }
+                        .disabled(model.busy || model.isUnmounting || !model.isUnlocked || model.isMounted)
+                    Button(model.isUnmounting ? "Unmounting…" : "Unmount") { Task { await model.unmount() } }
+                        .disabled(model.isUnmounting)
+                    Button("Refresh") { Task { await model.refreshFinderMount() } }
+                        .disabled(model.busy || model.isUnmounting || !model.isUnlocked)
+                }
+                .help("Unlocked vaults mount in Finder automatically. Use this menu to unmount, remount, or refresh.")
             }
         }
     }
 
     private var listingView: some View {
-        ScrollView {
-            LazyVStack(alignment: .leading, spacing: 2) {
-                if model.listingLines.isEmpty {
-                    Text("No listing yet.")
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Vault listing (S3 / local ciphertext)")
+                    .font(.caption.weight(.semibold))
+                Spacer()
+                if !model.listingLines.isEmpty {
+                    Text("\(model.listingEntryCount) entries")
+                        .font(.caption2)
                         .foregroundStyle(.secondary)
-                } else {
-                    ForEach(Array(model.listingLines.enumerated()), id: \.offset) { _, line in
-                        Text(line)
-                            .font(.system(.body, design: .monospaced))
+                }
+            }
+            ScrollView {
+                Text(model.listingText)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .textSelection(.enabled)
+                    .padding(4)
+            }
+            .frame(minHeight: 0, maxHeight: .infinity)
+            .padding(8)
+            .background(Color(nsColor: .textBackgroundColor))
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            
+            HStack {
+                TextField("Root item to delete", text: $deleteRootName)
+                    .textFieldStyle(.roundedBorder)
+                Button("Delete from vault…", role: .destructive) {
+                    confirmDeleteRoot = true
+                }
+                .disabled(model.busy || !model.isUnlocked || deleteRootName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .confirmationDialog(
+                    "Permanently delete \(deleteRootName) from the vault on MinIO? This cannot be undone.",
+                    isPresented: $confirmDeleteRoot,
+                    titleVisibility: .visible
+                ) {
+                    Button("Delete permanently", role: .destructive) {
+                        Task { await model.deleteRootItem(named: deleteRootName) }
+                    }
+                    Button("Cancel", role: .cancel) {}
+                }
+            }
+            .help("Use this for huge folders like backupsfotosfamilia — Finder Trash hits Error -36 while remote deletes run.")
+
+            Text("Finder mount is for viewing and small transfers. Use the Backup tab for bulk folder sync.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+        }
+        .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+// MARK: - Backup tab
+
+struct BackupView: View {
+    @EnvironmentObject private var model: VaultAppModel
+    @ObservedObject var syncEngine: BackupSyncEngine
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Backup")
+                .font(.title2.weight(.semibold))
+            Text("Pick local folders to sync into the vault under Backups/. Sync uses bounded parallel remote puts (many small files, one large at a time) so it does not fill CloudStorage like rclone-into-Finder did.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            GroupBox("Sync volume (macFUSE — optional)") {
+                Text("Not required for Sync / Sync all. Use Sync direct when FUSE is blocked by policy; data still lands in vault Backups/ and shows in the Finder CryptoMako mount after refresh.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(model.fuseMount.statusSummary)
+                        .font(.caption)
+                        .textSelection(.enabled)
+                    HStack {
+                        Button(model.fuseMount.isMounted ? "Mounted" : "Mount sync volume") {
+                            model.mountSyncVolume()
+                        }
+                        .disabled(!model.isUnlocked || model.fuseMount.isMounted)
+                        Button("Unmount") { model.unmountSyncVolume() }
+                            .disabled(!model.fuseMount.isMounted)
+                    }
+                }
+                .padding(4)
+            }
+
+            syncStatus
+
+            GroupBox("Source folders") {
+                VStack(alignment: .leading, spacing: 8) {
+                    if model.backupSources.isEmpty {
+                        Text("No folders yet.")
+                            .foregroundStyle(.secondary)
+                            .font(.callout)
+                    } else {
+                        ScrollView {
+                        ForEach(model.backupSources) { source in
+                            HStack(alignment: .center, spacing: 10) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(source.vaultFolderName)
+                                        .font(.body.weight(.medium))
+                                    Text(source.path)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(2)
+                                        .textSelection(.enabled)
+                                    Text("→ Backups/\(source.vaultFolderName)/")
+                                        .font(.caption2)
+                                        .foregroundStyle(.tertiary)
+                                }
+                                Spacer(minLength: 8)
+                                if syncEngine.isRunning, syncEngine.currentSourceName == source.vaultFolderName {
+                                    HStack(spacing: 6) {
+                                        ProgressView()
+                                            .controlSize(.small)
+                                        Text(syncEngine.state == .scanning ? "Scanning…" : "Syncing…")
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .frame(minWidth: 88, alignment: .trailing)
+                                } else {
+                                    Button("Sync") {
+                                        model.startBackupSync(sourceID: source.id)
+                                    }
+                                    .disabled(!model.isUnlocked || syncEngine.isRunning)
+                                    .help("Sync only this folder into Backups/\(source.vaultFolderName)/")
+                                }
+                                Button(role: .destructive) {
+                                    model.removeBackupSource(source.id)
+                                } label: {
+                                    Image(systemName: "minus.circle.fill")
+                                }
+                                .buttonStyle(.borderless)
+                                .disabled(syncEngine.isRunning)
+                            }
+                            Divider()
+                        }
+                        }
+                        .frame(minHeight: 0, maxHeight: .infinity)
+                    }
+                    HStack {
+                        Button("Add folders…") { model.addBackupFolder() }
+                            .disabled(syncEngine.isRunning)
+                        Spacer()
+                        if syncEngine.isRunning {
+                            Button("Cancel") { model.cancelBackupSync() }
+                        }
+                        Button("Sync all") { model.startBackupSync() }
+                            .disabled(!model.isUnlocked || model.backupSources.isEmpty || syncEngine.isRunning)
+                            .help("Sync every listed folder via encrypt+put (no CloudStorage fill)")
+                        Button("Sync via rclone+FUSE") { model.startRcloneBackupSync() }
+                            .disabled(!model.isUnlocked || model.backupSources.isEmpty || syncEngine.isRunning || !RcloneDriver.isAvailable)
+                            .keyboardShortcut(.defaultAction)
+                            .help("rclone copy into /Volumes/CryptoMakoSync; FUSE flushes each file to MinIO")
+                    }
+                }
+                .padding(4)
+            }
+
+            if !model.rcloneLog.isEmpty {
+                GroupBox("rclone output") {
+                    ScrollView {
+                        Text(model.rcloneLog)
+                            .font(.system(.caption2, design: .monospaced))
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                     }
+                    .frame(maxHeight: 120)
                 }
             }
+
+            Text("Finder File Provider stays the viewer. Bulk backup uses Sync direct or rclone→\(FuseMountController.preferredMountURL.path).")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+
+            Spacer(minLength: 0)
         }
-        .padding(8)
-        .background(Color(nsColor: .textBackgroundColor))
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .padding(20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var syncStatus: some View {
+        let engine = syncEngine
+        GroupBox("Last sync") {
+            VStack(alignment: .leading, spacing: 6) {
+                switch engine.state {
+                case .idle:
+                    Text("Idle")
+                        .foregroundStyle(.secondary)
+                case .scanning:
+                    ProgressView() {
+                        Text("Scanning local files…")
+                            .font(.body.weight(.semibold))
+                    }
+                    Text("\(engine.filesFoundWhileScanning) files · \(TransferSnapshot.formatBytes(engine.bytesFoundWhileScanning)) found so far")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                    if !engine.currentSourceName.isEmpty {
+                        Text("Folder: \(engine.currentSourceName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !engine.currentPath.isEmpty {
+                        Text(engine.currentPath)
+                            .font(.caption)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.secondary)
+                    }
+                    Text("Large trees (like ~/dev) can take a minute before upload starts.")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                case .running:
+                    ProgressView(value: engine.progressFraction) {
+                        HStack {
+                            Text(engine.isPreparingDirectories
+                                 ? "Preparing folders · \(engine.progressPercentLabel)"
+                                 : "Uploading · \(engine.progressPercentLabel)")
+                            Spacer()
+                            if engine.isPreparingDirectories {
+                                Text("\(engine.filesQueued)/\(max(engine.filesTotal, engine.filesQueued)) files queued")
+                                    .foregroundStyle(.secondary)
+                            } else {
+                                Text("\(engine.filesDone)/\(max(engine.filesTotal, engine.filesDone)) files · \(TransferSnapshot.formatBytes(engine.bytesDone))/\(TransferSnapshot.formatBytes(engine.bytesTotal))")
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    if !engine.isPreparingDirectories, engine.uploadBytesPerSecond > 0 {
+                        Text("Job bandwidth: \(TransferSnapshot.formatRate(engine.uploadBytesPerSecond))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if engine.filesSkipped > 0 {
+                        Text("Skipped \(engine.filesSkipped) already synced (unchanged or already in vault)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !engine.currentSourceName.isEmpty {
+                        Text("Folder: \(engine.currentSourceName)")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    if !engine.currentPath.isEmpty {
+                        Text(engine.currentPath)
+                            .font(.caption)
+                            .lineLimit(2)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.secondary)
+                    }
+                case .finished(let files, let bytes):
+                    Text("Finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)) uploaded to MinIO.")
+                        .foregroundStyle(.green)
+                case .failed(let message):
+                    Text(message)
+                        .foregroundStyle(.red)
+                        .textSelection(.enabled)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(4)
+        }
     }
 }

@@ -74,7 +74,7 @@ The host is a real windowed app, not a hidden helper:
 | `item(for:)` | Root ↔ `.rootContainer`; `d:`/`f:` resolved via `VaultIndex` |
 | `enumerator(for:)` | `VaultEnumerator` lists one directory through `CryptoMakoVault` |
 | `fetchContents` | Downloads ciphertext, decrypts file-to-file, returns a `Progress` |
-| create/modify/delete | `NSFeatureUnsupportedError` until M3 |
+| create/modify/delete | Remote `putObject`/`deleteObject` only; fail closed if S3 put fails |
 
 `contentVersion` is the S3 ETag: it changes exactly when the bytes change. Files
 start dataless. `enumerateChanges` reports nothing — refresh is host-driven, not
@@ -152,3 +152,8 @@ Debug `.app` under `~/Library/CloudStorage/`.
 2. `~/Library/CloudStorage/CryptoMako-CryptoMako` (or similar) lists the vault tree.
 3. Opening a file hydrates it and the contents match `cryptomako cat`.
 4. Writes fail cleanly rather than corrupting the vault (M3 not implemented).
+
+
+## Remote-only
+
+The File Provider refuses Local storage mode. Durable writes are MinIO/S3 ciphertext only.

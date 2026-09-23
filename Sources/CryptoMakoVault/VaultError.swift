@@ -10,6 +10,10 @@ public enum VaultError: Error, LocalizedError {
     case invalidJWT
     case pathNotFound(String)
     case notAFile(String)
+    case notADirectory(String)
+    case invalidPath(String)
+    case alreadyExists(String)
+    case directoryNotEmpty(String)
     case store(ObjectStoreError)
 
     public var errorDescription: String? {
@@ -30,6 +34,14 @@ public enum VaultError: Error, LocalizedError {
             return "path not found: \(path)"
         case .notAFile(let path):
             return "not a file: \(path)"
+        case .notADirectory(let path):
+            return "not a directory: \(path)"
+        case .invalidPath(let path):
+            return "invalid path: \(path)"
+        case .alreadyExists(let path):
+            return "already exists: \(path)"
+        case .directoryNotEmpty(let path):
+            return "directory not empty: \(path)"
         case .store(let error):
             return error.localizedDescription
         }

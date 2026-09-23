@@ -1,7 +1,7 @@
 import Foundation
 
-/// Filesystem-backed `ObjectStore`. Used for `cryptomako --local`, the SwiftUI
-/// window before a signing identity exists, and offline tests.
+/// Filesystem-backed `ObjectStore`. Used for `cryptomako --local`, unit tests,
+/// and explicit Local mode only. Product File Provider mounts are remote-only (S3).
 public final class DirectoryObjectStore: ObjectStore, @unchecked Sendable {
     public let root: URL
 
@@ -56,5 +56,22 @@ public final class DirectoryObjectStore: ObjectStore, @unchecked Sendable {
             }
         }
         return PrefixListing(objects: objects, commonPrefixes: prefixes)
+    }
+
+    public func putObject(key: String, data: Data) async throws {
+        let url = try SafePath.resolve(root: root, key: key)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try data.write(to: url, options: .atomic)
+    }
+
+    public func deleteObject(key: String) async throws {
+        let url = try SafePath.resolve(root: root, key: key)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw ObjectStoreError.notFound(key)
+        }
+        try FileManager.default.removeItem(at: url)
     }
 }

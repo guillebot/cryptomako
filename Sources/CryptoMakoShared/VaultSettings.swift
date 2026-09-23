@@ -20,6 +20,8 @@ public struct VaultSettings: Codable, Sendable, Equatable {
     public var accessKey: String
     /// Absolute path to a format-8 vault on disk. Used when `storageMode == .local`.
     public var localVaultPath: String
+    /// When true, unlock on launch and reconnect after S3 endpoint comes back.
+    public var autoReconnect: Bool
 
     public init(
         storageMode: StorageMode = .s3,
@@ -28,7 +30,8 @@ public struct VaultSettings: Codable, Sendable, Equatable {
         bucket: String = "",
         prefix: String = "",
         accessKey: String = "",
-        localVaultPath: String = ""
+        localVaultPath: String = "",
+        autoReconnect: Bool = false
     ) {
         self.storageMode = storageMode
         self.endpoint = endpoint
@@ -37,6 +40,7 @@ public struct VaultSettings: Codable, Sendable, Equatable {
         self.prefix = prefix
         self.accessKey = accessKey
         self.localVaultPath = localVaultPath
+        self.autoReconnect = autoReconnect
     }
 
     public var isLocal: Bool {
@@ -72,7 +76,7 @@ public struct VaultSettings: Codable, Sendable, Equatable {
     }
 
     enum CodingKeys: String, CodingKey {
-        case storageMode, endpoint, region, bucket, prefix, accessKey, localVaultPath
+        case storageMode, endpoint, region, bucket, prefix, accessKey, localVaultPath, autoReconnect
     }
 
     public init(from decoder: Decoder) throws {
@@ -83,6 +87,7 @@ public struct VaultSettings: Codable, Sendable, Equatable {
         prefix = try container.decodeIfPresent(String.self, forKey: .prefix) ?? ""
         accessKey = try container.decodeIfPresent(String.self, forKey: .accessKey) ?? ""
         localVaultPath = try container.decodeIfPresent(String.self, forKey: .localVaultPath) ?? ""
+        autoReconnect = try container.decodeIfPresent(Bool.self, forKey: .autoReconnect) ?? false
         if let mode = try container.decodeIfPresent(StorageMode.self, forKey: .storageMode) {
             storageMode = mode
         } else {
@@ -102,6 +107,7 @@ public struct VaultSettings: Codable, Sendable, Equatable {
         if !localVaultPath.isEmpty {
             try container.encode(localVaultPath, forKey: .localVaultPath)
         }
+        try container.encode(autoReconnect, forKey: .autoReconnect)
     }
 
     // MARK: - Locations

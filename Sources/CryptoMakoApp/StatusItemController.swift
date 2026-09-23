@@ -1,4 +1,5 @@
 import AppKit
+import CryptoMakoShared
 import Combine
 import SwiftUI
 
@@ -126,6 +127,29 @@ final class StatusItemController {
 
         menu.addItem(.separator())
 
+        // Transfer summary in the menu (remote commits only).
+        let xfer = model.transfer
+        menu.addItem(.separator())
+        let xferHeader = NSMenuItem(title: "Remote transfers", action: nil, keyEquivalent: "")
+        xferHeader.isEnabled = false
+        menu.addItem(xferHeader)
+        let liveRate = xfer.liveUploadBytesPerSecond()
+        let bandwidthLine = liveRate > 0
+            ? "Bandwidth: \(TransferSnapshot.formatRate(liveRate))"
+            : "Bandwidth: —"
+        for line in [
+            xfer.inFlight > 0
+                ? "In flight: \(xfer.inFlight)\(xfer.currentName.map { " — \($0)" } ?? "")"
+                : "In flight: 0",
+            "Uploaded: \(xfer.completedPuts) files (\(TransferSnapshot.formatBytes(xfer.bytesUploaded)))",
+            bandwidthLine,
+            xfer.failedPuts > 0 ? "Failed: \(xfer.failedPuts)" : nil,
+        ].compactMap({ $0 }) {
+            let item = NSMenuItem(title: truncate(line, limit: 72), action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+        }
+
         let quitItem = NSMenuItem(
             title: "Quit CryptoMako",
             action: #selector(quitApp(_:)),
@@ -136,7 +160,7 @@ final class StatusItemController {
         menu.addItem(quitItem)
 
         statusItem.menu = menu
-        statusItem.button?.toolTip = "CryptoMako — \(model.status.rawValue)"
+        statusItem.button?.toolTip = xfer.tooltip + "\n\nVault: \(model.status.rawValue)"
         updateStatusItemImage()
     }
 

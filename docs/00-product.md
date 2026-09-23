@@ -4,7 +4,9 @@ CryptoMako is a macOS companion that presents a Cryptomator vault stored on S3 a
 
 ## Thesis
 
-Decrypt inside CryptoMako (CLI, SwiftUI app, File Provider). Never expose ciphertext as a folder for Cryptomator desktop / FUSE-T / macFUSE to mount. Nested File Provider + FUSE is a known Finder deadlock.
+Decrypt inside CryptoMako (CLI, SwiftUI app, File Provider). Never expose **ciphertext** as a folder for Cryptomator desktop / FUSE-T / macFUSE to mount. Nested File Provider + FUSE under CloudStorage is a known Finder deadlock.
+
+**Cleartext** macFUSE at `/Volumes/CryptoMakoSync` is in scope for backup/sync tools (rclone), separate from the Finder File Provider viewer. See `60-backup-fuse-rclone.md`.
 
 ## Naming
 

@@ -1,60 +1,117 @@
 # CryptoMako
 
-CryptoMako presents a [Cryptomator](https://cryptomator.org) vault stored on S3 (or S3-compatible storage) as plaintext in a SwiftUI app and, when signed, as a Finder location via File Provider. Licensed under **AGPLv3** (including paid distribution).
+**Point CryptoMako at any S3-compatible bucket, unlock a [Cryptomator](https://cryptomator.org) vault, and work with your files as plaintext** — in the app, in Finder, and through high-throughput Backup Sync for large trees.
 
-Decryption always happens in-process. CryptoMako never mounts ciphertext for Cryptomator/FUSE to sit on top of.
+CryptoMako is a macOS companion, not a Cryptomator fork. Ciphertext stays on the object store; decryption happens in-process. Licensed under **AGPLv3** (including paid distribution).
 
-## License
+## What it does
 
-[GNU Affero General Public License v3.0](LICENSE). You may charge for copies or access; recipients retain AGPL rights to corresponding source and to run modified versions. CryptoMako links [`cryptolib-swift`](https://github.com/cryptomator/cryptolib-swift), also AGPLv3 — compatible while CryptoMako stays AGPL.
+| Capability | What you get |
+|------------|----------------|
+| **S3 vault** | Connect over **HTTPS** to AWS S3, MinIO, or any SigV4 S3 API. Vault objects live under a bucket prefix you choose; the bucket never sees cleartext names or contents. |
+| **Cryptomator format 8** | Password unlock with `cryptolib-swift`. Vaults stay interoperable with stock Cryptomator (Directory Health Check clean). |
+| **App listing** | SwiftUI host: unlock, status lamps (S3 / vault / Finder), browse cleartext names, small transfers. |
+| **Finder File Provider** | Mount the vault under Finder → Locations for browsing and light create/delete. Fail-closed: remote S3 put/delete must succeed. |
+| **Backup Sync** | Pick big local folders and sync them into the vault over a saturated uplink (parallel encrypt → S3 put), with optional bandwidth cap, proxy, and excludes (`node_modules`, `.git`, …). |
+
+**Durable store = remote ciphertext only.** Local CloudStorage materialization is never treated as “backed up.”
+
+## Architecture
+
+![CryptoMako architecture: local folders, app, and Finder go through Cryptomator format 8 to an S3-compatible ciphertext bucket](docs/assets/architecture.png)
+
+```mermaid
+flowchart LR
+  subgraph Mac["Your Mac"]
+    UI["CryptoMako app<br/>Vault · Backup · Settings"]
+    FP["Finder<br/>File Provider"]
+    Sync["Backup Sync<br/>walk → encrypt → put"]
+  end
+
+  subgraph Vault["In-process Cryptomator"]
+    Lib["cryptolib-swift<br/>format 8"]
+  end
+
+  S3[("S3-compatible bucket<br/>HTTPS · ciphertext only")]
+
+  UI --> Lib
+  FP --> Lib
+  Sync --> Lib
+  Lib -->|"SigV4 over HTTPS (TLS)"| S3
+
+  Local[("Local folders<br/>photos, repos, …")] --> Sync
+```
+
+```text
+  Local disk                              Object store (HTTPS / TLS)
+ ───────────                              ─────────────────────────
+  ~/Photos ──┐
+  ~/dev ─────┼──► Backup Sync ──► encrypt ──► s3://bucket/prefix/d/…/*.c9r
+             │                      ▲              ↑
+  Finder ◄───┴── File Provider ─────┘              names + contents
+                      │                            unrecognizable
+                 CryptoMako app
+```
+
+### Roles (important split)
+
+| Surface | Role |
+|---------|------|
+| **Backup tab → Sync** | Bulk backup of large trees. Prefer this for multi‑GB / many-file jobs. |
+| **Finder File Provider** | Viewer + small ad-hoc transfers. Do **not** point rclone or bulk tools at `~/Library/CloudStorage/CryptoMako-*`. |
+| **Optional cleartext macFUSE** | `/Volumes/CryptoMakoSync` for tool-friendly sync; still encrypts before remote put. |
+
+## Security model (short)
+
+- **Transport:** all S3 traffic is **HTTPS (TLS)**. Plain HTTP is not the supported path (App Transport Security in the sandboxed app and extension).
+- **At rest in the bucket:** data is **100% unrecognizable**. Neither file **contents** nor cleartext **names** appear in the object store — only Cryptomator ciphertext and encrypted directory layout (`d/…/*.c9r`, etc.).
+- Masterkey material is encrypted; unlocking stays on your Mac.
+- Secrets live in the Keychain (app) or env vars (CLI) — never in `settings.json` / `poc.json`.
+- Writes fail closed unless the remote object put/delete succeeds.
 
 ## Requirements
 
 - macOS 14+
 - Swift 5.10+ / Xcode 16+
-- [xcodegen](https://github.com/yonaskolb/XcodeGen) (the `.xcodeproj` is generated from `project.yml`)
-- Docker (optional, for local MinIO)
-- An Apple Developer Program membership to run the File Provider extension and App Groups
+- [xcodegen](https://github.com/yonaskolb/XcodeGen) (`.xcodeproj` is generated from `project.yml`)
+- Apple Developer Program membership for File Provider + App Groups
+- Docker optional (local MinIO via `./scripts/minio-up.sh`)
 
-No AWS SDK: S3 requests are SigV4-signed in-process and sent with an **ephemeral** `URLSession` (no `URLCache` — a stale cached `masterkey.cryptomator` after a vault rewrite would otherwise break unlock). The dependency graph is `cryptolib-swift`, `base32`, and `swift-argument-parser`.
+No AWS SDK: S3 is SigV4-signed in-process over an ephemeral `URLSession` (no `URLCache`). Dependencies: `cryptolib-swift`, `base32`, `swift-argument-parser`.
 
 ## Build
 
 ```bash
 cd ~/dev/cryptomako
 swift build
-swift run cryptomako --help          # CLI product name is lowercase
-swift test                           # offline tests, no network
-make test
+swift run cryptomako --help
+swift test
 make ci
-make security                        # Trivy + Grype
+make security   # Trivy + Grype
 
 # Local vault, no S3:
 swift run cryptomako fixture
 export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < fixtures/PASSWORD)"
 swift run cryptomako ls --local fixtures/vault --path / --recursive
 
-# Signed app + File Provider (needs DEVELOPMENT_TEAM in project.yml):
+# Signed app + File Provider:
 xcodegen generate
 xcodebuild -project CryptoMako.xcodeproj -scheme CryptoMako \
   -configuration Debug -destination 'platform=macOS' build
 open ~/Library/Developer/Xcode/DerivedData/CryptoMako-*/Build/Products/Debug/CryptoMako.app
 ```
 
-## App UI (Local vs S3)
+## App tabs
 
-The settings form uses a **Local / S3** segmented control:
+1. **Vault** — Local or S3 connection, unlock, listing, Mount in Finder.
+2. **Backup** — Folder picker, Sync progress, live bandwidth.
+3. **Settings** — HTTP(S) proxy, optional Sync Mbps cap, Sync path excludes.
 
-- **Local** — path to a vault directory that contains `vault.cryptomator`.
-- **S3** — endpoint, region, bucket, **vault prefix**, access key, secret key.
+S3 settings need endpoint, region, bucket, **vault prefix** (folder containing `vault.cryptomator`), and access key. Prefix example: `cryptomako-poc/`. Empty prefix = bucket root.
 
-The prefix is the folder inside the bucket that holds `vault.cryptomator` (example: `cryptomako-poc/`). The UI shows a live preview of the object key it will fetch (`{bucket}/{prefix}vault.cryptomator`). Empty prefix means bucket root. Non-empty prefixes get a trailing slash on save.
+## CLI quick path
 
-Settings JSON also stores `storageMode` (`local` | `s3`). Legacy configs without it treat a non-empty `localVaultPath` as local.
-
-## Quick path (CLI)
-
-Connection settings live in `~/.config/cryptomako/poc.json` (and the app-group `settings.json`). Never put secrets there:
+Config: `~/.config/cryptomako/poc.json` (and app-group `settings.json`). No secrets in JSON:
 
 ```json
 {
@@ -67,10 +124,6 @@ Connection settings live in `~/.config/cryptomako/poc.json` (and the app-group `
 }
 ```
 
-Prefer **HTTPS**. The sandboxed app and File Provider are ATS-constrained; plain `http://` endpoints fail in the `.app` even when the CLI works.
-
-Secrets come from the environment (CLI) or Keychain (app):
-
 ```bash
 export CRYPTOMAKO_SECRET_KEY='...'
 export CRYPTOMAKO_PASSWORD='your-vault-password'
@@ -80,19 +133,15 @@ swift run cryptomako ls --prefix cryptomako-poc/ --path / -R
 swift run cryptomako cat --prefix cryptomako-poc/ /hello.txt
 ```
 
-Any flag overrides the config file.
-
-`./scripts/minio-up.sh` starts a throwaway local MinIO if you do not have a remote bucket.
-
 ## File Provider mount
 
-After Unlock + **Mount in Finder** in a signed Debug/Release `.app`, the vault appears under Finder → Locations and on disk at:
+After Unlock + **Mount in Finder**:
 
 ```text
 ~/Library/CloudStorage/CryptoMako-CryptoMako
 ```
 
-(Exact folder name is `CryptoMako-<displayName>`.) See [docs/30-m2-file-provider.md](docs/30-m2-file-provider.md).
+See [docs/30-m2-file-provider.md](docs/30-m2-file-provider.md) and [docs/60-backup-fuse-rclone.md](docs/60-backup-fuse-rclone.md).
 
 ## Documentation
 
@@ -104,8 +153,13 @@ After Unlock + **Mount in Finder** in a signed Debug/Release `.app`, the vault a
 | [docs/30-m2-file-provider.md](docs/30-m2-file-provider.md) | Finder extension |
 | [docs/40-m3-writes.md](docs/40-m3-writes.md) | Writes + Cryptomator health check |
 | [docs/50-security.md](docs/50-security.md) | Secrets, logging, threat model |
-| [docs/architecture/overview.md](docs/architecture/overview.md) | Modules, unlock, listing, item ids |
+| [docs/60-backup-fuse-rclone.md](docs/60-backup-fuse-rclone.md) | Backup Sync vs Finder |
+| [docs/architecture/overview.md](docs/architecture/overview.md) | Modules, unlock, listing |
 | [BREAK_GLASS.md](BREAK_GLASS.md) | Emergency wipe |
+
+## License
+
+[GNU Affero General Public License v3.0](LICENSE). You may charge for copies or access; recipients retain AGPL rights to corresponding source and to run modified versions. CryptoMako links [`cryptolib-swift`](https://github.com/cryptomator/cryptolib-swift), also AGPLv3 — compatible while CryptoMako stays AGPL.
 
 ## Identifiers
 
@@ -113,5 +167,5 @@ After Unlock + **Mount in Finder** in a signed Debug/Release `.app`, the vault a
 |------|--------|
 | Bundle ID | `net.gschimmel.cryptomako` |
 | Extension | `net.gschimmel.cryptomako.FileProvider` |
-| App Group (runtime) | `{TEAM_ID}.group.net.gschimmel.cryptomako` (e.g. `H4K6YW7MQM.group…`) |
+| App Group (runtime) | `{TEAM_ID}.group.net.gschimmel.cryptomako` |
 | Keychain service | `net.gschimmel.cryptomako` |

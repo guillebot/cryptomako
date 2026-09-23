@@ -9,10 +9,18 @@ final class ItemIdentifierTests: XCTestCase {
         XCTAssertEqual(ItemIdentifier(rawValue: ""), .root)
         XCTAssertEqual(ItemIdentifier(rawValue: "root"), .root)
         XCTAssertEqual(ItemIdentifier(rawValue: "d:abc")?.rawValue, "d:abc")
-        if case .directory(let id) = ItemIdentifier(rawValue: "d:abc") {
+        if case .directory(let id, let parent) = ItemIdentifier(rawValue: "d:abc") {
             XCTAssertEqual(id, "abc")
+            XCTAssertNil(parent)
         } else {
             XCTFail("expected directory")
+        }
+        if case .directory(let id, let parent) = ItemIdentifier(rawValue: "d:parent/child") {
+            XCTAssertEqual(id, "child")
+            XCTAssertEqual(parent, "parent")
+            XCTAssertEqual(ItemIdentifier.directory(dirId: id, parentDirId: parent).rawValue, "d:parent/child")
+        } else {
+            XCTFail("expected directory with parent")
         }
     }
 

@@ -9,7 +9,6 @@ let package = Package(
     ],
     products: [
         .executable(name: "cryptomako", targets: ["CryptoMakoCLI"]),
-        .executable(name: "CryptoMako", targets: ["CryptoMakoApp"]),
         .library(name: "CryptoMakoVault", targets: ["CryptoMakoVault"]),
         .library(name: "CryptoMakoS3", targets: ["CryptoMakoS3"]),
         .library(name: "CryptoMakoShared", targets: ["CryptoMakoShared"]),
@@ -35,6 +34,7 @@ let package = Package(
             name: "CryptoMakoVault",
             dependencies: [
                 "CryptoMakoS3",
+                "CryptoMakoShared",
                 .product(name: "CryptomatorCryptoLib", package: "cryptolib-swift"),
             ]
         ),
@@ -44,17 +44,6 @@ let package = Package(
                 "CryptoMakoVault",
                 "CryptoMakoShared",
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
-            ]
-        ),
-        .executableTarget(
-            name: "CryptoMakoApp",
-            dependencies: [
-                "CryptoMakoVault",
-                "CryptoMakoS3",
-                "CryptoMakoShared",
-            ],
-            resources: [
-                .process("Resources"),
             ]
         ),
         .testTarget(

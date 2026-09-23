@@ -10,3 +10,12 @@ fixtures/PASSWORD
 fixtures/vault/
 *.pem
 *.key
+
+.grafana-sa-token
+
+
+# Release packaging outputs (CSR/key live in release/; *.key already ignored)
+release/dist/
+
+# PKCS12 export for keychain import (never commit)
+*.p12
