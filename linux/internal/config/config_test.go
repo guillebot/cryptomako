@@ -30,6 +30,9 @@ func TestResolveLocal(t *testing.T) {
 	if cfg.SecretKey != "" {
 		t.Fatal("local unlock must not require secret key")
 	}
+	if !cfg.PathStyle {
+		t.Fatal("pathStyle must default true")
+	}
 }
 
 func TestResolveRemoteHTTPSAndSecrets(t *testing.T) {
@@ -37,7 +40,8 @@ func TestResolveRemoteHTTPSAndSecrets(t *testing.T) {
 	t.Setenv(EnvSecretKey, "sk")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"endpoint":"https://minio.example","region":"us-east-1","bucket":"b","prefix":"v","accessKeyId":"ak"}`), 0o600); err != nil {
+	// macOS docs/10-m0-fixture.md field name: accessKey
+	if err := os.WriteFile(path, []byte(`{"endpoint":"https://minio.example","region":"us-east-1","bucket":"b","prefix":"v","accessKey":"ak","pathStyle":true}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := Resolve(Request{ConfigPath: path})
@@ -49,6 +53,40 @@ func TestResolveRemoteHTTPSAndSecrets(t *testing.T) {
 	}
 	if cfg.SecretKey != "sk" {
 		t.Fatal("secret key not loaded from env")
+	}
+	if !cfg.PathStyle {
+		t.Fatal("pathStyle must be true")
+	}
+}
+
+func TestResolveAccessKeyIdLegacyAlias(t *testing.T) {
+	t.Setenv(EnvPassword, "pw")
+	t.Setenv(EnvSecretKey, "sk")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"endpoint":"https://minio.example","bucket":"b","accessKeyId":"legacy-ak"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Resolve(Request{ConfigPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AccessKey != "legacy-ak" {
+		t.Fatalf("accessKey = %q", cfg.AccessKey)
+	}
+}
+
+func TestRejectPathStyleFalse(t *testing.T) {
+	t.Setenv(EnvPassword, "pw")
+	t.Setenv(EnvSecretKey, "sk")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.json")
+	if err := os.WriteFile(path, []byte(`{"endpoint":"https://minio.example","bucket":"b","accessKey":"ak","pathStyle":false}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := Resolve(Request{ConfigPath: path})
+	if err == nil {
+		t.Fatal("expected pathStyle=false rejection")
 	}
 }
 
@@ -70,7 +108,7 @@ func TestRejectSecretsInJSON(t *testing.T) {
 	t.Setenv(EnvSecretKey, "sk")
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
-	if err := os.WriteFile(path, []byte(`{"endpoint":"https://x","bucket":"b","accessKeyId":"ak","password":"nope"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"endpoint":"https://x","bucket":"b","accessKey":"ak","password":"nope"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	_, err := Resolve(Request{ConfigPath: path})

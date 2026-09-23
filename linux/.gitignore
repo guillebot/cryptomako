@@ -1,2 +1,7 @@
 /cryptomako
 *.exe
+
+# packaging
+packaging/dist/
+cryptomako
+*.deb

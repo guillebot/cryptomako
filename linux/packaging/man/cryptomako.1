@@ -1,0 +1,82 @@
+.TH CRYPTOMAKO 1 "September 2026" "cryptomako" "User Commands"
+.SH NAME
+cryptomako \- Cryptomator format-8 vault CLI (S3 / local) for Linux
+.SH SYNOPSIS
+.B cryptomako
+[\fIglobal flags\fR]
+.I command
+[\fIargs\fR]
+.SH DESCRIPTION
+CryptoMako unlocks Cryptomator
+.B format 8
+(SIV_GCM) vaults over HTTPS SigV4 (path-style) or a local vault directory.
+Cleartext UX locally; ciphertext stays in the object store. Remote put/delete fail closed.
+.SH COMMANDS
+.TP
+.B unlock
+Unlock and print vault metadata.
+.TP
+.B ls
+List cleartext paths (optional
+.BR --recursive ).
+.TP
+.B cat
+Print a cleartext file.
+.TP
+.B mount
+FUSE cleartext mount (default read-only;
+.B --rw
+for writable fail-closed puts/deletes).
+.TP
+.B sync
+Encrypt a local tree into the vault (honors Backup Sync excludes).
+.TP
+.B fixture
+Create a minimal format-8 vault for smoke tests.
+.SH GLOBAL FLAGS
+.TP
+.BR --local " PATH"
+Unlock a vault directory on disk.
+.TP
+.BR --endpoint " URL"
+S3 API URL (HTTPS, no bucket in path).
+.TP
+.BR --bucket " NAME"
+Bucket name.
+.TP
+.BR --prefix " PREFIX"
+Vault prefix inside the bucket.
+.TP
+.BR --access-key " ID"
+Access key id (non-secret).
+.TP
+.BR --config " PATH"
+JSON config (default
+.IR ~/.config/cryptomako/config.json ).
+.SH ENVIRONMENT
+.TP
+.B CRYPTOMAKO_PASSWORD
+Vault passphrase (required). Never put in JSON or argv.
+.TP
+.B CRYPTOMAKO_SECRET_KEY
+S3 secret access key (remote only). Never put in JSON.
+.SH FILES
+.TP
+.I ~/.config/cryptomako/config.json
+Non-secret connection settings (
+.BR endpoint ,
+.BR region ,
+.BR bucket ,
+.BR prefix ,
+.BR accessKey ,
+.BR pathStyle ).
+.TP
+.I ~/.config/cryptomako/backup-sync-excludes.json
+Backup Sync excludes (
+.BR directoryNames ,
+.BR fileNames ,
+.BR fileExtensions ), macOS-compatible.
+.SH SEE ALSO
+Full docs in
+.I /usr/share/doc/cryptomako/README.md
+and the upstream linux/README.md.

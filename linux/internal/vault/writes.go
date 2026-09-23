@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/guillebot/cryptomako/linux/internal/config"
 )
 
 // PutFile encrypts cleartext bytes and stores them under cleartextPath (absolute).
@@ -124,7 +125,13 @@ func (s *Session) putFileInDir(parentDirID, name string, clear []byte) error {
 
 // SyncCleartextTree walks localRoot and encrypts every file into the vault
 // under destPrefix (absolute cleartext path, default "/").
-func (s *Session) SyncCleartextTree(localRoot, destPrefix string) (files int, err error) {
+// Excludes honor macOS BackupSyncExcludes (directoryNames / fileNames / fileExtensions).
+// Pass a zero value or DefaultBackupSyncExcludes(); nil pointer uses defaults.
+func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *config.BackupSyncExcludes) (files int, err error) {
+	ex := config.DefaultBackupSyncExcludes()
+	if excludes != nil {
+		ex = *excludes
+	}
 	destPrefix = normalizePath(destPrefix)
 	localRoot, err = filepath.Abs(localRoot)
 	if err != nil {
@@ -142,6 +149,16 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string) (files int, er
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
+		base := filepath.Base(path)
+		if d.IsDir() {
+			if ex.ShouldSkipDirectory(base) {
+				return filepath.SkipDir
+			}
+		} else {
+			if ex.ShouldSkipFile(base) || ex.ShouldSkipRelativePath(rel) {
+				return nil
+			}
+		}
 		clearPath := destPrefix
 		if clearPath == "/" {
 			clearPath = "/" + rel

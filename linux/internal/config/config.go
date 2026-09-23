@@ -18,12 +18,17 @@ const (
 )
 
 // File is the on-disk JSON shape (no secrets).
+// Field names align with macOS VaultSettings / PocConfig / docs/10-m0-fixture.md.
+// accessKeyId is accepted as a legacy Linux alias for accessKey.
 type File struct {
 	Endpoint    string `json:"endpoint,omitempty"`
 	Region      string `json:"region,omitempty"`
 	Bucket      string `json:"bucket,omitempty"`
 	Prefix      string `json:"prefix,omitempty"`
-	AccessKeyID string `json:"accessKeyId,omitempty"`
+	AccessKey   string `json:"accessKey,omitempty"`
+	AccessKeyID string `json:"accessKeyId,omitempty"` // legacy alias
+	// PathStyle defaults true (Platforms lock for MinIO/R2). Virtual-hosted is unsupported.
+	PathStyle *bool `json:"pathStyle,omitempty"`
 }
 
 // Request is CLI / flag input merged over the config file.
@@ -109,7 +114,15 @@ func Resolve(req Request) (Config, error) {
 	region := firstNonEmpty(req.Region, file.Region, "us-east-1")
 	bucket := firstNonEmpty(req.Bucket, file.Bucket)
 	prefix := firstNonEmpty(req.Prefix, file.Prefix)
-	accessKey := firstNonEmpty(req.AccessKey, file.AccessKeyID)
+	accessKey := firstNonEmpty(req.AccessKey, file.AccessKey, file.AccessKeyID)
+
+	pathStyle := true
+	if file.PathStyle != nil {
+		pathStyle = *file.PathStyle
+	}
+	if !pathStyle {
+		return Config{}, fmt.Errorf("pathStyle=false (virtual-hosted) is not supported; CryptoMako Linux uses path-style S3 (default true)")
+	}
 
 	if endpoint == "" {
 		return Config{}, fmt.Errorf("missing --endpoint")

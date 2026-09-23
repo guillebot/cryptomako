@@ -37,7 +37,7 @@ func TestSyncRoundTrip(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sub, "note.txt"), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	n, err := s.SyncCleartextTree(clearDir, "/")
+	n, err := s.SyncCleartextTree(clearDir, "/", nil)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -184,4 +184,57 @@ func seedMemFromDisk(m *memStore, root string) error {
 		key := filepath.ToSlash(rel)
 		return m.Put(key, data)
 	})
+}
+
+func TestSyncRespectsExcludes(t *testing.T) {
+	pass := "exclude-sync-pass"
+	root := t.TempDir()
+	s, err := CreateFormat8(root, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	clearDir := t.TempDir()
+	keep := filepath.Join(clearDir, "keep")
+	skipDir := filepath.Join(clearDir, "node_modules", "pkg")
+	if err := os.MkdirAll(keep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(skipDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(keep, "ok.txt"), []byte("ok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skipDir, "ignored.js"), []byte("nope\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clearDir, ".DS_Store"), []byte("junk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(clearDir, "x.pyc"), []byte("pyc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ex := config.DefaultBackupSyncExcludes()
+	n, err := s.SyncCleartextTree(clearDir, "/", &ex)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("synced %d want 1 (only keep/ok.txt)", n)
+	}
+	if _, err := s.Open("/keep/ok.txt"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Open("/node_modules/pkg/ignored.js"); err == nil {
+		t.Fatal("excluded node_modules file should not exist in vault")
+	}
+	if _, err := s.Open("/.DS_Store"); err == nil {
+		t.Fatal("excluded .DS_Store should not exist")
+	}
+	if _, err := s.Open("/x.pyc"); err == nil {
+		t.Fatal("excluded .pyc should not exist")
+	}
 }

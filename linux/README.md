@@ -67,8 +67,8 @@ mkdir -p /tmp/cryptomako-mnt
 Remote (S3) needs non-secret config plus the secret env:
 
 ```bash
-# ~/.config/cryptomako/config.json  (XDG; no secrets)
-# { "endpoint":"https://minio.example","region":"us-east-1","bucket":"b","prefix":"vault/","accessKeyId":"AK…" }
+# ~/.config/cryptomako/config.json  (XDG; no secrets; field names match docs/10-m0-fixture.md)
+# { "endpoint":"https://minio.example","region":"us-east-1","bucket":"b","prefix":"vault/","accessKey":"AK…","pathStyle":true }
 export CRYPTOMAKO_SECRET_KEY=…
 ./cryptomako unlock --endpoint https://minio.example --bucket b --prefix vault/ --access-key AK…
 ```
@@ -76,6 +76,7 @@ export CRYPTOMAKO_SECRET_KEY=…
 ## Config (non-secrets only)
 
 Default path: `$XDG_CONFIG_HOME/cryptomako/config.json` or `~/.config/cryptomako/config.json`.
+Field names align with macOS `VaultSettings` / `PocConfig` / `docs/10-m0-fixture.md`.
 
 | Field | Meaning |
 |-------|---------|
@@ -83,9 +84,27 @@ Default path: `$XDG_CONFIG_HOME/cryptomako/config.json` or `~/.config/cryptomako
 | `region` | Region string (MinIO: `us-east-1`) |
 | `bucket` | Bucket name |
 | `prefix` | Vault prefix (`vault.cryptomator` lives here) |
-| `accessKeyId` | Access key id |
+| `accessKey` | Access key id (`accessKeyId` accepted as legacy alias) |
+| `pathStyle` | Path-style S3 URLs (default `true`; `false` rejected — Platforms lock) |
 
 **Never** store password or secret key in JSON.
+
+### Backup Sync excludes
+
+Same keys as macOS `BackupSyncExcludes` / `backup-sync-excludes.json`:
+
+```json
+{
+  "excludes": {
+    "directoryNames": ["node_modules", ".git"],
+    "fileNames": [".DS_Store", "Thumbs.db", "desktop.ini"],
+    "fileExtensions": ["pyc", "pyo"]
+  }
+}
+```
+
+Default path: `~/.config/cryptomako/backup-sync-excludes.json`. Missing file → macOS defaults.
+Override with `cryptomako sync --excludes /path/to/backup-sync-excludes.json`.
 
 ## Packages
 
@@ -111,11 +130,14 @@ JSON (`~/.config/cryptomako/config.json`) — **no secrets**:
 | `region` | e.g. `us-east-1` |
 | `bucket` | Bucket name |
 | `prefix` | Vault prefix (`vault/` style) |
-| `accessKeyId` | Access key id |
+| `accessKey` | Access key id (`accessKeyId` legacy alias) |
+| `pathStyle` | Default `true` (virtual-hosted unsupported on Linux) |
+
+Backup Sync excludes file (separate): `directoryNames`, `fileNames`, `fileExtensions`.
 
 Env secrets: `CRYPTOMAKO_PASSWORD`, `CRYPTOMAKO_SECRET_KEY`.
 
-Proposed to Platforms before inventing new keys. Current set matches macOS `ConnectionConfigLoader` / docs/10-m0-fixture.md.
+Proposed to Platforms before inventing new keys. Current set matches macOS `ConnectionConfigLoader` / `BackupSyncExcludes` / docs/10-m0-fixture.md.
 
 ## Docker
 
@@ -173,20 +195,63 @@ CRYPTOMAKO_FUSE_RW=1 ./scripts/fuse-smoke.sh
 **Docker Desktop (macOS):** with `--device /dev/fuse --cap-add SYS_ADMIN` the FUSE smoke **can** succeed (verified: cleartext `hello cryptomako` + clean `fusermount3 -u`). If your Docker engine cannot expose `/dev/fuse`, use Linux CI/hosts with the same flags or `./scripts/fuse-smoke.sh`. Unit tests under `internal/fusefs` construct the FUSE root without a live mount.
 
 
-## Install (deb sketch)
+## Install (`.deb`)
 
 No new VaultSettings keys; secrets stay env-only; S3 is path-style (locked with Platforms).
 
 ```bash
 cd linux
-go build -o cryptomako .
-sudo install -m 0755 cryptomako /usr/local/bin/cryptomako
-sudo apt-get install -y fuse3   # or fuse3 from your distro
+./packaging/build-deb.sh
+sudo apt-get install -y ./packaging/dist/cryptomako_*.deb
+# Depends: fuse3
 ```
 
-Optional thin deb layout (manual / `nfpm` later): binary → `/usr/bin/cryptomako`,
-depends on `fuse3`, no config package (XDG `~/.config/cryptomako/config.json` is
-user-owned; never ship secrets). See `packaging/README.md`.
+Or install the binary directly:
+
+```bash
+cd linux
+go build -o cryptomako .
+sudo install -m 0755 cryptomako /usr/local/bin/cryptomako
+sudo apt-get install -y fuse3
+```
+
+See `packaging/README.md`. CI uploads the `.deb` as artifact `cryptomako-deb`.
+
+## Point `--rw` FUSE + sync at MinIO / R2
+
+Use existing env vars and XDG config — no live cloud credentials in CI.
+
+```bash
+# ~/.config/cryptomako/config.json  (no secrets)
+# {
+#   "endpoint": "https://minio.example:9000",
+#   "region": "us-east-1",
+#   "bucket": "vaults",
+#   "prefix": "cryptomako/",
+#   "accessKey": "AK…",
+#   "pathStyle": true
+# }
+# Cloudflare R2: endpoint https://<accountid>.r2.cloudflarestorage.com, region auto, pathStyle true
+
+export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < ../fixtures/PASSWORD)"
+export CRYPTOMAKO_SECRET_KEY=…   # never commit
+
+# Writable FUSE (fail-closed PutObject/DeleteObject)
+mkdir -p /tmp/cryptomako-mnt
+./cryptomako mount --mountpoint /tmp/cryptomako-mnt --rw
+# echo hi > /tmp/cryptomako-mnt/new.txt
+
+# Backup Sync (honors backup-sync-excludes.json)
+./cryptomako sync --source ~/Documents/tree --dest /
+```
+
+Or pass flags instead of the config file:
+
+```bash
+./cryptomako mount --rw \
+  --endpoint https://minio.example:9000 --bucket vaults --prefix cryptomako/ \
+  --access-key AK… --mountpoint /tmp/cryptomako-mnt
+```
 
 ## License
 

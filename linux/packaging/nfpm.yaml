@@ -1,0 +1,36 @@
+# Thin Debian package for CryptoMako Linux CLI.
+# Build: ./packaging/build-deb.sh   (or: nfpm package -f packaging/nfpm.yaml -p deb)
+#
+# Secrets are NEVER packaged — use CRYPTOMAKO_PASSWORD / CRYPTOMAKO_SECRET_KEY.
+name: cryptomako
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+section: utils
+priority: optional
+maintainer: CryptoMako <noreply@example.com>
+description: |
+  Cryptomator format-8 vault CLI for Linux (unlock/ls/cat/mount/sync).
+  Path-style HTTPS S3; FUSE cleartext mount; Backup Sync with macOS excludes.
+vendor: CryptoMako
+homepage: https://github.com/guillebot/cryptomako
+license: AGPL-3.0
+depends:
+  - fuse3
+contents:
+  - src: ./cryptomako
+    dst: /usr/bin/cryptomako
+    file_info:
+      mode: 0755
+  - src: ./packaging/man/cryptomako.1
+    dst: /usr/share/man/man1/cryptomako.1
+    file_info:
+      mode: 0644
+  - src: ./packaging/debian/copyright
+    dst: /usr/share/doc/cryptomako/copyright
+    file_info:
+      mode: 0644
+  - src: ./packaging/README.md
+    dst: /usr/share/doc/cryptomako/README.md
+    file_info:
+      mode: 0644
