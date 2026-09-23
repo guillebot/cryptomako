@@ -251,8 +251,9 @@ enum BrandIcon {
     }
 
     private static func templateStatusBarImage() -> NSImage {
-        if let source = cached {
-            let size = statusBarSize
+        let size = statusBarSize
+        // Prefer the canonical cyan-only menu-bar template (white bucket + padlock).
+        if let source = loadNamed("MenuBarTemplate") ?? cached {
             let scaled = NSImage(size: size)
             scaled.lockFocus()
             NSGraphicsContext.current?.imageInterpolation = .high
@@ -270,6 +271,22 @@ enum BrandIcon {
             ?? NSImage(size: statusBarSize)
         symbol.isTemplate = true
         return symbol
+    }
+
+    private static func loadNamed(_ name: String) -> NSImage? {
+        #if SWIFT_PACKAGE
+        if let url = Bundle.module.url(forResource: name, withExtension: "png"),
+           let image = NSImage(contentsOf: url)
+        {
+            return image
+        }
+        #endif
+        if let url = Bundle.main.url(forResource: name, withExtension: "png"),
+           let image = NSImage(contentsOf: url)
+        {
+            return image
+        }
+        return nil
     }
 
     static var swiftUIImage: Image {
