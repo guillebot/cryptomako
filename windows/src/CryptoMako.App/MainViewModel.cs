@@ -20,6 +20,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private string _vaultFolder = Environment.MachineName;
     private bool _busy;
     private S3ProbeResult? _probe;
+    private CancellationTokenSource? _monitorCts;
+    private bool _userWantsUnlocked;
+    private bool? _lastReachable;
 
     public MainViewModel(ISecretStore? secrets = null)
     {
@@ -130,7 +133,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         Busy = true;
         try
         {
-            await LockAsync();
+            await LockAsync(clearWantUnlocked: false);
             var password = string.IsNullOrEmpty(Password)
                 ? _secrets.GetSecret(SecretAccounts.Password)
                 : Password;
@@ -156,9 +159,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 _session = await VaultSession.UnlockAsync(store, Settings.NormalizedPrefix, password, ct: ct);
             }
 
+            _userWantsUnlocked = true;
             Status = $"unlocked format={_session.Metadata.Format} {_session.RootPath}";
             OnPropertyChanged(nameof(IsUnlocked));
-        OnPropertyChanged(nameof(StatusTrayLabel));
+            OnPropertyChanged(nameof(StatusTrayLabel));
             AppendLog(Status);
         }
         catch (Exception ex)
@@ -173,14 +177,145 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
 
-    public Task LockAsync()
+    public Task LockAsync(bool clearWantUnlocked = true)
     {
         _session?.Dispose();
         _session = null;
+        if (clearWantUnlocked)
+            _userWantsUnlocked = false;
         Status = "locked";
         OnPropertyChanged(nameof(IsUnlocked));
         OnPropertyChanged(nameof(StatusTrayLabel));
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Periodic S3 probe (≈20s). When <see cref="VaultSettings.AutoReconnect"/> is on and the
+    /// user previously unlocked (or auto-reconnect was enabled at launch), recover after outages.
+    /// </summary>
+    public void StartConnectivityMonitor()
+    {
+        StopConnectivityMonitor();
+        var cts = new CancellationTokenSource();
+        _monitorCts = cts;
+        _ = Task.Run(async () =>
+        {
+            while (!cts.IsCancellationRequested)
+            {
+                try
+                {
+                    await ProbeEndpointOnceAsync(cts.Token).ConfigureAwait(false);
+                    await Task.Delay(TimeSpan.FromSeconds(20), cts.Token).ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception ex)
+                {
+                    AppendLog("connectivity monitor: " + ex.Message.Replace('\n', ' '));
+                    try { await Task.Delay(TimeSpan.FromSeconds(20), cts.Token).ConfigureAwait(false); }
+                    catch (OperationCanceledException) { break; }
+                }
+            }
+        }, cts.Token);
+    }
+
+    public void StopConnectivityMonitor()
+    {
+        try { _monitorCts?.Cancel(); } catch { /* ignore */ }
+        _monitorCts?.Dispose();
+        _monitorCts = null;
+    }
+
+    /// <summary>Call when the auto-reconnect checkbox is toggled (persists via SaveSettings).</summary>
+    public async Task OnAutoReconnectChangedAsync(CancellationToken ct = default)
+    {
+        SaveSettings();
+        if (Settings.AutoReconnect)
+        {
+            _userWantsUnlocked = true;
+            await AttemptAutoUnlockAsync("preference", ct);
+        }
+        StartConnectivityMonitor();
+    }
+
+    /// <summary>Launch hook: start monitor; if autoReconnect, try unlock once.</summary>
+    public async Task InitializeConnectivityAsync(CancellationToken ct = default)
+    {
+        StartConnectivityMonitor();
+        if (Settings.AutoReconnect)
+        {
+            _userWantsUnlocked = true;
+            await AttemptAutoUnlockAsync("launch", ct);
+        }
+    }
+
+    private async Task ProbeEndpointOnceAsync(CancellationToken ct)
+    {
+        if (Settings.IsLocal)
+        {
+            _lastReachable = null;
+            return;
+        }
+
+        var secretKey = _secrets.GetSecret(SecretAccounts.SecretKey);
+        var proxyPass = _secrets.GetSecret(SecretAccounts.ProxyPassword);
+        S3ProbeResult result;
+        try
+        {
+            result = await S3Probe.ProbeAsync(Settings, secretKey, Preferences, proxyPass, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex)
+        {
+            result = new S3ProbeResult
+            {
+                Dns = ProbeLamp.Fail,
+                Tcp = ProbeLamp.Fail,
+                Https = ProbeLamp.Fail,
+                List = ProbeLamp.Fail,
+                Detail = ex.Message,
+            };
+        }
+
+        // Do not assign LastProbe here — monitor runs off the UI thread; ProbeAsync owns lamps.
+        // Reachable = TCP ok and HTTPS not failed (list may still fail without credentials).
+        var ok = result.Tcp == ProbeLamp.Ok
+                 && result.Https is not ProbeLamp.Fail
+                 && result.Dns is not ProbeLamp.Fail;
+
+        var previous = _lastReachable;
+        _lastReachable = ok;
+
+        if (ok)
+        {
+            if (previous == false)
+            {
+                AppendLog("S3 endpoint reachable again");
+                await AttemptAutoUnlockAsync("reconnect", ct).ConfigureAwait(false);
+            }
+        }
+        else if (previous != false)
+        {
+            AppendLog("No connectivity to S3 endpoint — check VPN or internet");
+        }
+    }
+
+    private async Task AttemptAutoUnlockAsync(string reason, CancellationToken ct)
+    {
+        if (!Settings.AutoReconnect || !_userWantsUnlocked || IsUnlocked || Busy)
+            return;
+        if (!Settings.IsLocal && _lastReachable == false)
+            return;
+        AppendLog(reason == "reconnect" ? "Reconnecting to vault…" : "Automatic unlock…");
+        try
+        {
+            await UnlockAsync(ct).ConfigureAwait(false);
+        }
+        catch
+        {
+            // UnlockAsync already logged.
+        }
     }
 
     public async Task ProbeAsync(CancellationToken ct = default)
@@ -250,5 +385,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private void OnPropertyChanged([CallerMemberName] string? name = null) =>
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 
-    public async ValueTask DisposeAsync() => await LockAsync();
+    public async ValueTask DisposeAsync()
+    {
+        StopConnectivityMonitor();
+        await LockAsync();
+    }
 }
+

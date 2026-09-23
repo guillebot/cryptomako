@@ -39,6 +39,7 @@ public partial class App : Application
             InstallTray();
             _vm.PropertyChanged += OnVmPropertyChanged;
             RefreshTrayLabels();
+            _ = _vm.InitializeConnectivityAsync();
         }
 
         base.OnFrameworkInitializationCompleted();

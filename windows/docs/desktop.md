@@ -35,3 +35,11 @@ Live **Cloud Files API** registration and Explorer placeholder mount are **Windo
 
 - Secrets: `cryptomako cred` → Credential Manager on Windows; env / `~/.config/cryptomako/secrets.json` on Mac.
 - Settings paths: `%AppData%/CryptoMako/settings.json` + `app-preferences.json` (Windows); `~/.config/cryptomako/` on Mac.
+
+### autoReconnect
+
+When **auto-reconnect** is checked (VaultSettings `autoReconnect`, no new keys):
+
+- On launch / toggle: attempt unlock if password + (local path | S3 secrets) are available.
+- Background probe ~every 20s; after an outage→reachable transition, unlock again if the user still wants an unlocked session (Unlock sets that; Lock clears it).
+

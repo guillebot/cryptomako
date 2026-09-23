@@ -88,6 +88,7 @@ Secrets: env / Credential Manager only.
 
 - **Desktop (Avalonia) + tray:** `dotnet run --project src/CryptoMako.Desktop` — Vault / Backup / Settings; tray unlock/lock/probe/open/quit (close hides to tray). See `docs/desktop.md`.
 - **CfAPI:** stubs only on Mac — **needs a Windows box** for live Explorer mount (`src/CryptoMako.CfApi`, `docs/cfapi.md`).
+- **Parity checklist:** `docs/parity.md` · packaging: `docs/packaging.md`.
 - **Credentials CLI:** `cryptomako cred list|get|set|delete` (stdin for set; Credential Manager on Windows).
 
 ## Backup Sync
@@ -105,8 +106,21 @@ Secrets: env or Windows Credential Manager (`CryptoMako/CRYPTOMAKO_*`).
 
 - `dotnet test` green (golden + SigV4 + settings + Backup Sync + proxy mapping)
 - Local CLI matches `fixtures/expected-ls.txt` and hello.txt
-- S3 client: get/list/put/delete over HTTPS with SigV4; unlock/ls/cat/get/stat/sync/delete/rename wired
+- S3 client: get/list/put/delete over HTTPS with SigV4; unlock/ls/cat/get/stat/sync/delete/rename/mkdir/put wired
+- autoReconnect connectivity monitor (Desktop); parity checklist: `docs/parity.md`
 - Proxy modes system|direct|custom applied to S3 HttpClient
+
+## Remaining for Windows box
+
+See **`docs/parity.md`** for the full macOS ↔ Windows checklist.
+
+Still needs a real Windows machine:
+
+1. Live **CfAPI / Explorer** mount (stubs only on Mac — never claim mount works from Mac CI)
+2. Smoke **Avalonia tray** + Credential Manager on Windows
+3. **`dotnet publish -r win-x64`** packaging smoke (`docs/packaging.md`); MSIX/WinUI later
+
+Non-CfAPI library/CLI/Desktop paths (unlock, browse, mutations, Backup Sync, proxy, auto-reconnect) are intended to work on Mac host builds.
 
 ## License
 

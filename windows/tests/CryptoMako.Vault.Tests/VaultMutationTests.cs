@@ -3,7 +3,7 @@ using Xunit;
 
 namespace CryptoMako.Vault.Tests;
 
-/// <summary>Delete / rename against a copied local vault (DirectoryObjectStore).</summary>
+/// <summary>Delete / rename / mkdir+put against a copied local vault (DirectoryObjectStore).</summary>
 public sealed class VaultMutationTests
 {
     private static string RepoRoot =>
@@ -107,6 +107,24 @@ public sealed class VaultMutationTests
             Assert.DoesNotContain(entries, e => e.Contains("dir-a"));
             Assert.Contains(entries, e => e.Contains("dir-b"));
             Assert.Equal("in\n", Encoding.UTF8.GetString(await session.CatAsync("/dir-b/inside.txt")));
+        }
+        finally
+        {
+            try { Directory.Delete(vaultDir, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public async Task EnsureDirectoryPath_Then_Put_Roundtrip()
+    {
+        Assert.True(Directory.Exists(FixtureVault));
+        var vaultDir = CopyVault();
+        try
+        {
+            await using var session = VaultSession.UnlockLocal(vaultDir, Password);
+            var parent = await session.EnsureDirectoryPathAsync("/mut/nested");
+            await session.PutFileAsync(parent, "x.txt", Encoding.UTF8.GetBytes("z\n"));
+            Assert.Equal("z\n", Encoding.UTF8.GetString(await session.CatAsync("/mut/nested/x.txt")));
         }
         finally
         {

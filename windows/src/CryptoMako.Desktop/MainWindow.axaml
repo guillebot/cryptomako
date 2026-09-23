@@ -48,7 +48,7 @@
               <TextBlock Text="Password" Width="100" VerticalAlignment="Center" />
               <TextBox Width="280" Text="{Binding Password}" PasswordChar="•" />
               <CheckBox IsChecked="{Binding Settings.PathStyle}" Content="path-style" />
-              <CheckBox IsChecked="{Binding Settings.AutoReconnect}" Content="auto-reconnect" />
+              <CheckBox IsChecked="{Binding Settings.AutoReconnect}" Content="auto-reconnect" Click="OnAutoReconnectClick" />
             </StackPanel>
 
             <StackPanel Orientation="Horizontal" Spacing="8">

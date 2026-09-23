@@ -23,6 +23,8 @@ static async Task<int> MainAsync(string[] args)
             "sync" => await CmdSyncAsync(ParseOpts(args.AsSpan(1))),
             "delete" => await CmdDeleteAsync(ParseOpts(args.AsSpan(1))),
             "rename" => await CmdRenameAsync(ParseOpts(args.AsSpan(1))),
+            "mkdir" => await CmdMkdirAsync(ParseOpts(args.AsSpan(1))),
+            "put" => await CmdPutAsync(ParseOpts(args.AsSpan(1))),
             "cred" => CmdCred(args.AsSpan(1)),
             _ => Fail(2, $"unknown command: {args[0]}"),
         };
@@ -114,6 +116,43 @@ static async Task<int> CmdSyncAsync(Opts o)
     Console.WriteLine($"uploaded={result.FilesUploaded}");
     Console.WriteLine($"skipped={result.FilesSkipped}");
     Console.WriteLine($"bytes={result.BytesUploaded}");
+    return 0;
+}
+
+static async Task<int> CmdMkdirAsync(Opts o)
+{
+    if (o.PositionalPath is null) return Fail(2, "mkdir requires a cleartext path");
+    await using var session = await OpenSessionAsync(o);
+    var dirId = await session.EnsureDirectoryPathAsync(o.PositionalPath);
+    Console.Error.WriteLine($"mkdir {o.PositionalPath} dirId={dirId}");
+    return 0;
+}
+
+static async Task<int> CmdPutAsync(Opts o)
+{
+    if (o.PositionalPath is null) return Fail(2, "put requires a cleartext destination path");
+    await using var session = await OpenSessionAsync(o);
+    var dest = o.PositionalPath.TrimEnd('/');
+    var parts = dest.Split('/', StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length == 0) return Fail(2, "put destination must include a file name");
+    var fileName = parts[^1];
+    var parentPath = parts.Length == 1 ? "/" : "/" + string.Join('/', parts.Take(parts.Length - 1));
+    var parentDirId = parentPath == "/"
+        ? ""
+        : await session.EnsureDirectoryPathAsync(parentPath);
+
+    byte[] bytes;
+    if (!string.IsNullOrEmpty(o.InputPath))
+        bytes = await File.ReadAllBytesAsync(o.InputPath);
+    else
+    {
+        using var ms = new MemoryStream();
+        await Console.OpenStandardInput().CopyToAsync(ms);
+        bytes = ms.ToArray();
+    }
+
+    var node = await session.PutFileAsync(parentDirId, fileName, bytes);
+    Console.Error.WriteLine($"put {dest} ciphertext-bytes={node.Size}");
     return 0;
 }
 
@@ -318,6 +357,7 @@ static Opts ParseOpts(ReadOnlySpan<string> args)
     bool recursive = false, virtualHosted = false;
     string? positional = null;
     string? renameTo = null;
+    string? inputPath = null;
 
     for (var i = 0; i < args.Length; i++)
     {
@@ -338,6 +378,9 @@ static Opts ParseOpts(ReadOnlySpan<string> args)
             case "--source": source = NeedValue(args, ref i, a); break;
             case "--vault-folder": vaultFolder = NeedValue(args, ref i, a); break;
             case "--sync-state": syncStatePath = NeedValue(args, ref i, a); break;
+            case "--input":
+            case "-i":
+                inputPath = NeedValue(args, ref i, a); break;
             case "--output":
             case "-o":
                 output = NeedValue(args, ref i, a);
@@ -362,7 +405,7 @@ static Opts ParseOpts(ReadOnlySpan<string> args)
 
     return new Opts(local, endpoint, region, bucket, prefix, accessKey, configPath, preferencesPath,
         passwordEnv, secretKeyEnv, path, recursive, virtualHosted, positional, output,
-        source, vaultFolder, syncStatePath, renameTo);
+        source, vaultFolder, syncStatePath, renameTo, inputPath);
 }
 
 static string NeedValue(ReadOnlySpan<string> args, ref int i, string flag)
@@ -404,6 +447,8 @@ static void PrintHelp()
           cryptomako sync   (...) --source DIR --vault-folder NAME
           cryptomako delete (...) <cleartext-path> [-R]
           cryptomako rename (...) <from> <to>
+          cryptomako mkdir  (...) <cleartext-path>
+          cryptomako put    (...) <cleartext-path> [--input FILE | stdin]
           cryptomako cred   list|get|set|delete <account>
 
         Connection:
@@ -451,4 +496,5 @@ sealed record Opts(
     string? Source,
     string? VaultFolder,
     string? SyncStatePath,
-    string? RenameTo);
+    string? RenameTo,
+    string? InputPath);

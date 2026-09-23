@@ -40,6 +40,12 @@ public partial class MainWindow : Window
         catch (Exception ex) { VmLog(ex); }
     }
 
+    private async void OnAutoReconnectClick(object? sender, RoutedEventArgs e)
+    {
+        try { await Vm.OnAutoReconnectChangedAsync(); }
+        catch (Exception ex) { VmLog(ex); }
+    }
+
     private void OnSavePassword(object? sender, RoutedEventArgs e)
     {
         try { Vm.SavePasswordToStore(); }
