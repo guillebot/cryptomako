@@ -26,6 +26,13 @@ struct CryptoMakoApp: App {
                     }
                 }
             }
+            CommandGroup(replacing: .appSettings) {
+                Button("Settings…") {
+                    delegate.model.openSettings()
+                    delegate.showMainWindow()
+                }
+                .keyboardShortcut(",", modifiers: .command)
+            }
         }
     }
 }

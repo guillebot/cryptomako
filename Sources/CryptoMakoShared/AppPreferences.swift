@@ -19,13 +19,23 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     /// Target Sync upload rate in megabits/second (decimal Mbps). Ignored when limit is off.
     public var syncUploadCapMbps: Double
 
+    /// Concurrent Backup Sync puts for small files (default matches BackupSyncEngine legacy constant).
+    public var syncSmallPutConcurrency: Int
+    /// Concurrent Backup Sync puts for medium files.
+    public var syncMediumPutConcurrency: Int
+    /// Concurrent Backup Sync puts for large files (memory-bound).
+    public var syncLargePutConcurrency: Int
+
     public init(
         proxyMode: ProxyMode = .system,
         proxyHost: String = "",
         proxyPort: Int = 8080,
         proxyUsername: String = "",
         limitSyncUploadBandwidth: Bool = false,
-        syncUploadCapMbps: Double = 50
+        syncUploadCapMbps: Double = 50,
+        syncSmallPutConcurrency: Int = 96,
+        syncMediumPutConcurrency: Int = 32,
+        syncLargePutConcurrency: Int = 4
     ) {
         self.proxyMode = proxyMode
         self.proxyHost = proxyHost
@@ -33,6 +43,9 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         self.proxyUsername = proxyUsername
         self.limitSyncUploadBandwidth = limitSyncUploadBandwidth
         self.syncUploadCapMbps = syncUploadCapMbps
+        self.syncSmallPutConcurrency = syncSmallPutConcurrency
+        self.syncMediumPutConcurrency = syncMediumPutConcurrency
+        self.syncLargePutConcurrency = syncLargePutConcurrency
     }
 
     public static let `default` = AppPreferences()
@@ -40,6 +53,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     enum CodingKeys: String, CodingKey {
         case proxyMode, proxyHost, proxyPort, proxyUsername
         case limitSyncUploadBandwidth, syncUploadCapMbps
+        case syncSmallPutConcurrency, syncMediumPutConcurrency, syncLargePutConcurrency
     }
 
     public init(from decoder: Decoder) throws {
@@ -50,7 +64,22 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         proxyUsername = try c.decodeIfPresent(String.self, forKey: .proxyUsername) ?? ""
         limitSyncUploadBandwidth = try c.decodeIfPresent(Bool.self, forKey: .limitSyncUploadBandwidth) ?? false
         syncUploadCapMbps = try c.decodeIfPresent(Double.self, forKey: .syncUploadCapMbps) ?? 50
+        syncSmallPutConcurrency = try c.decodeIfPresent(Int.self, forKey: .syncSmallPutConcurrency) ?? 96
+        syncMediumPutConcurrency = try c.decodeIfPresent(Int.self, forKey: .syncMediumPutConcurrency) ?? 32
+        syncLargePutConcurrency = try c.decodeIfPresent(Int.self, forKey: .syncLargePutConcurrency) ?? 4
     }
+
+    /// Clamp worker knobs to safe ranges (fail-closed: never zero / never unbounded).
+    public mutating func clampSyncWorkers() {
+        syncSmallPutConcurrency = min(max(syncSmallPutConcurrency, 1), 256)
+        syncMediumPutConcurrency = min(max(syncMediumPutConcurrency, 1), 128)
+        syncLargePutConcurrency = min(max(syncLargePutConcurrency, 1), 16)
+        if syncUploadCapMbps < 1 { syncUploadCapMbps = 1 }
+    }
+
+    public var clampedSmallPutConcurrency: Int { min(max(syncSmallPutConcurrency, 1), 256) }
+    public var clampedMediumPutConcurrency: Int { min(max(syncMediumPutConcurrency, 1), 128) }
+    public var clampedLargePutConcurrency: Int { min(max(syncLargePutConcurrency, 1), 16) }
 
     // MARK: - Locations
 
@@ -71,6 +100,8 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     }
 
     public func save() throws {
+        var copy = self
+        copy.clampSyncWorkers()
         guard let url = Self.fileURL else {
             throw CocoaError(.fileNoSuchFile)
         }
@@ -80,7 +111,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         )
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        try encoder.encode(self).write(to: url, options: .atomic)
+        try encoder.encode(copy).write(to: url, options: .atomic)
     }
 
     /// Bytes/sec target for Sync pacing, or `nil` when unlimited.

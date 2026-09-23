@@ -8,15 +8,18 @@ struct ContentView: View {
     @EnvironmentObject private var model: VaultAppModel
 
     var body: some View {
-        TabView {
+        TabView(selection: $model.selectedTab) {
             vaultTab
                 .tabItem { Label("Vault", systemImage: "lock.rectangle.stack") }
+                .tag(VaultAppModel.MainTab.vault)
             BackupView(syncEngine: model.backupSync)
                 .environmentObject(model)
                 .tabItem { Label("Backup", systemImage: "externaldrive.badge.timemachine") }
+                .tag(VaultAppModel.MainTab.backup)
             SettingsView()
                 .environmentObject(model)
                 .tabItem { Label("Settings", systemImage: "gearshape") }
+                .tag(VaultAppModel.MainTab.settings)
         }
         .frame(minWidth: 620, minHeight: 360)
         .onAppear {
@@ -463,6 +466,22 @@ struct BackupView: View {
                     }
                     .frame(maxHeight: 120)
                 }
+            }
+
+            GroupBox("Related settings") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Bandwidth cap, put-worker concurrency, and path excludes live in Settings.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    HStack(spacing: 10) {
+                        Button("Bandwidth…") { model.openSettings(section: .bandwidth) }
+                        Button("Sync workers…") { model.openSettings(section: .syncWorkers) }
+                        Button("Excludes…") { model.openSettings(section: .excludes) }
+                    }
+                }
+                .padding(4)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
 
             Text("Finder File Provider stays the viewer. Bulk backup uses Sync direct or rclone→\(FuseMountController.preferredMountURL.path).")

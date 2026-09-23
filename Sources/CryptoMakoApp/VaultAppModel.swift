@@ -88,6 +88,30 @@ final class VaultAppModel: ObservableObject {
     let fuseMount = FuseMountController.shared
     @Published var rcloneLog: String = ""
 
+    /// Main window tabs (Vault / Backup / Settings). Driven by TabView + ⌘,.
+    enum MainTab: Hashable {
+        case vault
+        case backup
+        case settings
+    }
+
+    /// Optional Settings subsection to scroll/highlight when opening from Backup links or menu.
+    enum SettingsSection: String, Hashable {
+        case about
+        case network
+        case bandwidth
+        case syncWorkers
+        case excludes
+    }
+
+    @Published var selectedTab: MainTab = .vault
+    @Published var settingsFocus: SettingsSection? = nil
+
+    func openSettings(section: SettingsSection? = nil) {
+        settingsFocus = section
+        selectedTab = .settings
+    }
+
     /// Kept while unlocked so List root / List recursive can refresh without a full re-unlock.
     private var activeSession: VaultSession?
     private var activeStore: (any ObjectStore)?

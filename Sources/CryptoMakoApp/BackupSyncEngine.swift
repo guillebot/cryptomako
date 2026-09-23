@@ -274,13 +274,6 @@ final class BackupSyncEngine: ObservableObject {
     /// Prefer medium+ files on a dedicated pool so millions of tiny puts cannot
     /// monopolize every worker (was burying useful MB-scale uploads).
     nonisolated private static let mediumFileBytes: Int64 = 256 * 1024
-    /// Concurrent puts for files under `largeFileBytes` (aggressive — fill a home uplink).
-    nonisolated private static let smallPutConcurrency = 96
-    /// Concurrent puts for medium files (≥ mediumFileBytes, < largeFileBytes).
-    nonisolated private static let mediumPutConcurrency = 32
-    /// Concurrent puts for large files (memory-bound).
-    nonisolated private static let largePutConcurrency = 4
-
     private struct PendingUpload: Sendable {
         /// Relative folder under the source root ("" = vault source root). Resolved
         /// in put workers — never on the walk thread — so dir.c9r GETs cannot starve
@@ -476,10 +469,15 @@ final class BackupSyncEngine: ObservableObject {
         let vaultFolder = vaultFolderName
         let largeThreshold = Self.largeFileBytes
         let mediumThreshold = Self.mediumFileBytes
-        let smallWorkers = Self.smallPutConcurrency
-        let mediumWorkers = Self.mediumPutConcurrency
-        let largeWorkers = Self.largePutConcurrency
+        // Worker counts come from Settings (AppPreferences); clamp fail-closed.
+        let syncPrefs = AppPreferences.load()
+        let smallWorkers = syncPrefs.clampedSmallPutConcurrency
+        let mediumWorkers = syncPrefs.clampedMediumPutConcurrency
+        let largeWorkers = syncPrefs.clampedLargePutConcurrency
         let workerCount = smallWorkers + mediumWorkers + largeWorkers
+        Self.syncLog.info(
+            "put workers small=\(smallWorkers) medium=\(mediumWorkers) large=\(largeWorkers)"
+        )
 
         final class StateBox: @unchecked Sendable {
             let lock = NSLock()
