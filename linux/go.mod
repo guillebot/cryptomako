@@ -4,6 +4,7 @@ go 1.22
 
 require (
 	github.com/NickBall/go-aes-key-wrap v0.0.0-20170929221519-1c3aa3e4dfc5
+	github.com/hanwen/go-fuse/v2 v2.5.1
 	github.com/jacobsa/crypto v0.0.0-20190317225127-9f44e2d11115
 	github.com/spf13/cobra v1.8.1
 	golang.org/x/crypto v0.28.0
@@ -18,4 +19,5 @@ require (
 	github.com/jacobsa/reqtrace v0.0.0-20150505043853-245c9e0234cb // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stretchr/testify v1.12.1 // indirect
+	golang.org/x/sys v0.26.0 // indirect
 )

@@ -9,7 +9,7 @@ Lives under `linux/` in the main repo (not a sibling). Shares `fixtures/` with m
 | Surface | Role |
 |---------|------|
 | **CLI** (`unlock` / `ls` / `cat`) | First milestone — this folder |
-| **libfuse3 FUSE** | Cleartext mount for tools; never mount ciphertext |
+| **FUSE** (`mount`) | Cleartext read-only mount (`go-fuse` / `/dev/fuse`); never mount ciphertext |
 | **Backup Sync** | Large trees: walk → encrypt → remote put. Fail-closed |
 
 ## Product locks
@@ -47,6 +47,11 @@ export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < ../fixtures/PASSWORD)"
 ./cryptomako ls --local ../fixtures/vault --path / --recursive | diff -u ../fixtures/expected-ls.txt -
 ./cryptomako cat --local ../fixtures/vault /hello.txt
 # → hello cryptomako
+
+# FUSE cleartext mount (Linux; read-only)
+mkdir -p /tmp/cryptomako-mnt
+./cryptomako mount --local ../fixtures/vault --mountpoint /tmp/cryptomako-mnt
+# cat /tmp/cryptomako-mnt/hello.txt
 ```
 
 Remote (S3) needs non-secret config plus the secret env:

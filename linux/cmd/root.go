@@ -10,7 +10,7 @@ import (
 // Root is the cryptomako CLI entry.
 var Root = &cobra.Command{
 	Use:   "cryptomako",
-	Short: "Unlock and browse Cryptomator format-8 vaults on S3",
+	Short: "Unlock, browse, and FUSE-mount Cryptomator format-8 vaults",
 	Long: `CryptoMako Linux CLI: point at an S3-compatible bucket (HTTPS / SigV4),
 unlock a Cryptomator format-8 vault, and work with cleartext names locally.
 Ciphertext never leaves the object store unencrypted; remote put/delete fail closed.`,
