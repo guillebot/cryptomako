@@ -23,7 +23,10 @@ public sealed class Cryptor : IDisposable
     {
         _masterkey = masterkey;
         _ownsMasterkey = ownsMasterkey;
-        _siv = new AesSiv(masterkey.SivKey);
+        // SivKey allocates aes||mac copy ? zero after AesSiv takes its own key material.
+        var sivKey = masterkey.SivKey;
+        try { _siv = new AesSiv(sivKey); }
+        finally { CryptographicOperations.ZeroMemory(sivKey); }
     }
 
     public static Cryptor CreateWorker(Masterkey shared) =>

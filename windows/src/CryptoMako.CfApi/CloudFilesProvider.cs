@@ -1175,6 +1175,100 @@ public sealed class CloudFilesProvider : IDisposable
         }
     }
 
+    /// <summary>
+    /// Re-enables on-demand population for a directory placeholder so the next Explorer
+    /// access triggers FETCH_PLACEHOLDERS again (needed after TRANSFER with DISABLE_ON_DEMAND).
+    /// </summary>
+    public static bool TryEnableOnDemandPopulation(string absoluteFsPath)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17134))
+            return false;
+        if (string.IsNullOrWhiteSpace(absoluteFsPath))
+            return false;
+        try
+        {
+            var openHr = CfOpenFileWithOplock(
+                absoluteFsPath,
+                CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE,
+                out var protectedHandle);
+            if (openHr.Failed || protectedHandle is null || protectedHandle.IsInvalid)
+                return false;
+            using (protectedHandle)
+            {
+                var win32 = CfGetWin32HandleFromProtectedHandle(protectedHandle);
+                if (win32 == HFILE.NULL || win32.IsNull)
+                    return false;
+                long usn = 0;
+                var meta = new CF_FS_METADATA
+                {
+                    BasicInfo = new FILE_BASIC_INFO
+                    {
+                        FileAttributes = FileFlagsAndAttributes.FILE_ATTRIBUTE_DIRECTORY,
+                    },
+                    FileSize = 0,
+                };
+                // FileIdentity Length 0 = leave identity unchanged; enable on-demand population.
+                CfUpdatePlaceholder(
+                    win32,
+                    meta,
+                    IntPtr.Zero,
+                    0,
+                    Array.Empty<CF_FILE_RANGE>(),
+                    0,
+                    CF_UPDATE_FLAGS.CF_UPDATE_FLAG_ENABLE_ON_DEMAND_POPULATION
+                        | CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC,
+                    ref usn,
+                    IntPtr.Zero).ThrowIfFailed();
+                return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Maps a vault cleartext directory to an absolute sync-root filesystem path.
+    /// </summary>
+    public string? TryVaultPathToFsPath(string? vaultCleartextPath)
+    {
+        if (string.IsNullOrWhiteSpace(vaultCleartextPath))
+            return null;
+        var norm = NormalizeVaultCleartextPath(vaultCleartextPath);
+        if (norm == "/")
+            return SyncRootPath;
+        var rel = norm.TrimStart('/').Replace('/', Path.DirectorySeparatorChar);
+        try { return Path.GetFullPath(Path.Combine(SyncRootPath, rel)); }
+        catch { return null; }
+    }
+
+    /// <summary>
+    /// Re-lists one vault directory level, creates any missing child placeholders, then
+    /// re-enables on-demand population so Explorer can FETCH_PLACEHOLDERS again.
+    /// </summary>
+    public async Task<int> RefreshDirectoryAsync(string vaultCleartextPath, CancellationToken ct = default)
+    {
+        EnsureWindows();
+        if (!_registered)
+            throw new InvalidOperationException("RegisterSyncRoot first.");
+        if (Session is null)
+            throw new InvalidOperationException("AttachSession first.");
+
+        ct.ThrowIfCancellationRequested();
+        var parent = NormalizeVaultCleartextPath(vaultCleartextPath);
+        var entries = await Session.ListAsync(parent, recursive: false, ct).ConfigureAwait(false);
+        var children = BuildImmediateChildPlaceholders(parent, entries);
+        // Best-effort create (existing placeholders may already be present).
+        var created = CreatePlaceholders(children);
+
+        var fsPath = TryVaultPathToFsPath(parent);
+        if (fsPath is not null)
+            TryEnableOnDemandPopulation(fsPath);
+
+        return created;
+    }
+
     public static bool TryMarkPlaceholderInSync(string absoluteFsPath)
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17134))

@@ -255,11 +255,12 @@ static int CmdCfApi(ReadOnlySpan<string> args)
     if (args.Length == 0 || args[0] is "-h" or "--help")
     {
         Console.WriteLine("""
-            cryptomako cfapi status|register|unregister|connect|populate|platform
+            cryptomako cfapi status|register|unregister|connect|populate|refresh-dir|platform
               --root DIR     Sync root (default: %LOCALAPPDATA%/CryptoMako/SyncRoot)
               --account NAME Sync root account id (default: default)
               --local DIR    Vault directory for populate (CRYPTOMAKO_PASSWORD)
               --recursive    populate: seed entire tree (default: root level only; nested via FETCH_PLACEHOLDERS)
+              --path PATH    refresh-dir: vault cleartext dir (default: /)
             """);
         return args.Length == 0 ? 2 : 0;
     }
@@ -268,6 +269,7 @@ static int CmdCfApi(ReadOnlySpan<string> args)
     string account = "default";
     string? localVault = null;
     var recursivePopulate = false;
+    string refreshPath = "/";
     var cmd = args[0];
     for (var i = 1; i < args.Length; i++)
     {
@@ -275,6 +277,7 @@ static int CmdCfApi(ReadOnlySpan<string> args)
         if (a is "--root" && i + 1 < args.Length) { root = args[++i]; continue; }
         if (a is "--account" && i + 1 < args.Length) { account = args[++i]; continue; }
         if (a is "--local" && i + 1 < args.Length) { localVault = args[++i]; continue; }
+        if (a is "--path" && i + 1 < args.Length) { refreshPath = args[++i]; continue; }
         if (a is "--recursive") { recursivePopulate = true; continue; }
         return Fail(2, $"unknown cfapi flag: {a}");
     }
@@ -322,6 +325,23 @@ static int CmdCfApi(ReadOnlySpan<string> args)
             catch (ThreadInterruptedException) { }
             provider.Disconnect();
             return 0;
+        case "refresh-dir":
+        {
+            if (string.IsNullOrEmpty(localVault))
+                return Fail(2, "refresh-dir requires --local VAULT_DIR");
+            var passwordRd = Environment.GetEnvironmentVariable("CRYPTOMAKO_PASSWORD")
+                ?? throw new InvalidOperationException("CRYPTOMAKO_PASSWORD required for refresh-dir");
+            try { provider.RegisterSyncRoot(account); } catch { /* already */ }
+            provider.Connect();
+            using (var sessionRd = VaultSession.UnlockLocal(localVault, passwordRd))
+            {
+                provider.AttachSession(sessionRd);
+                var n = provider.RefreshDirectoryAsync(refreshPath).GetAwaiter().GetResult();
+                Console.Error.WriteLine($"refresh-dir {refreshPath} placeholders+={n}");
+            }
+            provider.Disconnect();
+            return 0;
+        }
         case "populate":
         {
             if (string.IsNullOrEmpty(localVault))

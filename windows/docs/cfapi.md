@@ -59,6 +59,7 @@ Rationale: Partial hydration streams on demand (FETCH_DATA); AutoDehydrationAllo
 | `CfConnectSyncRoot` + Vanara `CF_CALLBACK` | OK FETCH_DATA / CANCEL / CLOSE / DELETE / RENAME |
 | `CfCreatePlaceholders` | OK populate (default: root level only; `--recursive` for full tree) |
 | `FETCH_PLACEHOLDERS` | OK one vault directory level ? `TRANSFER_PLACEHOLDERS` + disable on-demand for that folder |
+| Directory refresh | OK `RefreshDirectoryAsync` / `cfapi refresh-dir` + `TryEnableOnDemandPopulation` |
 | `FETCH_DATA` → vault `CatAsync` → `CfExecute(TRANSFER_DATA)` | OK smoke: hello.txt |
 | Fail-closed write gate | OK `AcknowledgeWriteOnlyIfRemoteOk` |
 | WinRT `StorageProviderSyncRootManager` | OK on windows TFM (`CryptoMako!SID!account`) |
@@ -112,6 +113,6 @@ Search indexer: not tuned this pass (AllowPinning + Partial hydrate is enough fo
 
 1. No conflict/merge / remote-change watcher (see Conflicts section).
 2. CLOSE cannot deny the close; remote put failure leaves local bytes dirty (no revert).
-3. No FETCH_PLACEHOLDERS on-demand listing beyond pre-populated placeholders.
-4. Search indexer / offline availability UX not tuned beyond AllowPinning + AutoDehydrationAllowed.
-5. WinRT `GetCurrentSyncRoots` empty on some hosts while Cf+registry path still provides Explorer awareness — investigate WinRT Register reliability.
+3. Search indexer / offline availability UX not tuned beyond AllowPinning + AutoDehydrationAllowed.
+4. WinRT `GetCurrentSyncRoots` empty on some hosts while Cf+registry path still provides Explorer awareness ? investigate WinRT Register reliability.
+5. Automatic remote-dir polling is not built-in; call `cfapi refresh-dir` (or `RefreshDirectoryAsync`) after known remote mutations to re-enable on-demand FETCH and create missing children.
