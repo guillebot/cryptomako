@@ -6,3 +6,6 @@
 
 # local secret mirror (dev hosts)
 **/secrets.json
+
+artifacts/
+

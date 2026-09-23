@@ -1,3 +1,4 @@
+﻿using CryptoMako.CfApi;
 using CryptoMako.S3;
 using CryptoMako.Vault;
 
@@ -25,6 +26,7 @@ static async Task<int> MainAsync(string[] args)
             "rename" => await CmdRenameAsync(ParseOpts(args.AsSpan(1))),
             "mkdir" => await CmdMkdirAsync(ParseOpts(args.AsSpan(1))),
             "put" => await CmdPutAsync(ParseOpts(args.AsSpan(1))),
+            "cfapi" => CmdCfApi(args.AsSpan(1)),
             "cred" => CmdCred(args.AsSpan(1)),
             _ => Fail(2, $"unknown command: {args[0]}"),
         };
@@ -248,12 +250,80 @@ static AppPreferences LoadAppPreferences(Opts o)
 }
 
 
+static int CmdCfApi(ReadOnlySpan<string> args)
+{
+    if (args.Length == 0 || args[0] is "-h" or "--help")
+    {
+        Console.WriteLine("""
+            cryptomako cfapi status|register|unregister|connect|platform
+              --root DIR     Sync root (default: %LOCALAPPDATA%/CryptoMako/SyncRoot)
+              --account NAME Sync root account id (default: default)
+            """);
+        return args.Length == 0 ? 2 : 0;
+    }
+
+    string? root = null;
+    string account = "default";
+    var cmd = args[0];
+    for (var i = 1; i < args.Length; i++)
+    {
+        var a = args[i];
+        if (a is "--root" && i + 1 < args.Length) { root = args[++i]; continue; }
+        if (a is "--account" && i + 1 < args.Length) { account = args[++i]; continue; }
+        return Fail(2, $"unknown cfapi flag: {a}");
+    }
+
+    root ??= Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "CryptoMako", "SyncRoot");
+
+    using var provider = new CloudFilesProvider(root);
+    switch (cmd)
+    {
+        case "platform":
+            Console.WriteLine($"supported={provider.IsWindowsCloudFilesAvailable}");
+            Console.WriteLine($"info={CloudFilesProvider.TryGetPlatformInfo() ?? "n/a"}");
+            return 0;
+        case "status":
+        {
+            var st = provider.GetStatus();
+            Console.WriteLine($"root={st.SyncRootPath}");
+            Console.WriteLine($"platformSupported={st.PlatformSupported}");
+            Console.WriteLine($"registered(in-process)={st.Registered}");
+            Console.WriteLine($"connected={st.Connected}");
+            Console.WriteLine($"sessionAttached={st.SessionAttached}");
+            Console.WriteLine($"platformInfo={st.PlatformInfo ?? ""}");
+            return 0;
+        }
+        case "register":
+            provider.RegisterSyncRoot(account);
+            Console.Error.WriteLine($"registered {root} account={account}");
+            return 0;
+        case "unregister":
+            provider.UnregisterSyncRoot();
+            Console.Error.WriteLine($"unregistered {root}");
+            return 0;
+        case "connect":
+            try { provider.RegisterSyncRoot(account); } catch { /* already registered */ }
+            provider.Connect();
+            Console.Error.WriteLine($"connected {root} — holding 60s for Explorer callbacks");
+            try { Thread.Sleep(TimeSpan.FromSeconds(60)); }
+            catch (ThreadInterruptedException) { }
+            provider.Disconnect();
+            return 0;
+        case "disconnect":
+            Console.Error.WriteLine("disconnect is in-process only; exit the connect holder");
+            return 0;
+        default:
+            return Fail(2, $"unknown cfapi command: {cmd}");
+    }
+}
 static int CmdCred(ReadOnlySpan<string> args)
 {
     if (args.Length == 0 || args[0] is "-h" or "--help")
     {
         Console.WriteLine("""
-            cryptomako cred — manage secrets (env / Windows Credential Manager)
+            cryptomako cred â€” manage secrets (env / Windows Credential Manager)
 
             Usage:
               cryptomako cred list
@@ -436,7 +506,7 @@ static int Fail(int code, string message)
 static void PrintHelp()
 {
     Console.WriteLine("""
-        cryptomako — CryptoMako Windows CLI (Cryptomator format 8)
+        cryptomako â€” CryptoMako Windows CLI (Cryptomator format 8)
 
         Usage:
           cryptomako unlock (--local DIR | S3 flags)
@@ -449,6 +519,7 @@ static void PrintHelp()
           cryptomako rename (...) <from> <to>
           cryptomako mkdir  (...) <cleartext-path>
           cryptomako put    (...) <cleartext-path> [--input FILE | stdin]
+          cryptomako cfapi  status|register|unregister|connect|platform
           cryptomako cred   list|get|set|delete <account>
 
         Connection:
@@ -467,8 +538,8 @@ static void PrintHelp()
           CRYPTOMAKO_SECRET_KEY
           CRYPTOMAKO_PROXY_PASSWORD
 
-        Sync workers (app-preferences.json): syncSmallPutConcurrency (1–256, default 96),
-          syncMediumPutConcurrency (1–128, default 32), syncLargePutConcurrency (1–16, default 4),
+        Sync workers (app-preferences.json): syncSmallPutConcurrency (1â€“256, default 96),
+          syncMediumPutConcurrency (1â€“128, default 32), syncLargePutConcurrency (1â€“16, default 4),
           limitSyncUploadBandwidth + syncUploadCapMbps (min 1).
 
         Credentials:
@@ -498,3 +569,5 @@ sealed record Opts(
     string? SyncStatePath,
     string? RenameTo,
     string? InputPath);
+
+

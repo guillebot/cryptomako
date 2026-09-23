@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <RootNamespace>CryptoMako.Cli</RootNamespace>
@@ -7,5 +7,6 @@
   <ItemGroup>
     <ProjectReference Include="..\CryptoMako.Vault\CryptoMako.Vault.csproj" />
     <ProjectReference Include="..\CryptoMako.S3\CryptoMako.S3.csproj" />
+    <ProjectReference Include="..\CryptoMako.CfApi\CryptoMako.CfApi.csproj" />
   </ItemGroup>
 </Project>

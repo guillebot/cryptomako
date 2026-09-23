@@ -1,8 +1,8 @@
-# CfAPI (Cloud Files) — Windows box required
+﻿# CfAPI (Cloud Files) — Windows box required
 
-> **Not live on macOS.** Stubs compile for solution green builds. Explorer mount / placeholder sync
-> must be validated on a real Windows machine. Do not treat Mac `dotnet build` of `CryptoMako.CfApi`
-> as evidence of a working mount.
+> Live **Register / Unregister** smoked on Windows 11 (build 26100). **Connect / placeholders /
+> Explorer hydrate** still need CsWin32-safe `CF_CALLBACK` marshalling. Do not claim a working
+> Explorer mount yet.
 
 CryptoMako’s Explorer surface is **Windows Cloud Files** (CfAPI). Local materialization
 is for browse + small transfers; **durable success = remote S3 put/delete 2xx**.
@@ -10,22 +10,43 @@ Never treat the CfAPI mount as a backup target (use Backup Sync).
 
 ## Project
 
-- `src/CryptoMako.CfApi` — managed stubs (`CloudFilesProvider`) that compile on macOS/Linux.
-- Real `CfRegisterSyncRoot` / callbacks need **Windows 10 1803+** and a Windows build box.
+- `src/CryptoMako.CfApi` — `CloudFilesProvider` + `CldApiNative` (P/Invoke `cldapi.dll`)
+- CLI: `cryptomako cfapi platform|status|register|unregister|connect`
 
-## Registration checklist (on Windows)
+## Smoke commands (Windows, no admin required for user folder)
 
-1. Build: `dotnet build src/CryptoMako.CfApi -c Release` (and the desktop host).
-2. Pick a sync root directory, e.g. `%USERPROFILE%\CryptoMako`.
-3. Register the sync root with:
-   - Provider name: `CryptoMako`
-   - Sync root id: `CryptoMako!<account>` (unique per vault connection)
-   - Display name / icon resource
-4. Connect callbacks:
-   - `FETCH_DATA` / `FETCH_PLACEHOLDERS` → vault `get` / `list` over S3 or local store
-   - `NOTIFY_FILE_CLOSE_COMPLETION` / write path → encrypt + **remote put**; only then report success
-5. Hydrate on demand; pin policy = optional. Fail closed on transport errors.
-6. Unregister on logout / vault lock.
+```powershell
+cd windows
+dotnet publish src\CryptoMako.Cli -c Release -r win-x64 --self-contained false -o artifacts\cli-win-x64
+$exe = ".\artifacts\cli-win-x64\cryptomako.exe"
+$root = Join-Path $env:LOCALAPPDATA "CryptoMako\SyncRoot"
+
+& $exe cfapi platform
+# supported=True  info=build=… revision=… integration=…
+
+New-Item -ItemType Directory -Force -Path $root | Out-Null
+& $exe cfapi register --root $root --account default
+# registered … (CfRegisterSyncRoot)
+
+& $exe cfapi unregister --root $root
+```
+
+Elevation: **not required** if the sync root is under the user profile / LocalAppData and the
+process has WRITE_DATA on that folder. System-wide provider registration / SyncRootManager shell
+integration may need additional steps later.
+
+## Status (this branch)
+
+| Step | Status |
+|------|--------|
+| `CfGetPlatformInfo` | ✅ live |
+| `CfRegisterSyncRoot` | ✅ live (unit + CLI smoke) |
+| `CfUnregisterSyncRoot` | ✅ live |
+| `CfConnectSyncRoot` | ❌ E_INVALIDARG (0x80070057) / prior AV with naive callback table — needs CsWin32 `CF_CALLBACK` |
+| `FETCH_DATA` hydrate | ❌ blocked on Connect |
+| Placeholder create | ❌ blocked on Connect |
+| Shell SyncRootManager (Explorer glyph) | ❌ not wired (WinRT `StorageProviderSyncRootManager`) |
+| Fail-closed write gate helper | ✅ `AcknowledgeWriteOnlyIfRemoteOk` |
 
 ## Fail-closed writes
 
@@ -34,12 +55,9 @@ local write → encrypt → S3 PutObject (2xx) → acknowledge CfAPI transfer
                      ↘ any error → surface failure; do not claim durable
 ```
 
-## Build notes
+## Next (Windows)
 
-| Host | What works |
-|------|------------|
-| macOS (this repo’s current host) | Stub compile + unit tests for libraries; **no** live CfAPI |
-| Windows 10/11 + VS 2022 | Full register/smoke; add CsWin32/`cfsapi` P/Invoke |
-
-Ship UI: `CryptoMako.Desktop` (Avalonia) builds on Mac for smoke and on Windows for daily use.
-A future WinUI shell can reuse `CryptoMako.App` ViewModels.
+1. Add CsWin32 / Vanara `CF_CALLBACK` delegates for FETCH_DATA + NOTIFY_FILE_CLOSE.
+2. Register with `StorageProviderSyncRootManager` for Explorer UI.
+3. Create placeholders from vault `ListAsync`; hydrate via vault `CatAsync`/`GetAsync`.
+4. Wire Desktop “Mount” button to register+connect lifecycle.
