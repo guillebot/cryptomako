@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a thin cryptomako .deb (binary + man + copyright + packaging README).
+# Build a thin cryptomako .deb (binary + man + copyright + .desktop + hicolor icons + packaging README).
 # Secrets are never packaged. Prefer dpkg-deb; fall back to nfpm when present.
 set -euo pipefail
 
@@ -38,6 +38,10 @@ if command -v dpkg-deb >/dev/null 2>&1; then
     "$STAGE/usr/bin" \
     "$STAGE/usr/share/man/man1" \
     "$STAGE/usr/share/doc/cryptomako" \
+    "$STAGE/usr/share/applications" \
+    "$STAGE/usr/share/icons/hicolor/48x48/apps" \
+    "$STAGE/usr/share/icons/hicolor/256x256/apps" \
+    "$STAGE/usr/share/icons/hicolor/512x512/apps" \
     "$STAGE/DEBIAN"
 
   install -m 0755 "$ROOT/cryptomako" "$STAGE/usr/bin/cryptomako"
@@ -45,6 +49,13 @@ if command -v dpkg-deb >/dev/null 2>&1; then
   gzip -9fn "$STAGE/usr/share/man/man1/cryptomako.1"
   install -m 0644 "$ROOT/packaging/debian/copyright" "$STAGE/usr/share/doc/cryptomako/copyright"
   install -m 0644 "$ROOT/packaging/README.md" "$STAGE/usr/share/doc/cryptomako/README.md"
+  install -m 0644 "$ROOT/packaging/cryptomako.desktop" "$STAGE/usr/share/applications/cryptomako.desktop"
+  install -m 0644 "$ROOT/packaging/icons/hicolor/48x48/apps/cryptomako.png" \
+    "$STAGE/usr/share/icons/hicolor/48x48/apps/cryptomako.png"
+  install -m 0644 "$ROOT/packaging/icons/hicolor/256x256/apps/cryptomako.png" \
+    "$STAGE/usr/share/icons/hicolor/256x256/apps/cryptomako.png"
+  install -m 0644 "$ROOT/packaging/icons/hicolor/512x512/apps/cryptomako.png" \
+    "$STAGE/usr/share/icons/hicolor/512x512/apps/cryptomako.png"
 
   cat > "$STAGE/DEBIAN/control" <<CTRL
 Package: cryptomako
