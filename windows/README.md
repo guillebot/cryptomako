@@ -39,10 +39,11 @@ dotnet run --project src/CryptoMako.Cli -- ls --local ../fixtures/vault --path /
 
 ## Acceptance (W0 / W1)
 
+- `dotnet test` green (golden unlock + recursive ls + cat)
 - `ls --local ../fixtures/vault --path / -R` matches `../fixtures/expected-ls.txt`
-- `cat --local ../fixtures/vault /hello.txt` matches fixture bytes
+- `cat --local ../fixtures/vault /hello.txt` matches fixture bytes (`hello cryptomako\n`)
 - Wrong password → exit 1, no key material in the message
-- Crypto: Cryptomator-compatible format 8 (cryptolib-java or equivalent). Until Platforms golden crypto tests land, decrypt paths may throw `NotImplemented` with a clear boundary — metadata unlock of `vault.cryptomator` still works.
+- Crypto: Cryptomator format 8 SIV_GCM (scrypt + AES-KW + AES-SIV names + SIV_GCM content), mirrored from cryptolib-swift
 
 ## Config shape (draft — post to Platforms before inventing keys)
 
