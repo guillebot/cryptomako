@@ -110,17 +110,14 @@ Secrets: env or Windows Credential Manager (`CryptoMako/CRYPTOMAKO_*`). Lock cle
 - autoReconnect connectivity monitor (Desktop); parity checklist: `docs/parity.md`
 - Proxy modes system|direct|custom applied to S3 HttpClient
 
-## Remaining for Windows box
+## Soft release / remaining
 
-See **`docs/parity.md`** for the full macOS ↔ Windows checklist.
+See **`docs/parity.md`**. Soft release surfaces (unlock, Backup Sync, settings keys, CredMan, tray, CLI, soft CfAPI viewer) are in place on Windows.
 
-Still needs a real Windows machine:
+Deferred (not soft blockers): conflict/remote watcher, Forget-credentials wipe, update checker, transfer metrics, WinUI/MSIX ? see parity.md.
 
-1. Live **CfAPI / Explorer** mount (stubs only on Mac — never claim mount works from Mac CI)
-2. Smoke **Avalonia tray** + Credential Manager on Windows
-3. **`dotnet publish -r win-x64`** packaging smoke (`docs/packaging.md`); MSIX/WinUI later
+Non-CfAPI library/CLI/Desktop paths also build on Mac hosts; Mac builds of `CryptoMako.CfApi` are stubs only.
 
-Non-CfAPI library/CLI/Desktop paths (unlock, browse, mutations, Backup Sync, proxy, auto-reconnect) are intended to work on Mac host builds.
 
 ## License
 
