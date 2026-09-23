@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/guillebot/cryptomako/linux/internal/config"
 )
@@ -37,7 +38,8 @@ func TestSyncRoundTrip(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(sub, "note.txt"), payload, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	n, err := s.SyncCleartextTree(clearDir, "/", nil, nil)
+	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
+	n, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -218,7 +220,8 @@ func TestSyncRespectsExcludes(t *testing.T) {
 	}
 
 	ex := config.DefaultBackupSyncExcludes()
-	n, err := s.SyncCleartextTree(clearDir, "/", &ex, nil)
+	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
+	n, err := s.SyncCleartextTree(clearDir, "/", &ex, nil, statePath)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -275,11 +278,154 @@ func TestSyncHonorsPreferencesConcurrencyAndBandwidth(t *testing.T) {
 	if config.UploadBandwidthLimiterFromPreferences(prefs) == nil {
 		t.Fatal("expected bandwidth limiter when limit enabled")
 	}
-	n, err := s.SyncCleartextTree(clearDir, "/prefs-sync", nil, &prefs)
+	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
+	n, err := s.SyncCleartextTree(clearDir, "/prefs-sync", nil, &prefs, statePath)
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	if n != 5 {
 		t.Fatalf("synced %d", n)
+	}
+}
+
+
+func TestSyncSkipsUnchangedFingerprint(t *testing.T) {
+	pass := "fp-skip-pass"
+	root := t.TempDir()
+	s, err := CreateFormat8(root, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	clearDir := t.TempDir()
+	note := filepath.Join(clearDir, "note.txt")
+	if err := os.WriteFile(note, []byte("same\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
+
+	n1, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath)
+	if err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	if n1 != 1 {
+		t.Fatalf("first synced %d", n1)
+	}
+	st := config.LoadBackupSyncState(statePath)
+	folder := config.VaultFolderNameForSource(clearDir)
+	key := config.BackupSyncStateKey(folder, "note.txt")
+	if _, ok := st.Get(key); !ok {
+		t.Fatalf("missing fingerprint for %s in %#v", key, st.Files)
+	}
+
+	n2, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath)
+	if err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+	if n2 != 0 {
+		t.Fatalf("second sync should skip unchanged, got %d", n2)
+	}
+}
+
+func TestSyncRewritesWhenSizeOrMtimeChanges(t *testing.T) {
+	pass := "fp-rewrite-pass"
+	root := t.TempDir()
+	s, err := CreateFormat8(root, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	clearDir := t.TempDir()
+	note := filepath.Join(clearDir, "note.txt")
+	if err := os.WriteFile(note, []byte("v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
+
+	if n, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath); err != nil || n != 1 {
+		t.Fatalf("first: n=%d err=%v", n, err)
+	}
+
+	// Size change → must put again.
+	if err := os.WriteFile(note, []byte("v2-longer\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath); err != nil || n != 1 {
+		t.Fatalf("size change: n=%d err=%v", n, err)
+	}
+	r, err := s.Open("/note.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := io.ReadAll(r)
+	r.Close()
+	if string(got) != "v2-longer\n" {
+		t.Fatalf("vault content %q", got)
+	}
+
+	// mtime-only change → must put again.
+	info, err := os.Stat(note)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newMtime := info.ModTime().Add(2 * time.Second)
+	if err := os.Chtimes(note, newMtime, newMtime); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.SyncCleartextTree(clearDir, "/", nil, nil, statePath); err != nil || n != 1 {
+		t.Fatalf("mtime change: n=%d err=%v", n, err)
+	}
+}
+
+func TestSyncPutFailureDoesNotUpdateFingerprint(t *testing.T) {
+	pass := "fp-fail-pass"
+	disk := t.TempDir()
+	s, err := CreateFormat8(disk, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	store := newMemStore()
+	if err := seedMemFromDisk(store, disk); err != nil {
+		t.Fatal(err)
+	}
+	s2, err := unlockWithStore(config.Config{Passphrase: pass}, store)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	clearDir := t.TempDir()
+	note := filepath.Join(clearDir, "note.txt")
+	if err := os.WriteFile(note, []byte("fail-me\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
+	folder := config.VaultFolderNameForSource(clearDir)
+	key := config.BackupSyncStateKey(folder, "note.txt")
+
+	store.failPut = true
+	n, err := s2.SyncCleartextTree(clearDir, "/", nil, nil, statePath)
+	if err == nil {
+		t.Fatal("expected put failure")
+	}
+	if n != 0 {
+		t.Fatalf("uploaded %d on failure", n)
+	}
+	st := config.LoadBackupSyncState(statePath)
+	if _, ok := st.Get(key); ok {
+		t.Fatal("fingerprint must not be recorded after failed put")
+	}
+
+	store.failPut = false
+	if n, err := s2.SyncCleartextTree(clearDir, "/", nil, nil, statePath); err != nil || n != 1 {
+		t.Fatalf("retry: n=%d err=%v", n, err)
+	}
+	st = config.LoadBackupSyncState(statePath)
+	if _, ok := st.Get(key); !ok {
+		t.Fatal("fingerprint should exist after successful put")
 	}
 }

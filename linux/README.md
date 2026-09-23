@@ -60,7 +60,7 @@ mkdir -p /tmp/cryptomako-mnt
 ./cryptomako mount --local /path/to/vault --mountpoint /tmp/cryptomako-mnt --rw
 # echo hi > /tmp/cryptomako-mnt/new.txt   # encrypts + puts; errors if store put fails
 
-# Backup sync (encrypt local tree into vault)
+# Backup sync (encrypt local tree into vault; skips unchanged via backup-sync-state.json)
 ./cryptomako sync --local ../fixtures/vault --source ~/Documents/tree --dest /
 ```
 
@@ -106,6 +106,22 @@ Same keys as macOS `BackupSyncExcludes` / `backup-sync-excludes.json`:
 Default path: `~/.config/cryptomako/backup-sync-excludes.json`. Missing file → macOS defaults.
 Override with `cryptomako sync --excludes /path/to/backup-sync-excludes.json`.
 
+### Backup Sync state (fingerprints)
+
+Same schema as macOS `Sources/CryptoMakoShared/BackupSyncState.swift` (app-group
+`backup-sync-state.json`). Linux XDG path (same filename):
+
+`~/.config/cryptomako/backup-sync-state.json` (or `$XDG_CONFIG_HOME/cryptomako/backup-sync-state.json`).
+
+| JSON key | Type | Notes |
+|----------|------|-------|
+| `files` | object | map of fingerprint entries |
+| `files["{vaultFolder}/{relativePath}"].size` | int64 | cleartext byte length |
+| `files[…].contentModification` | float64 | seconds since **Apple reference date** 2001-01-01 00:00:00 UTC (`Date.timeIntervalSinceReferenceDate`) |
+
+`vaultFolder` defaults to the basename of `--source` (macOS `BackupSource.vaultFolderName`).
+`sync` **skips** put when size+mtime match; updates the fingerprint **only after a successful put** (fail-closed). Index **save is best-effort** (never fails the sync). Override path: `cryptomako sync --sync-state /path/to/backup-sync-state.json`.
+
 ### App preferences (proxy + Sync workers)
 
 Same JSON keys as macOS `Sources/CryptoMakoShared/AppPreferences.swift` (app-group
@@ -142,7 +158,7 @@ GUI for editing these preferences is **N/A** on Linux CLI (edit JSON or copy fro
 |---------|------|
 | `internal/s3` | SigV4 HTTPS client: GetObject, PutObject, DeleteObject, ListObjectsV2 |
 | `internal/vault` | Format-8 **SIV_GCM** unlock / ls / cat (local FS + S3 SigV4) |
-| `internal/config` | XDG config, AppPreferences, Backup Sync excludes, env secrets |
+| `internal/config` | XDG config, AppPreferences, Backup Sync excludes/state, env secrets |
 
 ## Crypto status
 
@@ -165,12 +181,14 @@ JSON (`~/.config/cryptomako/config.json`) — **no secrets**:
 
 Backup Sync excludes file (separate): `directoryNames`, `fileNames`, `fileExtensions`.
 
+Backup Sync state file (separate): `files` map with `size` + `contentModification` (Apple reference-date seconds); see table above.
+
 App preferences file (separate): `proxyMode`, `proxyHost`, `proxyPort`, `proxyUsername`,
 `limitSyncUploadBandwidth`, `syncUploadCapMbps`, sync*PutConcurrency (see table above).
 
 Env secrets: `CRYPTOMAKO_PASSWORD`, `CRYPTOMAKO_SECRET_KEY`, `CRYPTOMAKO_PROXY_PASSWORD` (custom proxy only).
 
-Proposed to Platforms before inventing new keys. Current set matches macOS `ConnectionConfigLoader` / `BackupSyncExcludes` / `AppPreferences` / docs/10-m0-fixture.md.
+Proposed to Platforms before inventing new keys. Current set matches macOS `ConnectionConfigLoader` / `BackupSyncExcludes` / `BackupSyncState` / `AppPreferences` / docs/10-m0-fixture.md.
 
 ## Docker
 

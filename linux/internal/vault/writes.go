@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/guillebot/cryptomako/linux/internal/config"
@@ -134,7 +135,9 @@ const (
 type pendingUpload struct {
 	absPath   string
 	clearPath string
+	relPath   string
 	size      int64
+	mtime     time.Time
 }
 
 // SyncCleartextTree walks localRoot and encrypts every file into the vault
@@ -142,7 +145,12 @@ type pendingUpload struct {
 // Excludes honor macOS BackupSyncExcludes (directoryNames / fileNames / fileExtensions).
 // Pass a zero value or DefaultBackupSyncExcludes(); nil pointer uses defaults.
 // prefs nil → DefaultAppPreferences (size-tiered concurrency + optional bandwidth pacing).
-func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences) (files int, err error) {
+//
+// Fingerprints (mtime + size) come from BackupSyncState (macOS BackupSyncState.swift).
+// Unchanged files are skipped; fingerprints update only after a successful put
+// (fail-closed). statePath empty → ~/.config/cryptomako/backup-sync-state.json.
+// Index save is best-effort and never fails the sync.
+func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences, statePath string) (files int, err error) {
 	ex := config.DefaultBackupSyncExcludes()
 	if excludes != nil {
 		ex = *excludes
@@ -158,8 +166,19 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *conf
 	if err != nil {
 		return 0, err
 	}
+	vaultFolder := config.VaultFolderNameForSource(localRoot)
+	state := config.LoadBackupSyncState(statePath)
+	var stateMu sync.Mutex
+	defer func() {
+		stateMu.Lock()
+		state.Save(statePath)
+		stateMu.Unlock()
+	}()
 
-	var jobs []pendingUpload
+	var (
+		jobs      []pendingUpload
+		sinceSave int
+	)
 	err = filepath.WalkDir(localRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -195,7 +214,24 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *conf
 		if err != nil {
 			return err
 		}
-		jobs = append(jobs, pendingUpload{absPath: path, clearPath: clearPath, size: info.Size()})
+		mtime := info.ModTime()
+		size := info.Size()
+		stateKey := config.BackupSyncStateKey(vaultFolder, rel)
+		if fp, ok := state.Get(stateKey); ok && fp.Matches(size, mtime) {
+			sinceSave++
+			if sinceSave >= 500 {
+				state.Save(statePath)
+				sinceSave = 0
+			}
+			return nil
+		}
+		jobs = append(jobs, pendingUpload{
+			absPath:   path,
+			clearPath: clearPath,
+			relPath:   rel,
+			size:      size,
+			mtime:     mtime,
+		})
 		return nil
 	})
 	if err != nil {
@@ -269,6 +305,11 @@ func (s *Session) SyncCleartextTree(localRoot, destPrefix string, excludes *conf
 				setErr(err)
 				continue
 			}
+			key := config.BackupSyncStateKey(vaultFolder, job.relPath)
+			fp := config.NewBackupFileFingerprint(job.size, job.mtime)
+			stateMu.Lock()
+			state.Set(key, fp)
+			stateMu.Unlock()
 			mu.Lock()
 			uploaded++
 			mu.Unlock()

@@ -13,6 +13,7 @@ var (
 	flagSyncDest        string
 	flagSyncExcludes    string
 	flagSyncPreferences string
+	flagSyncState       string
 )
 
 var syncCmd = &cobra.Command{
@@ -28,7 +29,11 @@ fileExtensions) from ~/.config/cryptomako/backup-sync-excludes.json (or
 
 Sync concurrency and optional upload pacing come from app-preferences.json
 (same keys as macOS AppPreferences). Proxy password is env-only
-CRYPTOMAKO_PROXY_PASSWORD.`,
+CRYPTOMAKO_PROXY_PASSWORD.
+
+Per-file fingerprints (size + contentModification) live in
+backup-sync-state.json; unchanged files are skipped. Fingerprints update
+only after a successful put (fail-closed).`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if flagSyncSource == "" {
 			return fmt.Errorf("missing --source")
@@ -58,7 +63,7 @@ CRYPTOMAKO_PROXY_PASSWORD.`,
 		}
 		defer session.Close()
 
-		n, err := session.SyncCleartextTree(flagSyncSource, flagSyncDest, &excludes, &prefs)
+		n, err := session.SyncCleartextTree(flagSyncSource, flagSyncDest, &excludes, &prefs, flagSyncState)
 		if err != nil {
 			return err
 		}
@@ -72,5 +77,6 @@ func init() {
 	syncCmd.Flags().StringVar(&flagSyncDest, "dest", "/", "Cleartext destination path inside the vault")
 	syncCmd.Flags().StringVar(&flagSyncExcludes, "excludes", "", "backup-sync-excludes.json path (default XDG)")
 	syncCmd.Flags().StringVar(&flagSyncPreferences, "preferences", "", "app-preferences.json path (default XDG)")
+	syncCmd.Flags().StringVar(&flagSyncState, "sync-state", "", "backup-sync-state.json path (default XDG)")
 	Root.AddCommand(syncCmd)
 }
