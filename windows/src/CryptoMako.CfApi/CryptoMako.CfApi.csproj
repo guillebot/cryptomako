@@ -1,10 +1,13 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <TargetFrameworks>net8.0;net8.0-windows10.0.19041.0</TargetFrameworks>
     <RootNamespace>CryptoMako.CfApi</RootNamespace>
     <AssemblyName>CryptoMako.CfApi</AssemblyName>
-    <Description>Cloud Files (CfAPI) provider. Vanara-backed; runtime-gated to Windows 10 1803+.</Description>
-    <!-- Vanara APIs are annotated [SupportedOSPlatform("windows")]; we gate at runtime. -->
+    <Description>Cloud Files (CfAPI) provider. Vanara + WinRT SyncRootManager on windows TFM.</Description>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(TargetFramework)' == 'net8.0-windows10.0.19041.0'">
+    <DefineConstants>$(DefineConstants);CFAPI_WINRT</DefineConstants>
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Vanara.PInvoke.CldApi" Version="4.1.3" />

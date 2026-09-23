@@ -1,4 +1,4 @@
-using System.Runtime.InteropServices;
+﻿using System.Runtime.InteropServices;
 using System.Text;
 using CryptoMako.Vault;
 using Vanara.PInvoke;
@@ -10,7 +10,8 @@ namespace CryptoMako.CfApi;
 /// <summary>
 /// Windows Cloud Files provider (Vanara-backed P/Invoke).
 /// Register / Connect / placeholders / FETCH_DATA hydrate are live on Windows 10 1803+.
-/// Fail-closed: write notify never claims durable success without remote 2xx.
+/// WinRT StorageProviderSyncRootManager on CFAPI_WINRT builds (Explorer cloud glyph).
+/// Fail-closed: write/delete/rename notify never claims durable success without remote 2xx.
 /// </summary>
 public sealed class CloudFilesProvider : IDisposable
 {
@@ -19,17 +20,25 @@ public sealed class CloudFilesProvider : IDisposable
     public const string SyncRootIdPrefix = "CryptoMako!";
     public static readonly Guid ProviderId = new("C8A7E5D1-4B2F-4E9A-9C31-7F6D2A1B0E44");
 
+    // STATUS_CLOUD_FILE_ACCESS_DENIED — reject delete/rename until vault mutation is wired.
+    private static readonly NTStatus StatusCloudFileAccessDenied = new(unchecked((int)0xC000CF0B));
+
     public string SyncRootPath { get; }
     public VaultSession? Session { get; private set; }
 
     private bool _registered;
+    private bool _registeredViaWinRt;
     private bool _connected;
     private CF_CONNECTION_KEY _connectionKey;
     private string? _accountName;
+    private string? _shellSyncRootId;
+    private string? _shellDetail;
     private GCHandle _selfHandle;
     private CF_CALLBACK? _fetchData;
     private CF_CALLBACK? _cancelFetch;
     private CF_CALLBACK? _notifyClose;
+    private CF_CALLBACK? _notifyDelete;
+    private CF_CALLBACK? _notifyRename;
     private CF_CALLBACK_REGISTRATION[]? _callbackTable;
     private IntPtr _syncRootIdentityPtr;
     private int _syncRootIdentityLen;
@@ -51,8 +60,21 @@ public sealed class CloudFilesProvider : IDisposable
         Directory.CreateDirectory(SyncRootPath);
         _accountName = accountName.Trim();
 
+        // WinRT StorageProviderSyncRootManager.Register also registers with CfAPI.
+        // Do not CfRegisterSyncRoot after a successful WinRT register (double-register → invalid).
+        if (ShellSyncRoot.SupportsWinRt &&
+            ShellSyncRoot.TryRegisterWinRtOnly(SyncRootPath, _accountName, out var winRtId, out var winRtDetail))
+        {
+            _shellSyncRootId = winRtId;
+            _shellDetail = winRtDetail;
+            _registered = true;
+            _registeredViaWinRt = true;
+            return;
+        }
+
+        var identityStr = ShellSyncRoot.BuildSyncRootId(_accountName);
         FreeSyncRootIdentity();
-        var identity = Encoding.Unicode.GetBytes(SyncRootIdPrefix + _accountName + "\0");
+        var identity = Encoding.Unicode.GetBytes(identityStr + "\0");
         _syncRootIdentityLen = identity.Length;
         _syncRootIdentityPtr = Marshal.AllocHGlobal(identity.Length);
         Marshal.Copy(identity, 0, _syncRootIdentityPtr, identity.Length);
@@ -91,21 +113,61 @@ public sealed class CloudFilesProvider : IDisposable
             CF_REGISTER_FLAGS.CF_REGISTER_FLAG_UPDATE | CF_REGISTER_FLAGS.CF_REGISTER_FLAG_MARK_IN_SYNC_ON_ROOT)
             .ThrowIfFailed();
         _registered = true;
+        _registeredViaWinRt = false;
 
-        // Best-effort Explorer shell awareness (WinRT). Non-fatal if unavailable.
-        try { ShellSyncRoot.TryRegister(SyncRootPath, SyncRootIdPrefix + _accountName); }
-        catch { /* optional */ }
+        // Cf path already registered — do not call WinRT Register (would double-register).
+        var stubId = ShellSyncRoot.BuildSyncRootId(_accountName);
+        _shellSyncRootId = stubId;
+        _shellDetail = ShellSyncRoot.TryRegisterViaRegistry(SyncRootPath, stubId)
+            ? "registry stub (CfRegister path)"
+            : "registry stub failed";
     }
 
-    public void UnregisterSyncRoot()
+    public void UnregisterSyncRoot(string? accountName = null)
     {
         EnsureWindows();
+        if (!string.IsNullOrWhiteSpace(accountName))
+            _accountName = accountName.Trim();
+
         Disconnect();
-        try { ShellSyncRoot.TryUnregister(SyncRootIdPrefix + (_accountName ?? "default")); }
-        catch { /* optional */ }
-        CfUnregisterSyncRoot(SyncRootPath).ThrowIfFailed();
+
+        var account = _accountName ?? "default";
+        try
+        {
+            ShellSyncRoot.TryUnregister(account, out var detail);
+            _shellDetail = detail;
+        }
+        catch { /* best-effort */ }
+
+        if (!_registeredViaWinRt)
+        {
+            try { CfUnregisterSyncRoot(SyncRootPath).ThrowIfFailed(); }
+            catch { /* may already be clean */ }
+        }
+        // WinRT Unregister (above) also tears down the CfAPI sync root.
+
         _registered = false;
+        _registeredViaWinRt = false;
+        _shellSyncRootId = null;
         FreeSyncRootIdentity();
+
+        // Soft-clean leftover placeholder debris when the sync root dir is empty-ish.
+        try
+        {
+            if (Directory.Exists(SyncRootPath))
+            {
+                foreach (var f in Directory.EnumerateFileSystemEntries(SyncRootPath))
+                {
+                    try
+                    {
+                        if (Directory.Exists(f)) Directory.Delete(f, recursive: true);
+                        else File.Delete(f);
+                    }
+                    catch { /* locked / reparse — leave */ }
+                }
+            }
+        }
+        catch { /* best-effort */ }
     }
 
     public void Connect()
@@ -118,6 +180,8 @@ public sealed class CloudFilesProvider : IDisposable
         _fetchData = OnFetchData;
         _cancelFetch = OnCancelFetchData;
         _notifyClose = OnNotifyFileClose;
+        _notifyDelete = OnNotifyDelete;
+        _notifyRename = OnNotifyRename;
         _callbackTable = new[]
         {
             new CF_CALLBACK_REGISTRATION
@@ -134,6 +198,16 @@ public sealed class CloudFilesProvider : IDisposable
             {
                 Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_FILE_CLOSE_COMPLETION,
                 Callback = _notifyClose,
+            },
+            new CF_CALLBACK_REGISTRATION
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_DELETE,
+                Callback = _notifyDelete,
+            },
+            new CF_CALLBACK_REGISTRATION
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_RENAME,
+                Callback = _notifyRename,
             },
             CF_CALLBACK_REGISTRATION.CF_CALLBACK_REGISTRATION_END,
         };
@@ -162,6 +236,8 @@ public sealed class CloudFilesProvider : IDisposable
         _fetchData = null;
         _cancelFetch = null;
         _notifyClose = null;
+        _notifyDelete = null;
+        _notifyRename = null;
     }
 
     public void AttachSession(VaultSession session) => Session = session;
@@ -169,6 +245,7 @@ public sealed class CloudFilesProvider : IDisposable
     /// <summary>
     /// Creates on-demand placeholders under the sync root for the given vault nodes.
     /// FileIdentity = UTF-8 cleartext path (e.g. /hello.txt) used by FETCH_DATA.
+    /// Nested RelativeFileName may contain '\' — create parents (dirs) before children.
     /// </summary>
     public int CreatePlaceholders(IReadOnlyList<CloudFilesPlaceholder> placeholders)
     {
@@ -177,29 +254,68 @@ public sealed class CloudFilesProvider : IDisposable
             throw new InvalidOperationException("RegisterSyncRoot first.");
         if (placeholders.Count == 0) return 0;
 
-        var infos = new CF_PLACEHOLDER_CREATE_INFO[placeholders.Count];
+        // Create by depth so parent dir placeholders exist before children.
+        var ordered = placeholders
+            .OrderBy(p => p.CleartextRelativePath.Count(c => c is '/' or '\\'))
+            .ThenBy(p => p.IsDirectory ? 0 : 1)
+            .ThenBy(p => p.CleartextRelativePath, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var total = 0;
+        foreach (var depthGroup in ordered.GroupBy(p => p.CleartextRelativePath.Count(c => c is '/' or '\\')))
+        {
+            foreach (var item in depthGroup)
+            {
+                try
+                {
+                    total += CreatePlaceholderBatch(new[] { item });
+                }
+                catch (Exception ex)
+                {
+                    // Skip invalid names / oversized paths rather than aborting the whole populate.
+                    System.Diagnostics.Debug.WriteLine(
+                        "CreatePlaceholder skipped " + item.CleartextRelativePath + ": " + ex.Message);
+                }
+            }
+        }
+        return total;
+    }
+
+    private int CreatePlaceholderBatch(IReadOnlyList<CloudFilesPlaceholder> placeholders)
+    {
+        // One item at a time from CreatePlaceholders; BaseDirectoryPath = parent folder.
+        if (placeholders.Count != 1)
+            throw new ArgumentException("CreatePlaceholderBatch expects a single item.");
+
+        var p = placeholders[0];
+        var rel = p.CleartextRelativePath.Replace('\\', '/').TrimStart('/');
+        var slash = rel.LastIndexOf('/');
+        var parentRel = slash >= 0 ? rel[..slash] : "";
+        var leaf = slash >= 0 ? rel[(slash + 1)..] : rel;
+        var baseDir = string.IsNullOrEmpty(parentRel)
+            ? SyncRootPath
+            : Path.Combine(SyncRootPath, parentRel.Replace('/', Path.DirectorySeparatorChar));
+
         var pins = new List<IntPtr>();
         try
         {
-            for (var i = 0; i < placeholders.Count; i++)
+            var identityBytes = Encoding.UTF8.GetBytes("/" + rel);
+            var idPtr = Marshal.AllocHGlobal(identityBytes.Length);
+            pins.Add(idPtr);
+            Marshal.Copy(identityBytes, 0, idPtr, identityBytes.Length);
+
+            var basic = new FILE_BASIC_INFO
             {
-                var p = placeholders[i];
-                var rel = p.CleartextRelativePath.Replace('\\', '/').TrimStart('/');
-                var identityBytes = Encoding.UTF8.GetBytes("/" + rel.Replace('\\', '/'));
-                var idPtr = Marshal.AllocHGlobal(identityBytes.Length);
-                pins.Add(idPtr);
-                Marshal.Copy(identityBytes, 0, idPtr, identityBytes.Length);
+                FileAttributes = p.IsDirectory
+                    ? FileFlagsAndAttributes.FILE_ATTRIBUTE_DIRECTORY
+                    : FileFlagsAndAttributes.FILE_ATTRIBUTE_NORMAL,
+            };
 
-                var basic = new FILE_BASIC_INFO
+            var infos = new[]
+            {
+                new CF_PLACEHOLDER_CREATE_INFO
                 {
-                    FileAttributes = p.IsDirectory
-                        ? FileFlagsAndAttributes.FILE_ATTRIBUTE_DIRECTORY
-                        : FileFlagsAndAttributes.FILE_ATTRIBUTE_NORMAL,
-                };
-
-                infos[i] = new CF_PLACEHOLDER_CREATE_INFO
-                {
-                    RelativeFileName = rel.Replace('/', '\\'),
+                    RelativeFileName = leaf.Replace('/', '\\'),
                     FsMetadata = new CF_FS_METADATA
                     {
                         BasicInfo = basic,
@@ -208,13 +324,13 @@ public sealed class CloudFilesProvider : IDisposable
                     FileIdentity = idPtr,
                     FileIdentityLength = (uint)identityBytes.Length,
                     Flags = CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
-                };
-            }
+                },
+            };
 
             CfCreatePlaceholders(
-                SyncRootPath,
+                baseDir,
                 infos,
-                (uint)infos.Length,
+                1,
                 CF_CREATE_FLAGS.CF_CREATE_FLAG_NONE,
                 out var processed).ThrowIfFailed();
             return (int)processed;
@@ -227,41 +343,78 @@ public sealed class CloudFilesProvider : IDisposable
     }
 
     /// <summary>
-    /// Lists vault root files/dirs and creates matching placeholders (non-recursive).
+    /// Lists vault files/dirs (recursive) and creates matching placeholders.
+    /// Directory placeholders are created before nested files.
     /// </summary>
     public async Task<int> PopulateRootPlaceholdersAsync(CancellationToken ct = default)
     {
         if (Session is null)
             throw new InvalidOperationException("AttachSession first.");
 
-        var entries = await Session.ListAsync("/", recursive: false, ct).ConfigureAwait(false);
+        var entries = await Session.ListAsync("/", recursive: true, ct).ConfigureAwait(false);
         var list = new List<CloudFilesPlaceholder>();
+        var seenDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         foreach (var e in entries)
         {
+            if (e.Contains(" ->", StringComparison.Ordinal)) continue; // symlink display
             var isDir = e.EndsWith("/", StringComparison.Ordinal);
-            var name = isDir ? e.TrimEnd('/') : e;
-            if (name.Contains(" ->", StringComparison.Ordinal)) continue; // symlink display
-            long? size = null;
-            if (!isDir)
+            var full = (isDir ? e.TrimEnd('/') : e).TrimStart('/');
+            if (string.IsNullOrEmpty(full)) continue;
+
+            // Ensure every parent directory has a placeholder.
+            var parts = full.Replace('\\', '/').Split('/', StringSplitOptions.RemoveEmptyEntries);
+            var accum = "";
+            for (var i = 0; i < parts.Length - (isDir ? 0 : 1); i++)
             {
-                try
+                accum = string.IsNullOrEmpty(accum) ? parts[i] : accum + "/" + parts[i];
+                if (seenDirs.Add(accum))
                 {
-                    var bytes = await Session.CatAsync("/" + name.TrimStart('/'), ct).ConfigureAwait(false);
-                    size = bytes.LongLength;
-                }
-                catch
-                {
-                    size = 0;
+                    list.Add(new CloudFilesPlaceholder
+                    {
+                        CleartextRelativePath = accum,
+                        CiphertextKey = "",
+                        IsDirectory = true,
+                        FileSize = 0,
+                    });
                 }
             }
+
+            if (isDir)
+            {
+                if (seenDirs.Add(full))
+                {
+                    list.Add(new CloudFilesPlaceholder
+                    {
+                        CleartextRelativePath = full,
+                        CiphertextKey = "",
+                        IsDirectory = true,
+                        FileSize = 0,
+                    });
+                }
+                continue;
+            }
+
+            long? size = null;
+            try
+            {
+                var bytes = await Session.CatAsync("/" + full, ct).ConfigureAwait(false);
+                size = bytes.LongLength;
+            }
+            catch
+            {
+                size = 0;
+            }
+
             list.Add(new CloudFilesPlaceholder
             {
-                CleartextRelativePath = name.TrimStart('/'),
+                CleartextRelativePath = full,
                 CiphertextKey = "",
-                IsDirectory = isDir,
+                IsDirectory = false,
                 FileSize = size,
             });
         }
+
         return CreatePlaceholders(list);
     }
 
@@ -298,6 +451,9 @@ public sealed class CloudFilesProvider : IDisposable
         Connected = _connected,
         AccountName = _accountName,
         PlatformInfo = TryGetPlatformInfo(),
+        ShellSyncRootId = _shellSyncRootId,
+        ShellRegistration = _shellDetail,
+        WinRtShell = ShellSyncRoot.SupportsWinRt,
     };
 
     public void Dispose()
@@ -403,7 +559,7 @@ public sealed class CloudFilesProvider : IDisposable
                     new CF_OPERATION_PARAMETERS.TRANSFERDATA
                     {
                         Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
-                        CompletionStatus = new NTStatus(unchecked((int)0xC000CF18)), // STATUS_CLOUD_FILE_UNSUCCESSFUL-ish fail-closed
+                        CompletionStatus = new NTStatus(unchecked((int)0xC000CF18)),
                         Buffer = IntPtr.Zero,
                         Offset = parameters.FetchData.RequiredFileOffset,
                         Length = 0,
@@ -416,17 +572,69 @@ public sealed class CloudFilesProvider : IDisposable
 
     private static void OnCancelFetchData(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
     {
-        // Nothing to cancel for sync CatAsync; platform stops requesting ranges.
         _ = info;
         _ = parameters;
     }
 
     private static void OnNotifyFileClose(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
     {
-        // Read/hydrate closes are ignored. Durable writes must go through AcknowledgeWriteOnlyIfRemoteOk(true)
-        // after a remote put 2xx — never acknowledge here without that proof (fail-closed).
+        // Durable writes must go through AcknowledgeWriteOnlyIfRemoteOk(true) after remote 2xx.
         _ = info;
         _ = parameters;
+    }
+
+    /// <summary>
+    /// Fail-closed delete: ACK with ACCESS_DENIED until vault DeleteAsync is wired to remote 2xx.
+    /// TODO: after remote delete 2xx, ACK with STATUS_SUCCESS (and optionally mutate vault).
+    /// </summary>
+    private static void OnNotifyDelete(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
+    {
+        _ = parameters;
+        try
+        {
+            var opInfo = new CF_OPERATION_INFO
+            {
+                StructSize = (uint)Marshal.SizeOf<CF_OPERATION_INFO>(),
+                Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_DELETE,
+                ConnectionKey = info.ConnectionKey,
+                TransferKey = info.TransferKey,
+            };
+            var opParams = CF_OPERATION_PARAMETERS.Create(
+                new CF_OPERATION_PARAMETERS.ACKDELETE
+                {
+                    Flags = CF_OPERATION_ACK_DELETE_FLAGS.CF_OPERATION_ACK_DELETE_FLAG_NONE,
+                    CompletionStatus = StatusCloudFileAccessDenied,
+                });
+            CfExecute(opInfo, ref opParams);
+        }
+        catch { /* fail closed */ }
+    }
+
+    /// <summary>
+    /// Fail-closed rename: ACK with ACCESS_DENIED until vault rename/move is wired to remote 2xx.
+    /// TODO: after remote rename 2xx, ACK with STATUS_SUCCESS.
+    /// </summary>
+    private static void OnNotifyRename(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
+    {
+        _ = parameters;
+        try
+        {
+            var opInfo = new CF_OPERATION_INFO
+            {
+                StructSize = (uint)Marshal.SizeOf<CF_OPERATION_INFO>(),
+                Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_ACK_RENAME,
+                ConnectionKey = info.ConnectionKey,
+                TransferKey = info.TransferKey,
+            };
+            var opParams = CF_OPERATION_PARAMETERS.Create(
+                new CF_OPERATION_PARAMETERS.ACKRENAME
+                {
+                    Flags = CF_OPERATION_ACK_RENAME_FLAGS.CF_OPERATION_ACK_RENAME_FLAG_NONE,
+                    CompletionStatus = StatusCloudFileAccessDenied,
+                });
+            CfExecute(opInfo, ref opParams);
+        }
+        catch { /* fail closed */ }
     }
 }
 
@@ -439,6 +647,9 @@ public sealed class CloudFilesStatus
     public bool Connected { get; init; }
     public string? AccountName { get; init; }
     public string? PlatformInfo { get; init; }
+    public string? ShellSyncRootId { get; init; }
+    public string? ShellRegistration { get; init; }
+    public bool WinRtShell { get; init; }
 }
 
 public sealed class CloudFilesPlaceholder
@@ -448,3 +659,9 @@ public sealed class CloudFilesPlaceholder
     public bool IsDirectory { get; init; }
     public long? FileSize { get; init; }
 }
+
+
+
+
+
+

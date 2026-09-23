@@ -1,5 +1,6 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
+    <TargetFrameworks>net8.0;net8.0-windows10.0.19041.0</TargetFrameworks>
     <OutputType>Exe</OutputType>
     <RootNamespace>CryptoMako.Cli</RootNamespace>
     <AssemblyName>cryptomako</AssemblyName>
@@ -7,6 +8,14 @@
   <ItemGroup>
     <ProjectReference Include="..\CryptoMako.Vault\CryptoMako.Vault.csproj" />
     <ProjectReference Include="..\CryptoMako.S3\CryptoMako.S3.csproj" />
-    <ProjectReference Include="..\CryptoMako.CfApi\CryptoMako.CfApi.csproj" />
+    <!-- Force matching CfApi TFM — without this, windows Cli falls back to net8.0 CfApi (no WinRT). -->
+    <ProjectReference Include="..\CryptoMako.CfApi\CryptoMako.CfApi.csproj"
+                      Condition="'$(TargetFramework)' == 'net8.0'"
+                      SetTargetFramework="TargetFramework=net8.0"
+                      SkipGetTargetFrameworkProperties="true" />
+    <ProjectReference Include="..\CryptoMako.CfApi\CryptoMako.CfApi.csproj"
+                      Condition="'$(TargetFramework)' == 'net8.0-windows10.0.19041.0'"
+                      SetTargetFramework="TargetFramework=net8.0-windows10.0.19041.0"
+                      SkipGetTargetFrameworkProperties="true" />
   </ItemGroup>
 </Project>

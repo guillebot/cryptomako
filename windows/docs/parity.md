@@ -1,41 +1,42 @@
-# macOS ↔ Windows feature parity
+﻿# macOS â†” Windows feature parity
 
 Checklist vs the Swift app (`Sources/CryptoMako*`) as of the Windows branch.
-Legend: ✅ parity · 🟡 partial / stub · ❌ blocked (needs Windows box or macOS-only)
+Legend: âœ… parity Â· ðŸŸ¡ partial / stub Â· âŒ blocked (needs Windows box or macOS-only)
 
 | Area | macOS | Windows (.NET) | Status |
 |------|-------|----------------|--------|
-| Unlock local vault | ✅ | ✅ `UnlockLocal` / Desktop / CLI | ✅ |
-| Unlock S3 (HTTPS SigV4) | ✅ | ✅ | ✅ |
-| Browse / list (recursive) | ✅ | ✅ CLI `ls` + library | ✅ |
-| Cat / get / stat | ✅ | ✅ | ✅ |
-| Create dir / put file (library) | ✅ File Provider + Writes | ✅ `CreateDirectory` / `PutFile` | ✅ |
-| Delete file/dir | ✅ | ✅ library + CLI | ✅ |
-| Rename / move | ❌ File Provider fail-closed | ✅ library + CLI (ahead of macOS FP) | ✅ |
-| CLI mkdir / put | — (not in Swift CLI) | ✅ `mkdir` / `put` | ✅ |
-| CLI sync (Backup Sync) | app-only engine | ✅ CLI `sync` + Desktop | ✅ |
-| Backup Sync engine + excludes | ✅ | ✅ size-tiered workers | ✅ |
-| Settings keys (Platforms-locked) | ✅ | ✅ same JSON keys | ✅ |
-| Proxy (system/direct/custom) | ✅ | ✅ | ✅ |
-| Credentials store | Keychain | Cred Manager (Win) / env+secrets.json (Mac host) + `cred` CLI | ✅ |
-| Tray / status item | ✅ NSStatusItem | ✅ Avalonia `TrayIcon` | 🟡 |
-| Tray unlock / lock / open / quit | ✅ | ✅ | ✅ |
-| Connectivity probe lamps | TCP-focused + banner | dns/tcp/https/list + tray labels | ✅ |
-| autoReconnect monitor | ✅ 20s + launch unlock | ✅ 20s + launch/preference unlock | ✅ |
-| Finder File Provider | ✅ | — | ❌ CfAPI on Windows box |
-| Explorer CfAPI mount | — | 🟡 Connect+placeholder+hydrate live; WinRT glyph stub | 🟡 |
-| FUSE / rclone path | ✅ optional | — (not applicable) | ❌ N/A |
-| Update checker | ✅ | — | 🟡 deferred |
-| Transfer metrics in menu | ✅ | — | 🟡 deferred |
-| WinUI / MSIX installer | — | 🟡 publish notes only | ❌ Windows box |
-| Golden fixture tests | ✅ | ✅ + mutation tests | ✅ |
+| Unlock local vault | âœ… | âœ… `UnlockLocal` / Desktop / CLI | âœ… |
+| Unlock S3 (HTTPS SigV4) | âœ… | âœ… | âœ… |
+| Browse / list (recursive) | âœ… | âœ… CLI `ls` + library | âœ… |
+| Cat / get / stat | âœ… | âœ… | âœ… |
+| Create dir / put file (library) | âœ… File Provider + Writes | âœ… `CreateDirectory` / `PutFile` | âœ… |
+| Delete file/dir | âœ… | âœ… library + CLI | âœ… |
+| Rename / move | âŒ File Provider fail-closed | âœ… library + CLI (ahead of macOS FP) | âœ… |
+| CLI mkdir / put | â€” (not in Swift CLI) | âœ… `mkdir` / `put` | âœ… |
+| CLI sync (Backup Sync) | app-only engine | âœ… CLI `sync` + Desktop | âœ… |
+| Backup Sync engine + excludes | âœ… | âœ… size-tiered workers | âœ… |
+| Settings keys (Platforms-locked) | âœ… | âœ… same JSON keys | âœ… |
+| Proxy (system/direct/custom) | âœ… | âœ… | âœ… |
+| Credentials store | Keychain | Cred Manager (Win) / env+secrets.json (Mac host) + `cred` CLI | âœ… |
+| Tray / status item | âœ… NSStatusItem | âœ… Avalonia `TrayIcon` | ðŸŸ¡ |
+| Tray unlock / lock / open / quit | âœ… | âœ… | âœ… |
+| Connectivity probe lamps | TCP-focused + banner | dns/tcp/https/list + tray labels | âœ… |
+| autoReconnect monitor | âœ… 20s + launch unlock | âœ… 20s + launch/preference unlock | âœ… |
+| Finder File Provider | âœ… | â€” | âŒ CfAPI on Windows box |
+| Explorer CfAPI mount | — | WinRT SyncRootManager + recursive placeholders + hydrate; delete/rename fail-closed ACK | partial |
+| FUSE / rclone path | âœ… optional | â€” (not applicable) | âŒ N/A |
+| Update checker | âœ… | â€” | ðŸŸ¡ deferred |
+| Transfer metrics in menu | âœ… | â€” | ðŸŸ¡ deferred |
+| WinUI / MSIX installer | â€” | ðŸŸ¡ publish notes only | âŒ Windows box |
+| Golden fixture tests | âœ… | âœ… + mutation tests | âœ… |
 
 ## Remaining for a Windows box
 
-1. **Live CfAPI** — register sync root, placeholders, Explorer browse; validate fail-closed puts.
-2. **Tray on Windows** — confirm NotifyIcon behavior (Avalonia already implemented; smoke on Win).
-3. **Credential Manager** — `cred set/get` against real Windows vault (Mac host uses env/file).
+1. **Live CfAPI** — WinRT SyncRootManager + recursive populate + hydrate smoked; wire durable delete/rename after remote 2xx; confirm Explorer cloud glyph in UI.
+2. **Tray on Windows** â€” confirm NotifyIcon behavior (Avalonia already implemented; smoke on Win).
+3. **Credential Manager** â€” `cred set/get` against real Windows vault (Mac host uses env/file).
 4. **`dotnet publish -r win-x64`** package smoke + optional MSIX later (see `docs/packaging.md`).
-5. **WinUI shell** (optional) — Avalonia is the cross-platform host until then.
+5. **WinUI shell** (optional) â€” Avalonia is the cross-platform host until then.
 
 Do **not** treat Mac builds of `CryptoMako.CfApi` as a working Explorer mount.
+

@@ -300,10 +300,11 @@ static int CmdCfApi(ReadOnlySpan<string> args)
         }
         case "register":
             provider.RegisterSyncRoot(account);
-            Console.Error.WriteLine($"registered {root} account={account}");
+            var stReg = provider.GetStatus();
+            Console.Error.WriteLine($"registered {root} account={account} shell={stReg.ShellRegistration} id={stReg.ShellSyncRootId}");
             return 0;
         case "unregister":
-            provider.UnregisterSyncRoot();
+            provider.UnregisterSyncRoot(account);
             Console.Error.WriteLine($"unregistered {root}");
             return 0;
         case "connect":
@@ -325,8 +326,8 @@ static int CmdCfApi(ReadOnlySpan<string> args)
             var session = VaultSession.UnlockLocal(localVault, password);
             provider.AttachSession(session);
             var n = provider.PopulateRootPlaceholdersAsync().GetAwaiter().GetResult();
-            Console.Error.WriteLine($"placeholders={n} under {root} - holding 90s; try Explorer on hello.txt");
-            try { Thread.Sleep(TimeSpan.FromSeconds(90)); }
+            Console.Error.WriteLine($"placeholders={n} under {root} - holding 45s; try Explorer (cloud glyph / nested dirs / hello.txt)");
+            try { Thread.Sleep(TimeSpan.FromSeconds(45)); }
             catch (ThreadInterruptedException) { }
             provider.Disconnect();
             session.Dispose();
@@ -590,5 +591,10 @@ sealed record Opts(
     string? SyncStatePath,
     string? RenameTo,
     string? InputPath);
+
+
+
+
+
 
 
