@@ -21,8 +21,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private bool _busy;
     private S3ProbeResult? _probe;
     private CancellationTokenSource? _monitorCts;
+    private CancellationTokenSource? _backupSyncCts;
     private bool _userWantsUnlocked;
     private bool? _lastReachable;
+    private IExplorerViewer? _explorerViewer;
 
     public MainViewModel(ISecretStore? secrets = null)
     {
@@ -86,6 +88,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public string StatusTrayLabel =>
         Busy ? "busy…" : (IsUnlocked ? "unlocked" : Status);
+
+    /// <summary>Optional soft CfAPI viewer. Set by Desktop/CLI when a sync root is connected.</summary>
+    public IExplorerViewer? ExplorerViewer
+    {
+        get => _explorerViewer;
+        set
+        {
+            if (!ReferenceEquals(_explorerViewer, value))
+            {
+                _explorerViewer = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    /// <summary>True while a Backup Sync run is cancellable via Lock.</summary>
+    public bool IsBackupSyncRunning =>
+        _backupSyncCts is not null && !_backupSyncCts.IsCancellationRequested;
 
     public string ProbeTrayLabel
     {
@@ -182,6 +202,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public Task LockAsync(bool clearWantUnlocked = true)
     {
+        // Platforms Lock High: cancel Backup Sync, then disconnect CfAPI viewer.
+        // CredMan / secret-store wipe is deferred - do not call DeleteSecret here.
+        CancelBackupSync();
+        DisconnectExplorerViewer();
+
         _session?.Dispose();
         _session = null;
         Password = ""; // drop UI passphrase copy (CredMan wipe is deferred; in-process only)
@@ -190,7 +215,36 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         Status = "locked";
         OnPropertyChanged(nameof(IsUnlocked));
         OnPropertyChanged(nameof(StatusTrayLabel));
+        OnPropertyChanged(nameof(IsBackupSyncRunning));
         return Task.CompletedTask;
+    }
+
+    /// <summary>Cancel an in-flight Backup Sync (no-op if idle). Does not wipe CredMan.</summary>
+    public void CancelBackupSync()
+    {
+        try { _backupSyncCts?.Cancel(); }
+        catch { /* ignore */ }
+        OnPropertyChanged(nameof(IsBackupSyncRunning));
+        AppendLog("Backup Sync cancel requested");
+    }
+
+    /// <summary>Disconnect soft CfAPI viewer if connected. Does not unregister the sync root.</summary>
+    public void DisconnectExplorerViewer()
+    {
+        var viewer = _explorerViewer;
+        if (viewer is null) return;
+        try
+        {
+            if (viewer.IsConnected)
+            {
+                viewer.Disconnect();
+                AppendLog("CfAPI viewer disconnected");
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog("CfAPI disconnect: " + ex.Message.Replace('\n', ' '));
+        }
     }
 
     /// <summary>
@@ -348,6 +402,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             throw new InvalidOperationException("vault folder name required");
 
         Busy = true;
+        var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        var prev = Interlocked.Exchange(ref _backupSyncCts, linked);
+        try { prev?.Cancel(); } catch { /* ignore */ }
+        prev?.Dispose();
+        OnPropertyChanged(nameof(IsBackupSyncRunning));
         try
         {
             var engine = new BackupSyncEngine();
@@ -359,12 +418,16 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 Preferences,
                 syncStatePath: AppPaths.SyncStatePath,
                 progress: progress,
-                ct: ct);
+                ct: linked.Token);
             AppendLog($"sync done uploaded={result.FilesUploaded} skipped={result.FilesSkipped} bytes={result.BytesUploaded}");
             Status = $"synced {result.FilesUploaded} files";
         }
         finally
         {
+            if (ReferenceEquals(_backupSyncCts, linked))
+                _backupSyncCts = null;
+            linked.Dispose();
+            OnPropertyChanged(nameof(IsBackupSyncRunning));
             Busy = false;
         }
     }

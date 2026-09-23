@@ -40,7 +40,7 @@ Live **Cloud Files API** registration and Explorer placeholder mount are **Windo
 
 While unlocked, masterkey bytes live in `Masterkey`/`Cryptor` and the S3 secret access key string lives in `S3Settings` for SigV4. **Lock / Dispose** zeros masterkey buffers, clears the UI passphrase field, and drops the S3 `SecretKey` reference (`ClearSecretKey`). SigV4 signing keys and ephemeral HMAC intermediates are `ZeroMemory`'d after each request.
 
-**Not scrubbed (Medium residual):** .NET immutable strings (passphrase, S3 secret, proxy password in `NetworkCredential`) until GC; Credential Manager wipe on Lock is deferred (Lock = in-process only).
+**Lock High (Platforms):** cancel in-flight Backup Sync, then disconnect the soft CfAPI viewer (`IExplorerViewer.Disconnect`). Keep existing in-process secret clearing (masterkey zero / UI passphrase clear / S3 `SecretKey` drop). **CredMan wipe is deferred** — Lock must not call `DeleteSecret`. **Not scrubbed (Medium residual):** .NET immutable strings (passphrase, S3 secret, proxy password in `NetworkCredential`) until GC.
 
 ### autoReconnect
 

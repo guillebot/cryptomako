@@ -167,6 +167,70 @@ public class AppShellTests
         Assert.False(vm.IsUnlocked);
         Assert.Equal("locked", vm.Status);
     }
+    private sealed class FakeExplorerViewer : IExplorerViewer
+    {
+        public bool IsConnected { get; set; } = true;
+        public int DisconnectCalls { get; private set; }
+        public void Disconnect()
+        {
+            DisconnectCalls++;
+            IsConnected = false;
+        }
+    }
+
+    private sealed class TrackingSecretStore : ISecretStore
+    {
+        private readonly Dictionary<string, string> _map = new(StringComparer.Ordinal);
+        public int DeleteCalls { get; private set; }
+        public bool IsPersistent => false;
+        public string? GetSecret(string account) => _map.TryGetValue(account, out var v) ? v : null;
+        public void SetSecret(string account, string value) => _map[account] = value;
+        public void DeleteSecret(string account)
+        {
+            DeleteCalls++;
+            _map.Remove(account);
+        }
+    }
+
+    [Fact]
+    public async Task MainViewModel_LockAsync_disconnects_explorer_viewer()
+    {
+        var viewer = new FakeExplorerViewer { IsConnected = true };
+        await using var vm = new MainViewModel(secrets: new EnvSecretStore());
+        vm.ExplorerViewer = viewer;
+        await vm.LockAsync();
+        Assert.Equal(1, viewer.DisconnectCalls);
+        Assert.False(viewer.IsConnected);
+    }
+
+    [Fact]
+    public async Task MainViewModel_LockAsync_does_not_wipe_secret_store()
+    {
+        var store = new TrackingSecretStore();
+        store.SetSecret(SecretAccounts.Password, "vault-pass");
+        store.SetSecret(SecretAccounts.SecretKey, "s3-secret");
+        await using var vm = new MainViewModel(secrets: store);
+        await vm.LockAsync();
+        Assert.Equal(0, store.DeleteCalls);
+        Assert.Equal("vault-pass", store.GetSecret(SecretAccounts.Password));
+        Assert.Equal("s3-secret", store.GetSecret(SecretAccounts.SecretKey));
+    }
+
+    [Fact]
+    public async Task MainViewModel_LockAsync_cancels_backup_sync_cts()
+    {
+        await using var vm = new MainViewModel(secrets: new EnvSecretStore());
+        // Reflect into private CTS to simulate an in-flight sync without hitting the network.
+        var field = typeof(MainViewModel).GetField("_backupSyncCts",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+        Assert.NotNull(field);
+        var cts = new CancellationTokenSource();
+        field!.SetValue(vm, cts);
+        Assert.True(vm.IsBackupSyncRunning);
+        await vm.LockAsync();
+        Assert.True(cts.IsCancellationRequested);
+        Assert.False(vm.IsBackupSyncRunning);
+    }
 
     [Fact]
     public void S3Settings_ClearSecretKey_drops_reference()

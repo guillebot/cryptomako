@@ -1,5 +1,6 @@
 using System.Runtime.InteropServices;
 using System.Text;
+using CryptoMako.App;
 using CryptoMako.Vault;
 using Vanara.PInvoke;
 using static Vanara.PInvoke.CldApi;
@@ -14,7 +15,7 @@ namespace CryptoMako.CfApi;
 /// WinRT StorageProviderSyncRootManager on CFAPI_WINRT builds (Explorer cloud glyph).
 /// Fail-closed: write/delete/rename notify ACK SUCCESS only after vault mutation (remote 2xx).
 /// </summary>
-public sealed class CloudFilesProvider : IDisposable
+public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
 {
     public const string ProviderName = "CryptoMako";
     public const string ProviderVersion = "0.1.0";
@@ -224,6 +225,9 @@ public sealed class CloudFilesProvider : IDisposable
             out _connectionKey).ThrowIfFailed();
         _connected = true;
     }
+
+    /// <inheritdoc />
+    public bool IsConnected => _connected;
 
     public void Disconnect()
     {
