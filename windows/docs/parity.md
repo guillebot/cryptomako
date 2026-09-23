@@ -23,7 +23,7 @@ Legend: ✅ parity · 🟡 partial / stub · ❌ blocked (needs Windows box or m
 | Connectivity probe lamps | TCP-focused + banner | dns/tcp/https/list + tray labels | ✅ |
 | autoReconnect monitor | ✅ 20s + launch unlock | ✅ 20s + launch/preference unlock | ✅ |
 | Finder File Provider | ✅ | — | ❌ CfAPI on Windows box |
-| Explorer CfAPI mount | — | 🟡 Register/Unregister live; Connect/hydrate blocked | 🟡 |
+| Explorer CfAPI mount | — | 🟡 Connect+placeholder+hydrate live; WinRT glyph stub | 🟡 |
 | FUSE / rclone path | ✅ optional | — (not applicable) | ❌ N/A |
 | Update checker | ✅ | — | 🟡 deferred |
 | Transfer metrics in menu | ✅ | — | 🟡 deferred |

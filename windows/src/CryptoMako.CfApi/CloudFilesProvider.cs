@@ -1,13 +1,16 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using CryptoMako.Vault;
+using Vanara.PInvoke;
+using static Vanara.PInvoke.CldApi;
+using static Vanara.PInvoke.Kernel32;
 
 namespace CryptoMako.CfApi;
 
 /// <summary>
-/// Windows Cloud Files (CfAPI) sync root provider.
-/// Compiles on all platforms; live register/unregister requires Windows 10 1803+.
-/// Fail-closed: Explorer materialization is never durability — remote put 2xx is.
+/// Windows Cloud Files provider (Vanara-backed P/Invoke).
+/// Register / Connect / placeholders / FETCH_DATA hydrate are live on Windows 10 1803+.
+/// Fail-closed: write notify never claims durable success without remote 2xx.
 /// </summary>
 public sealed class CloudFilesProvider : IDisposable
 {
@@ -20,9 +23,16 @@ public sealed class CloudFilesProvider : IDisposable
     public VaultSession? Session { get; private set; }
 
     private bool _registered;
-    private long _connectionKey;
     private bool _connected;
+    private CF_CONNECTION_KEY _connectionKey;
     private string? _accountName;
+    private GCHandle _selfHandle;
+    private CF_CALLBACK? _fetchData;
+    private CF_CALLBACK? _cancelFetch;
+    private CF_CALLBACK? _notifyClose;
+    private CF_CALLBACK_REGISTRATION[]? _callbackTable;
+    private IntPtr _syncRootIdentityPtr;
+    private int _syncRootIdentityLen;
 
     public CloudFilesProvider(string syncRootPath)
     {
@@ -32,116 +42,228 @@ public sealed class CloudFilesProvider : IDisposable
     public bool IsWindowsCloudFilesAvailable =>
         OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17134);
 
-    /// <summary>
-    /// Registers a sync root via CfRegisterSyncRoot.
-    /// No admin elevation required for a user-writable folder (needs WRITE_DATA).
-    /// </summary>
     public void RegisterSyncRoot(string accountName)
     {
-        if (!IsWindowsCloudFilesAvailable)
-            throw new PlatformNotSupportedException(
-                "CfAPI sync root registration requires Windows 10 1803+.");
-
+        EnsureWindows();
         if (string.IsNullOrWhiteSpace(accountName))
             throw new ArgumentException("account name required", nameof(accountName));
 
         Directory.CreateDirectory(SyncRootPath);
         _accountName = accountName.Trim();
+
+        FreeSyncRootIdentity();
         var identity = Encoding.Unicode.GetBytes(SyncRootIdPrefix + _accountName + "\0");
+        _syncRootIdentityLen = identity.Length;
+        _syncRootIdentityPtr = Marshal.AllocHGlobal(identity.Length);
+        Marshal.Copy(identity, 0, _syncRootIdentityPtr, identity.Length);
 
-        var providerNamePtr = Marshal.StringToHGlobalUni(ProviderName);
-        var providerVersionPtr = Marshal.StringToHGlobalUni(ProviderVersion);
-        var identityPtr = Marshal.AllocHGlobal(identity.Length);
-        try
+        var registration = new CF_SYNC_REGISTRATION
         {
-            Marshal.Copy(identity, 0, identityPtr, identity.Length);
+            StructSize = (uint)Marshal.SizeOf<CF_SYNC_REGISTRATION>(),
+            ProviderName = ProviderName,
+            ProviderVersion = ProviderVersion,
+            SyncRootIdentity = _syncRootIdentityPtr,
+            SyncRootIdentityLength = (uint)_syncRootIdentityLen,
+            ProviderId = ProviderId,
+        };
 
-            var registration = new CldApiNative.CF_SYNC_REGISTRATION
-            {
-                StructSize = (uint)Marshal.SizeOf<CldApiNative.CF_SYNC_REGISTRATION>(),
-                ProviderName = providerNamePtr,
-                ProviderVersion = providerVersionPtr,
-                SyncRootIdentity = identityPtr,
-                SyncRootIdentityLength = (uint)identity.Length,
-                FileIdentity = IntPtr.Zero,
-                FileIdentityLength = 0,
-                ProviderId = ProviderId,
-            };
-
-            var policies = new CldApiNative.CF_SYNC_POLICIES
-            {
-                StructSize = (uint)Marshal.SizeOf<CldApiNative.CF_SYNC_POLICIES>(),
-                Hydration = new CldApiNative.CF_HYDRATION_POLICY
-                {
-                    Primary = CldApiNative.CF_HYDRATION_POLICY_PARTIAL,
-                    Modifier = CldApiNative.CF_HYDRATION_POLICY_MODIFIER_NONE,
-                },
-                Population = new CldApiNative.CF_POPULATION_POLICY
-                {
-                    Primary = CldApiNative.CF_POPULATION_POLICY_PARTIAL,
-                    Modifier = CldApiNative.CF_POPULATION_POLICY_MODIFIER_NONE,
-                },
-                InSync = CldApiNative.CF_INSYNC_POLICY_NONE,
-                HardLink = CldApiNative.CF_HARDLINK_POLICY_NONE,
-                PlaceholderManagement = CldApiNative.CF_PLACEHOLDER_MANAGEMENT_POLICY_DEFAULT,
-            };
-
-            var hr = CldApiNative.CfRegisterSyncRoot(
-                SyncRootPath,
-                in registration,
-                in policies,
-                CldApiNative.CF_REGISTER_FLAG_UPDATE | CldApiNative.CF_REGISTER_FLAG_MARK_IN_SYNC_ON_ROOT);
-            CldApiNative.ThrowOnFailed(hr, nameof(CldApiNative.CfRegisterSyncRoot));
-            _registered = true;
-        }
-        finally
+        var policies = new CF_SYNC_POLICIES
         {
-            Marshal.FreeHGlobal(providerNamePtr);
-            Marshal.FreeHGlobal(providerVersionPtr);
-            Marshal.FreeHGlobal(identityPtr);
-        }
+            StructSize = (uint)Marshal.SizeOf<CF_SYNC_POLICIES>(),
+            Hydration = new CF_HYDRATION_POLICY
+            {
+                Primary = CF_HYDRATION_POLICY_PRIMARY.CF_HYDRATION_POLICY_PARTIAL,
+                Modifier = CF_HYDRATION_POLICY_MODIFIER.CF_HYDRATION_POLICY_MODIFIER_NONE,
+            },
+            Population = new CF_POPULATION_POLICY
+            {
+                Primary = CF_POPULATION_POLICY_PRIMARY.CF_POPULATION_POLICY_PARTIAL,
+                Modifier = CF_POPULATION_POLICY_MODIFIER.CF_POPULATION_POLICY_MODIFIER_NONE,
+            },
+            InSync = CF_INSYNC_POLICY.CF_INSYNC_POLICY_NONE,
+            HardLink = CF_HARDLINK_POLICY.CF_HARDLINK_POLICY_NONE,
+        };
+
+        CfRegisterSyncRoot(
+            SyncRootPath,
+            registration,
+            policies,
+            CF_REGISTER_FLAGS.CF_REGISTER_FLAG_UPDATE | CF_REGISTER_FLAGS.CF_REGISTER_FLAG_MARK_IN_SYNC_ON_ROOT)
+            .ThrowIfFailed();
+        _registered = true;
+
+        // Best-effort Explorer shell awareness (WinRT). Non-fatal if unavailable.
+        try { ShellSyncRoot.TryRegister(SyncRootPath, SyncRootIdPrefix + _accountName); }
+        catch { /* optional */ }
     }
 
     public void UnregisterSyncRoot()
     {
-        if (!IsWindowsCloudFilesAvailable)
-            throw new PlatformNotSupportedException("CfAPI requires Windows.");
-
+        EnsureWindows();
         Disconnect();
-        var hr = CldApiNative.CfUnregisterSyncRoot(SyncRootPath);
-        CldApiNative.ThrowOnFailed(hr, nameof(CldApiNative.CfUnregisterSyncRoot));
+        try { ShellSyncRoot.TryUnregister(SyncRootIdPrefix + (_accountName ?? "default")); }
+        catch { /* optional */ }
+        CfUnregisterSyncRoot(SyncRootPath).ThrowIfFailed();
         _registered = false;
+        FreeSyncRootIdentity();
     }
 
-    /// <summary>
-    /// Connect callback channel. Currently blocked: CfConnectSyncRoot returns E_INVALIDARG
-    /// until CsWin32-safe CF_CALLBACK delegates (FETCH_DATA / fail-closed writes) are wired.
-    /// Register/Unregister are live and tested on Windows 11.
-    /// </summary>
     public void Connect()
     {
-        if (!IsWindowsCloudFilesAvailable)
-            throw new PlatformNotSupportedException("CfAPI requires Windows.");
+        EnsureWindows();
         if (!_registered)
             throw new InvalidOperationException("RegisterSyncRoot first.");
         if (_connected) return;
 
-        throw new NotImplementedException(
-            "CfConnectSyncRoot needs CsWin32/safe CF_CALLBACK marshalling " +
-            "(observed HRESULT 0x80070057 with terminator-only / null tables on Win11 26100). " +
-            "Register + Unregister work. See docs/cfapi.md.");
+        _fetchData = OnFetchData;
+        _cancelFetch = OnCancelFetchData;
+        _notifyClose = OnNotifyFileClose;
+        _callbackTable = new[]
+        {
+            new CF_CALLBACK_REGISTRATION
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_FETCH_DATA,
+                Callback = _fetchData,
+            },
+            new CF_CALLBACK_REGISTRATION
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
+                Callback = _cancelFetch,
+            },
+            new CF_CALLBACK_REGISTRATION
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_NOTIFY_FILE_CLOSE_COMPLETION,
+                Callback = _notifyClose,
+            },
+            CF_CALLBACK_REGISTRATION.CF_CALLBACK_REGISTRATION_END,
+        };
+
+        if (_selfHandle.IsAllocated) _selfHandle.Free();
+        _selfHandle = GCHandle.Alloc(this);
+
+        CfConnectSyncRoot(
+            SyncRootPath,
+            _callbackTable,
+            GCHandle.ToIntPtr(_selfHandle),
+            CF_CONNECT_FLAGS.CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH,
+            out _connectionKey).ThrowIfFailed();
+        _connected = true;
     }
 
     public void Disconnect()
     {
         if (!_connected) return;
-        try { CldApiNative.CfDisconnectSyncRoot(_connectionKey); }
+        try { CfDisconnectSyncRoot(_connectionKey).ThrowIfFailed(); }
         catch { /* best-effort */ }
         _connected = false;
-        _connectionKey = 0;
+        _connectionKey = default;
+        if (_selfHandle.IsAllocated) _selfHandle.Free();
+        _callbackTable = null;
+        _fetchData = null;
+        _cancelFetch = null;
+        _notifyClose = null;
     }
 
     public void AttachSession(VaultSession session) => Session = session;
+
+    /// <summary>
+    /// Creates on-demand placeholders under the sync root for the given vault nodes.
+    /// FileIdentity = UTF-8 cleartext path (e.g. /hello.txt) used by FETCH_DATA.
+    /// </summary>
+    public int CreatePlaceholders(IReadOnlyList<CloudFilesPlaceholder> placeholders)
+    {
+        EnsureWindows();
+        if (!_registered)
+            throw new InvalidOperationException("RegisterSyncRoot first.");
+        if (placeholders.Count == 0) return 0;
+
+        var infos = new CF_PLACEHOLDER_CREATE_INFO[placeholders.Count];
+        var pins = new List<IntPtr>();
+        try
+        {
+            for (var i = 0; i < placeholders.Count; i++)
+            {
+                var p = placeholders[i];
+                var rel = p.CleartextRelativePath.Replace('\\', '/').TrimStart('/');
+                var identityBytes = Encoding.UTF8.GetBytes("/" + rel.Replace('\\', '/'));
+                var idPtr = Marshal.AllocHGlobal(identityBytes.Length);
+                pins.Add(idPtr);
+                Marshal.Copy(identityBytes, 0, idPtr, identityBytes.Length);
+
+                var basic = new FILE_BASIC_INFO
+                {
+                    FileAttributes = p.IsDirectory
+                        ? FileFlagsAndAttributes.FILE_ATTRIBUTE_DIRECTORY
+                        : FileFlagsAndAttributes.FILE_ATTRIBUTE_NORMAL,
+                };
+
+                infos[i] = new CF_PLACEHOLDER_CREATE_INFO
+                {
+                    RelativeFileName = rel.Replace('/', '\\'),
+                    FsMetadata = new CF_FS_METADATA
+                    {
+                        BasicInfo = basic,
+                        FileSize = p.IsDirectory ? 0 : (p.FileSize ?? 0),
+                    },
+                    FileIdentity = idPtr,
+                    FileIdentityLength = (uint)identityBytes.Length,
+                    Flags = CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
+                };
+            }
+
+            CfCreatePlaceholders(
+                SyncRootPath,
+                infos,
+                (uint)infos.Length,
+                CF_CREATE_FLAGS.CF_CREATE_FLAG_NONE,
+                out var processed).ThrowIfFailed();
+            return (int)processed;
+        }
+        finally
+        {
+            foreach (var ptr in pins)
+                Marshal.FreeHGlobal(ptr);
+        }
+    }
+
+    /// <summary>
+    /// Lists vault root files/dirs and creates matching placeholders (non-recursive).
+    /// </summary>
+    public async Task<int> PopulateRootPlaceholdersAsync(CancellationToken ct = default)
+    {
+        if (Session is null)
+            throw new InvalidOperationException("AttachSession first.");
+
+        var entries = await Session.ListAsync("/", recursive: false, ct).ConfigureAwait(false);
+        var list = new List<CloudFilesPlaceholder>();
+        foreach (var e in entries)
+        {
+            var isDir = e.EndsWith("/", StringComparison.Ordinal);
+            var name = isDir ? e.TrimEnd('/') : e;
+            if (name.Contains(" ->", StringComparison.Ordinal)) continue; // symlink display
+            long? size = null;
+            if (!isDir)
+            {
+                try
+                {
+                    var bytes = await Session.CatAsync("/" + name.TrimStart('/'), ct).ConfigureAwait(false);
+                    size = bytes.LongLength;
+                }
+                catch
+                {
+                    size = 0;
+                }
+            }
+            list.Add(new CloudFilesPlaceholder
+            {
+                CleartextRelativePath = name.TrimStart('/'),
+                CiphertextKey = "",
+                IsDirectory = isDir,
+                FileSize = size,
+            });
+        }
+        return CreatePlaceholders(list);
+    }
 
     public static bool IsDurableSuccess(bool remotePutHttp2xx) => remotePutHttp2xx;
 
@@ -158,8 +280,7 @@ public sealed class CloudFilesProvider : IDisposable
             return null;
         try
         {
-            var hr = CldApiNative.CfGetPlatformInfo(out var info);
-            if (hr < 0) return $"CfGetPlatformInfo HRESULT=0x{hr:X8}";
+            CfGetPlatformInfo(out var info).ThrowIfFailed();
             return $"build={info.BuildNumber} revision={info.RevisionNumber} integration={info.IntegrationNumber}";
         }
         catch (Exception ex)
@@ -181,8 +302,131 @@ public sealed class CloudFilesProvider : IDisposable
 
     public void Dispose()
     {
-        Disconnect();
+        try { Disconnect(); } catch { /* ignore */ }
+        FreeSyncRootIdentity();
         GC.SuppressFinalize(this);
+    }
+
+    private void EnsureWindows()
+    {
+        if (!IsWindowsCloudFilesAvailable)
+            throw new PlatformNotSupportedException("CfAPI requires Windows 10 1803+.");
+    }
+
+    private void FreeSyncRootIdentity()
+    {
+        if (_syncRootIdentityPtr != IntPtr.Zero)
+        {
+            Marshal.FreeHGlobal(_syncRootIdentityPtr);
+            _syncRootIdentityPtr = IntPtr.Zero;
+            _syncRootIdentityLen = 0;
+        }
+    }
+
+    private static CloudFilesProvider? FromContext(in CF_CALLBACK_INFO info)
+    {
+        if (info.CallbackContext == IntPtr.Zero) return null;
+        var gch = GCHandle.FromIntPtr(info.CallbackContext);
+        return gch.IsAllocated ? gch.Target as CloudFilesProvider : null;
+    }
+
+    private static string? ReadFileIdentityPath(in CF_CALLBACK_INFO info)
+    {
+        if (info.FileIdentity == IntPtr.Zero || info.FileIdentityLength == 0)
+            return null;
+        var bytes = new byte[info.FileIdentityLength];
+        Marshal.Copy(info.FileIdentity, bytes, 0, bytes.Length);
+        return Encoding.UTF8.GetString(bytes);
+    }
+
+    private static void OnFetchData(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
+    {
+        var provider = FromContext(info);
+        try
+        {
+            var path = ReadFileIdentityPath(info)
+                ?? throw new InvalidOperationException("missing FileIdentity");
+            if (provider?.Session is null)
+                throw new InvalidOperationException("no vault session");
+
+            var clear = provider.Session.CatAsync(path).GetAwaiter().GetResult();
+            var offset = parameters.FetchData.RequiredFileOffset;
+            var length = parameters.FetchData.RequiredLength;
+            if (offset < 0 || offset > clear.LongLength)
+                throw new InvalidOperationException("bad fetch offset");
+            var available = clear.LongLength - offset;
+            var toSend = (long)Math.Min((ulong)available, length > 0 ? (ulong)length : (ulong)available);
+            if (toSend < 0) toSend = 0;
+
+            var slice = new byte[toSend];
+            if (toSend > 0)
+                Buffer.BlockCopy(clear, (int)offset, slice, 0, (int)toSend);
+
+            var handle = GCHandle.Alloc(slice, GCHandleType.Pinned);
+            try
+            {
+                var opInfo = new CF_OPERATION_INFO
+                {
+                    StructSize = (uint)Marshal.SizeOf<CF_OPERATION_INFO>(),
+                    Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_DATA,
+                    ConnectionKey = info.ConnectionKey,
+                    TransferKey = info.TransferKey,
+                };
+                var opParams = CF_OPERATION_PARAMETERS.Create(
+                    new CF_OPERATION_PARAMETERS.TRANSFERDATA
+                    {
+                        Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
+                        CompletionStatus = NTStatus.STATUS_SUCCESS,
+                        Buffer = handle.AddrOfPinnedObject(),
+                        Offset = offset,
+                        Length = toSend,
+                    });
+                CfExecute(opInfo, ref opParams).ThrowIfFailed();
+            }
+            finally
+            {
+                handle.Free();
+            }
+        }
+        catch (Exception)
+        {
+            try
+            {
+                var opInfo = new CF_OPERATION_INFO
+                {
+                    StructSize = (uint)Marshal.SizeOf<CF_OPERATION_INFO>(),
+                    Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_DATA,
+                    ConnectionKey = info.ConnectionKey,
+                    TransferKey = info.TransferKey,
+                };
+                var opParams = CF_OPERATION_PARAMETERS.Create(
+                    new CF_OPERATION_PARAMETERS.TRANSFERDATA
+                    {
+                        Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
+                        CompletionStatus = new NTStatus(unchecked((int)0xC000CF18)), // STATUS_CLOUD_FILE_UNSUCCESSFUL-ish fail-closed
+                        Buffer = IntPtr.Zero,
+                        Offset = parameters.FetchData.RequiredFileOffset,
+                        Length = 0,
+                    });
+                CfExecute(opInfo, ref opParams);
+            }
+            catch { /* fail closed */ }
+        }
+    }
+
+    private static void OnCancelFetchData(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
+    {
+        // Nothing to cancel for sync CatAsync; platform stops requesting ranges.
+        _ = info;
+        _ = parameters;
+    }
+
+    private static void OnNotifyFileClose(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
+    {
+        // Read/hydrate closes are ignored. Durable writes must go through AcknowledgeWriteOnlyIfRemoteOk(true)
+        // after a remote put 2xx — never acknowledge here without that proof (fail-closed).
+        _ = info;
+        _ = parameters;
     }
 }
 

@@ -1,4 +1,4 @@
-using CryptoMako.Vault;
+﻿using CryptoMako.Vault;
 using CryptoMako.App;
 using CryptoMako.CfApi;
 using Xunit;
@@ -27,7 +27,7 @@ public class AppShellTests
     }
 
     [Fact]
-    public void CloudFilesProvider_register_unregister_on_windows()
+    public void CloudFilesProvider_register_connect_unregister_on_windows()
     {
         if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17134))
             return;
@@ -41,16 +41,75 @@ public class AppShellTests
         try
         {
             provider.RegisterSyncRoot("test-account");
-            var st = provider.GetStatus();
-            Assert.True(st.Registered);
-            Assert.True(st.PlatformSupported);
-            Assert.NotNull(st.PlatformInfo);
+            Assert.True(provider.GetStatus().Registered);
+
+            provider.Connect();
+            Assert.True(provider.GetStatus().Connected);
+
+            provider.Disconnect();
+            Assert.False(provider.GetStatus().Connected);
 
             provider.UnregisterSyncRoot();
             Assert.False(provider.GetStatus().Registered);
         }
         finally
         {
+            try { provider.Disconnect(); } catch { }
+            try { if (provider.GetStatus().Registered) provider.UnregisterSyncRoot(); } catch { }
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+    [Fact]
+    public async Task CloudFilesProvider_placeholder_from_fixture_on_windows()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17134))
+            return;
+
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", ".."));
+        var fixture = Path.Combine(repoRoot, "fixtures", "vault");
+        var passPath = Path.Combine(repoRoot, "fixtures", "PASSWORD");
+        if (!Directory.Exists(fixture) || !File.Exists(passPath))
+            return; // fixtures absent (CI without golden vault)
+
+        var pass = File.ReadAllText(passPath).TrimEnd('\n', '\r');
+        var root = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CryptoMako",
+            "cfapi-ph-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+
+        await using var session = VaultSession.UnlockLocal(fixture, pass);
+        using var provider = new CloudFilesProvider(root);
+        try
+        {
+            provider.RegisterSyncRoot("placeholder-smoke");
+            provider.Connect();
+            provider.AttachSession(session);
+
+            var n = provider.CreatePlaceholders(new[]
+            {
+                new CloudFilesPlaceholder
+                {
+                    CleartextRelativePath = "hello.txt",
+                    CiphertextKey = "",
+                    IsDirectory = false,
+                    FileSize = "hello cryptomako\n".Length,
+                },
+            });
+            Assert.True(n >= 1);
+            Assert.True(File.Exists(Path.Combine(root, "hello.txt")) ||
+                        Directory.Exists(Path.Combine(root, "hello.txt")) ||
+                        // placeholder may appear as reparse point file
+                        File.Exists(Path.Combine(root, "hello.txt")));
+
+            // Placeholder path should exist as a cloud file
+            var ph = Path.Combine(root, "hello.txt");
+            Assert.True(File.Exists(ph));
+        }
+        finally
+        {
+            try { provider.Disconnect(); } catch { }
             try { if (provider.GetStatus().Registered) provider.UnregisterSyncRoot(); } catch { }
             try { Directory.Delete(root, true); } catch { }
         }

@@ -1,10 +1,15 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>CryptoMako.CfApi</RootNamespace>
     <AssemblyName>CryptoMako.CfApi</AssemblyName>
-    <Description>Cloud Files (CfAPI) provider scaffold. Full registration requires Windows.</Description>
-    <!-- Keep net8.0 so the Mac build host can compile stubs; Windows APIs are runtime-gated. -->
+    <Description>Cloud Files (CfAPI) provider. Vanara-backed; runtime-gated to Windows 10 1803+.</Description>
+    <!-- Vanara APIs are annotated [SupportedOSPlatform("windows")]; we gate at runtime. -->
+    <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Vanara.PInvoke.CldApi" Version="4.1.3" />
+    <PackageReference Include="Vanara.PInvoke.Kernel32" Version="4.1.3" />
+  </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CryptoMako.Vault\CryptoMako.Vault.csproj" />
     <ProjectReference Include="..\CryptoMako.App\CryptoMako.App.csproj" />

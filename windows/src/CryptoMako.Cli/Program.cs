@@ -255,21 +255,24 @@ static int CmdCfApi(ReadOnlySpan<string> args)
     if (args.Length == 0 || args[0] is "-h" or "--help")
     {
         Console.WriteLine("""
-            cryptomako cfapi status|register|unregister|connect|platform
+            cryptomako cfapi status|register|unregister|connect|populate|platform
               --root DIR     Sync root (default: %LOCALAPPDATA%/CryptoMako/SyncRoot)
               --account NAME Sync root account id (default: default)
+              --local DIR    Vault directory for populate (CRYPTOMAKO_PASSWORD)
             """);
         return args.Length == 0 ? 2 : 0;
     }
 
     string? root = null;
     string account = "default";
+    string? localVault = null;
     var cmd = args[0];
     for (var i = 1; i < args.Length; i++)
     {
         var a = args[i];
         if (a is "--root" && i + 1 < args.Length) { root = args[++i]; continue; }
         if (a is "--account" && i + 1 < args.Length) { account = args[++i]; continue; }
+        if (a is "--local" && i + 1 < args.Length) { localVault = args[++i]; continue; }
         return Fail(2, $"unknown cfapi flag: {a}");
     }
 
@@ -306,11 +309,29 @@ static int CmdCfApi(ReadOnlySpan<string> args)
         case "connect":
             try { provider.RegisterSyncRoot(account); } catch { /* already registered */ }
             provider.Connect();
-            Console.Error.WriteLine($"connected {root} — holding 60s for Explorer callbacks");
+            Console.Error.WriteLine($"connected {root} - holding 60s for Explorer callbacks");
             try { Thread.Sleep(TimeSpan.FromSeconds(60)); }
             catch (ThreadInterruptedException) { }
             provider.Disconnect();
             return 0;
+        case "populate":
+        {
+            if (string.IsNullOrEmpty(localVault))
+                return Fail(2, "populate requires --local VAULT_DIR");
+            var password = Environment.GetEnvironmentVariable("CRYPTOMAKO_PASSWORD")
+                ?? throw new InvalidOperationException("CRYPTOMAKO_PASSWORD required for populate");
+            try { provider.RegisterSyncRoot(account); } catch { /* already */ }
+            provider.Connect();
+            var session = VaultSession.UnlockLocal(localVault, password);
+            provider.AttachSession(session);
+            var n = provider.PopulateRootPlaceholdersAsync().GetAwaiter().GetResult();
+            Console.Error.WriteLine($"placeholders={n} under {root} - holding 90s; try Explorer on hello.txt");
+            try { Thread.Sleep(TimeSpan.FromSeconds(90)); }
+            catch (ThreadInterruptedException) { }
+            provider.Disconnect();
+            session.Dispose();
+            return 0;
+        }
         case "disconnect":
             Console.Error.WriteLine("disconnect is in-process only; exit the connect holder");
             return 0;
