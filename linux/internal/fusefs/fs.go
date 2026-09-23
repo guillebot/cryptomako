@@ -20,10 +20,16 @@ type Options struct {
 	AllowOther bool
 }
 
+// NewCleartextRoot returns the FUSE root inode embedder for an unlocked session.
+// Useful for tests that exercise the tree without a live /dev/fuse mount.
+func NewCleartextRoot(session *vault.Session) fs.InodeEmbedder {
+	return &dirNode{session: session, clearPath: "/"}
+}
+
 // Mount mounts session at mountpoint (read-only cleartext). Blocks until unmount
 // unless ctx is cancelled.
 func Mount(ctx context.Context, mountpoint string, session *vault.Session, opts Options) error {
-	root := &dirNode{session: session, clearPath: "/"}
+	root := NewCleartextRoot(session)
 	fuseOpts := &fs.Options{
 		MountOptions: fuse.MountOptions{
 			FsName:     "cryptomako",

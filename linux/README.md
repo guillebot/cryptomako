@@ -44,6 +44,9 @@ export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < ../fixtures/PASSWORD)"
 # cipherCombo: SIV_GCM
 # rootPrefix: d/FQ/QG7OOSQNZM6BJDZAIENVAOACYROMHW/
 
+# Non-recursive: basenames only (Mac parity: hello.txt, bin/)
+./cryptomako ls --local ../fixtures/vault
+# Recursive: absolute cleartext paths (matches fixtures/expected-ls.txt)
 ./cryptomako ls --local ../fixtures/vault --path / --recursive | diff -u ../fixtures/expected-ls.txt -
 ./cryptomako cat --local ../fixtures/vault /hello.txt
 # → hello cryptomako
@@ -112,12 +115,55 @@ Proposed to Platforms before inventing new keys. Current set matches macOS `Conn
 
 ## Docker
 
+Build from the `linux/` context (Dockerfile installs `fuse3`):
+
 ```bash
 cd linux
+export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < ../fixtures/PASSWORD)"
 docker build -t cryptomako .
-docker run --rm -e CRYPTOMAKO_PASSWORD -v "$PWD/../fixtures/vault:/vault:ro" cryptomako unlock --local /vault
-# FUSE: add --device /dev/fuse --cap-add SYS_ADMIN
 ```
+
+CLI-only (works on Docker Desktop macOS):
+
+```bash
+docker run --rm -e CRYPTOMAKO_PASSWORD \
+  -v "$PWD/../fixtures/vault:/vault:ro" \
+  cryptomako unlock --local /vault
+
+docker run --rm -e CRYPTOMAKO_PASSWORD \
+  -v "$PWD/../fixtures/vault:/vault:ro" \
+  cryptomako ls --local /vault --recursive
+```
+
+### FUSE smoke (needs `/dev/fuse`)
+
+Exact flags for a real Linux Docker host (or CI) with FUSE passthrough:
+
+```bash
+docker run --rm -it \
+  --device /dev/fuse \
+  --cap-add SYS_ADMIN \
+  --security-opt apparmor:unconfined \
+  -e CRYPTOMAKO_PASSWORD \
+  -v "$PWD/../fixtures/vault:/vault:ro" \
+  --entrypoint sh \
+  cryptomako \
+  -c 'mkdir -p /mnt/cm
+     cryptomako mount --local /vault --mountpoint /mnt/cm &
+     i=0; while [ ! -f /mnt/cm/hello.txt ] && [ "$i" -lt 50 ]; do i=$((i+1)); sleep 0.1; done
+     cat /mnt/cm/hello.txt
+     fusermount3 -u /mnt/cm'
+```
+
+Or use the host script (same expectations: cleartext `hello cryptomako`, clean unmount):
+
+```bash
+./scripts/fuse-smoke.sh
+```
+
+**Host macOS** has no `/dev/fuse`, so `./scripts/fuse-smoke.sh` exits 2 on the Mac host itself.
+
+**Docker Desktop (macOS):** with `--device /dev/fuse --cap-add SYS_ADMIN` the FUSE smoke **can** succeed (verified: cleartext `hello cryptomako` + clean `fusermount3 -u`). If your Docker engine cannot expose `/dev/fuse`, use Linux CI/hosts with the same flags or `./scripts/fuse-smoke.sh`. Unit tests under `internal/fusefs` construct the FUSE root without a live mount.
 
 ## License
 
