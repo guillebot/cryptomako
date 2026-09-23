@@ -1,4 +1,8 @@
-# Cloud Files (CfAPI) scaffold — Windows only
+# CfAPI (Cloud Files) — Windows box required
+
+> **Not live on macOS.** Stubs compile for solution green builds. Explorer mount / placeholder sync
+> must be validated on a real Windows machine. Do not treat Mac `dotnet build` of `CryptoMako.CfApi`
+> as evidence of a working mount.
 
 CryptoMako’s Explorer surface is **Windows Cloud Files** (CfAPI). Local materialization
 is for browse + small transfers; **durable success = remote S3 put/delete 2xx**.

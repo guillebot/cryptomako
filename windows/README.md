@@ -86,8 +86,8 @@ Secrets: env / Credential Manager only.
 
 ## Desktop + CfAPI
 
-- **Desktop (Avalonia):** `dotnet run --project src/CryptoMako.Desktop` — Vault / Backup / Settings tabs (builds on macOS + Windows). See `docs/desktop.md`.
-- **CfAPI scaffold:** `src/CryptoMako.CfApi` + `docs/cfapi.md` — sync-root registration requires a **Windows** box.
+- **Desktop (Avalonia) + tray:** `dotnet run --project src/CryptoMako.Desktop` — Vault / Backup / Settings; tray unlock/lock/probe/open/quit (close hides to tray). See `docs/desktop.md`.
+- **CfAPI:** stubs only on Mac — **needs a Windows box** for live Explorer mount (`src/CryptoMako.CfApi`, `docs/cfapi.md`).
 - **Credentials CLI:** `cryptomako cred list|get|set|delete` (stdin for set; Credential Manager on Windows).
 
 ## Backup Sync
@@ -105,7 +105,7 @@ Secrets: env or Windows Credential Manager (`CryptoMako/CRYPTOMAKO_*`).
 
 - `dotnet test` green (golden + SigV4 + settings + Backup Sync + proxy mapping)
 - Local CLI matches `fixtures/expected-ls.txt` and hello.txt
-- S3 client: get/list/put/delete over HTTPS with SigV4; unlock/ls/cat/get/stat/sync wired
+- S3 client: get/list/put/delete over HTTPS with SigV4; unlock/ls/cat/get/stat/sync/delete/rename wired
 - Proxy modes system|direct|custom applied to S3 HttpClient
 
 ## License

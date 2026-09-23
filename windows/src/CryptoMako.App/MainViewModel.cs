@@ -45,7 +45,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public string Status
     {
         get => _status;
-        private set { if (_status != value) { _status = value; OnPropertyChanged(); } }
+        private set { if (_status != value) { _status = value; OnPropertyChanged(); OnPropertyChanged(nameof(StatusTrayLabel)); } }
     }
 
     public string Log
@@ -75,14 +75,34 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public bool Busy
     {
         get => _busy;
-        private set { if (_busy != value) { _busy = value; OnPropertyChanged(); } }
+        private set { if (_busy != value) { _busy = value; OnPropertyChanged(); OnPropertyChanged(nameof(StatusTrayLabel)); } }
     }
 
     public bool IsUnlocked => _session is not null;
+
+    public string StatusTrayLabel =>
+        Busy ? "busy…" : (IsUnlocked ? "unlocked" : Status);
+
+    public string ProbeTrayLabel
+    {
+        get
+        {
+            if (LastProbe is null) return "not probed";
+            static char L(ProbeLamp lamp) => lamp switch
+            {
+                ProbeLamp.Ok => '●',
+                ProbeLamp.Fail => '✖',
+                ProbeLamp.Skip => '–',
+                _ => '○',
+            };
+            return $"dns{L(LastProbe.Dns)} tcp{L(LastProbe.Tcp)} https{L(LastProbe.Https)} list{L(LastProbe.List)}";
+        }
+    }
+
     public S3ProbeResult? LastProbe
     {
         get => _probe;
-        private set { _probe = value; OnPropertyChanged(); }
+        private set { _probe = value; OnPropertyChanged(); OnPropertyChanged(nameof(ProbeTrayLabel)); }
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -138,6 +158,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
             Status = $"unlocked format={_session.Metadata.Format} {_session.RootPath}";
             OnPropertyChanged(nameof(IsUnlocked));
+        OnPropertyChanged(nameof(StatusTrayLabel));
             AppendLog(Status);
         }
         catch (Exception ex)
@@ -158,6 +179,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _session = null;
         Status = "locked";
         OnPropertyChanged(nameof(IsUnlocked));
+        OnPropertyChanged(nameof(StatusTrayLabel));
         return Task.CompletedTask;
     }
 

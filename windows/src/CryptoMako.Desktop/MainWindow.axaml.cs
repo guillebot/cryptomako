@@ -10,6 +10,14 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        Closing += OnClosing;
+    }
+
+    private void OnClosing(object? sender, WindowClosingEventArgs e)
+    {
+        // Hide to tray instead of quitting (Quit lives on the tray menu).
+        e.Cancel = true;
+        Hide();
     }
 
     private MainViewModel Vm => (MainViewModel)DataContext!;

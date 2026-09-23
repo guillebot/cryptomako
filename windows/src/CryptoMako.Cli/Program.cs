@@ -21,6 +21,8 @@ static async Task<int> MainAsync(string[] args)
             "get" => await CmdGetAsync(ParseOpts(args.AsSpan(1))),
             "stat" => await CmdStatAsync(ParseOpts(args.AsSpan(1))),
             "sync" => await CmdSyncAsync(ParseOpts(args.AsSpan(1))),
+            "delete" => await CmdDeleteAsync(ParseOpts(args.AsSpan(1))),
+            "rename" => await CmdRenameAsync(ParseOpts(args.AsSpan(1))),
             "cred" => CmdCred(args.AsSpan(1)),
             _ => Fail(2, $"unknown command: {args[0]}"),
         };
@@ -112,6 +114,25 @@ static async Task<int> CmdSyncAsync(Opts o)
     Console.WriteLine($"uploaded={result.FilesUploaded}");
     Console.WriteLine($"skipped={result.FilesSkipped}");
     Console.WriteLine($"bytes={result.BytesUploaded}");
+    return 0;
+}
+
+static async Task<int> CmdDeleteAsync(Opts o)
+{
+    if (o.PositionalPath is null) return Fail(2, "delete requires a cleartext path");
+    await using var session = await OpenSessionAsync(o);
+    await session.DeleteAsync(o.PositionalPath, recursive: o.Recursive);
+    Console.Error.WriteLine($"deleted {o.PositionalPath}");
+    return 0;
+}
+
+static async Task<int> CmdRenameAsync(Opts o)
+{
+    if (o.PositionalPath is null || o.RenameTo is null)
+        return Fail(2, "rename requires <from> <to> cleartext paths");
+    await using var session = await OpenSessionAsync(o);
+    var node = await session.RenameAsync(o.PositionalPath, o.RenameTo);
+    Console.Error.WriteLine($"renamed -> {o.RenameTo} ({node.Kind.ToString().ToLowerInvariant()})");
     return 0;
 }
 
@@ -296,6 +317,7 @@ static Opts ParseOpts(ReadOnlySpan<string> args)
     string path = "/";
     bool recursive = false, virtualHosted = false;
     string? positional = null;
+    string? renameTo = null;
 
     for (var i = 0; i < args.Length; i++)
     {
@@ -331,14 +353,16 @@ static Opts ParseOpts(ReadOnlySpan<string> args)
             default:
                 if (a.StartsWith('-'))
                     throw new ArgumentException($"unknown flag: {a}");
-                positional ??= a;
+                if (positional is null) positional = a;
+                else if (renameTo is null) renameTo = a;
+                else throw new ArgumentException($"unexpected argument: {a}");
                 break;
         }
     }
 
     return new Opts(local, endpoint, region, bucket, prefix, accessKey, configPath, preferencesPath,
         passwordEnv, secretKeyEnv, path, recursive, virtualHosted, positional, output,
-        source, vaultFolder, syncStatePath);
+        source, vaultFolder, syncStatePath, renameTo);
 }
 
 static string NeedValue(ReadOnlySpan<string> args, ref int i, string flag)
@@ -378,6 +402,8 @@ static void PrintHelp()
           cryptomako get    (...) <cleartext-path> --output FILE
           cryptomako stat   (...) <cleartext-path>
           cryptomako sync   (...) --source DIR --vault-folder NAME
+          cryptomako delete (...) <cleartext-path> [-R]
+          cryptomako rename (...) <from> <to>
           cryptomako cred   list|get|set|delete <account>
 
         Connection:
@@ -424,4 +450,5 @@ sealed record Opts(
     string? Output,
     string? Source,
     string? VaultFolder,
-    string? SyncStatePath);
+    string? SyncStatePath,
+    string? RenameTo);
