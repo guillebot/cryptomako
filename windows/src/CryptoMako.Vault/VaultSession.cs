@@ -11,6 +11,17 @@ public sealed partial class VaultSession : IAsyncDisposable, IDisposable
     public string RootPath { get; }
     public string Prefix { get; }
 
+    /// <summary>
+    /// Read-only fingerprint of <c>vault.cryptomator</c> (ETag|size) for remote-change probes.
+    /// No merge — callers surface "remote changed — remount/refresh" only.
+    /// </summary>
+    public async Task<string> GetVaultMetadataFingerprintAsync(CancellationToken ct = default)
+    {
+        var key = Prefix + "vault.cryptomator";
+        var head = await _store.HeadObjectAsync(key, ct);
+        return $"{head.ETag ?? ""}|{head.Size}";
+    }
+
     private readonly Masterkey _masterkey;
     private readonly Cryptor _cryptor;
     private readonly IObjectStore _store;

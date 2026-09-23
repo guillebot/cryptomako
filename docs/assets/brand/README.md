@@ -27,14 +27,14 @@ Locked user pick: `icon-master.png` (source of truth for the lock). App icons ar
 |----------|-------------|
 | **macOS (this repo)** | App icon: `Support/Brand/Assets.xcassets` + `Sources/CryptoMakoApp/Resources/AppIcon.png`. Menu bar: `Sources/CryptoMakoApp/Resources/MenuBarTemplate.png` ← copy of `menubar-template-white.png` (wired in `BrandIcon.templateStatusBarImage()`). |
 | **Linux** | `.desktop` `Icon=cryptomako` + hicolor apps icons from `icon-{48,256,512}.png` (see `linux/packaging/`). `linux-desktop.png` is docs preview only (wide). |
-| **Windows** | Prefer `tray-windows.png` / `icon.png` for tray and Avalonia window icon when that tree lands. |
+| **Windows** | Tray: `windows/src/CryptoMako.Desktop/Assets/tray.png` ← `tray-windows.png` (wired). Window icon may follow later. |
 | **iOS / Android** | Sibling repos: copy from `docs/assets/brand/` in this monorepo; keep the same cyan-bucket mark. |
 
 ## TODO (follow-ups)
 
 - [ ] Refresh `Support/Brand/Assets.xcassets/AppIcon.appiconset/*` and `Resources/AppIcon.png` from `icon-*.png` (dock / About still use the previous mark until that lands).
+- [x] Wire Windows Desktop tray to `tray-windows.png` (`windows/src/CryptoMako.Desktop/Assets/tray.png`).
 - [x] Wire Linux `.desktop` + hicolor icons from `icon-{48,256,512}.png` (see `linux/packaging/`).
-- [ ] Wire Windows tray installers to these files when packaging next cuts.
 - [ ] Sync iOS + Android sibling app icons from this pack.
 
 ## License

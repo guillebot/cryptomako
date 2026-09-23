@@ -53,15 +53,15 @@ Do **not** treat Mac builds of `CryptoMako.CfApi` as a working Explorer mount.
 | Lock High order (cancel Backup Sync → disconnect CfAPI viewer; no CredMan wipe) | Shipped |
 | Soft CfAPI `ExplorerViewer` binding on connect | Shipped — Desktop auto-binds on unlock; CLI `cfapi connect` binds a host VM; Lock clears binding |
 | Unlock / ls / cat / Backup Sync / CredMan / HTTPS-only / settings keys / tray probes | Shipped (soft bar) |
-| Remote-change conflict watcher | **Deferred** — see below |
+| Nested Backup Sync source overlap (soft-warn add / hard-fail Sync) | **Shipped** — `backup-sources.json` + `BackupPathOverlap` (no new settings.json keys) |
+| Remote-change read-only probe (ETag/mtime, remount/refresh hint) | **Shipped** — no merge; no new shared keys |
 | CredMan wipe on Lock / Forget credentials | **Deferred** (Platforms) |
-| App Store / installer polish | **Deferred** |
+| App Store / MSIX store listing | **Deferred** (logo + listing wait on Guillermo/Platforms) |
+| Shared schedule keys (`scheduleEnabled`, …) | **Deferred** (Platforms Settings) |
 
-### Conflict watcher — Platforms-ready deferral
+### Remote-change probe (shipped) + conflict/merge (still deferred)
 
-No merge engine and **no new shared settings keys** in this soft bar.
+Read-only `vault.cryptomator` fingerprint probe is wired into the existing connectivity/Probe loop (see `backup-sources.md`). **No merge engine** and **no new shared settings keys**.
 
-**Intent (when Platforms approves):** a read-only probe (e.g. vault `vault.cryptomator` / root dir ETag or mtime) while the soft viewer is connected; on change, surface a non-blocking “remote changed — remount/refresh” status (no auto-merge, no conflict copies). Poll interval / enablement would need Platforms-approved keys if not hard-coded.
-
-Until then Windows soft release remains single-writer / last-writer-wins at the object store, matching the CfAPI CLOSE write-back policy in `cfapi.md`.
+Conflict copies / multi-writer policy remain Platforms-deferred. Windows stays single-writer / last-writer-wins at the object store, matching CfAPI CLOSE write-back in `cfapi.md`.
 

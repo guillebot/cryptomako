@@ -39,7 +39,9 @@ public sealed class DirectoryObjectStore : IObjectStore
         if (!File.Exists(path))
             throw new ObjectNotFoundException(key);
         var info = new FileInfo(path);
-        return Task.FromResult(new ListedObject { Key = key, Size = info.Length, ETag = "local" });
+        // Include mtime so remote-change probes can detect local vault.cryptomator edits.
+        var etag = $"local-{info.Length}-{info.LastWriteTimeUtc.Ticks}";
+        return Task.FromResult(new ListedObject { Key = key, Size = info.Length, ETag = etag });
     }
 
     public Task<PrefixListing> ListImmediateAsync(string prefix, CancellationToken ct = default)

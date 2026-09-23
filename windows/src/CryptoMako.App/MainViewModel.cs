@@ -25,6 +25,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private bool _userWantsUnlocked;
     private bool? _lastReachable;
     private IExplorerViewer? _explorerViewer;
+    private string? _vaultMetadataFingerprint;
+    private bool _remoteChanged;
+    private string _backupSourcesSummary = "(none)";
 
     public MainViewModel(ISecretStore? secrets = null)
     {
@@ -35,12 +38,42 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         Preferences = File.Exists(AppPaths.PreferencesPath)
             ? AppPreferences.Deserialize(File.ReadAllText(AppPaths.PreferencesPath))
             : new AppPreferences();
+        BackupSources = File.Exists(AppPaths.BackupSourcesPath)
+            ? BackupSourcesStore.LoadFromFile(AppPaths.BackupSourcesPath)
+            : new BackupSourcesStore();
+        RefreshBackupSourcesSummary();
         // Do not preload passphrase into the bindable Password field (crash-dump / UI lifetime).
         // UnlockAsync / auto-reconnect read CRYPTOMAKO_PASSWORD from the secret store when empty.
     }
 
     public VaultSettings Settings { get; private set; }
     public AppPreferences Preferences { get; private set; }
+    /// <summary>Windows-local list (backup-sources.json); not settings.json.</summary>
+    public BackupSourcesStore BackupSources { get; private set; }
+
+    public string BackupSourcesSummary
+    {
+        get => _backupSourcesSummary;
+        private set { if (_backupSourcesSummary != value) { _backupSourcesSummary = value; OnPropertyChanged(); } }
+    }
+
+    /// <summary>True when vault.cryptomator fingerprint changed since unlock (no merge).</summary>
+    public bool RemoteChanged
+    {
+        get => _remoteChanged;
+        private set
+        {
+            if (_remoteChanged != value)
+            {
+                _remoteChanged = value;
+                OnPropertyChanged();
+                OnPropertyChanged(nameof(RemoteChangeHint));
+            }
+        }
+    }
+
+    public string RemoteChangeHint =>
+        RemoteChanged ? "remote changed — remount/refresh" : "";
 
     public Tab SelectedTab
     {
@@ -206,6 +239,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             OnPropertyChanged(nameof(IsUnlocked));
             OnPropertyChanged(nameof(StatusTrayLabel));
             AppendLog(Status);
+            await CaptureVaultMetadataFingerprintAsync(ct);
         }
         catch (Exception ex)
         {
@@ -229,6 +263,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         _session?.Dispose();
         _session = null;
         Password = ""; // drop UI passphrase copy (CredMan wipe is deferred; in-process only)
+        _vaultMetadataFingerprint = null;
+        RemoteChanged = false;
         if (clearWantUnlocked)
             _userWantsUnlocked = false;
         Status = "locked";
@@ -382,6 +418,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             AppendLog("No connectivity to S3 endpoint — check VPN or internet");
         }
+
+        if (IsUnlocked)
+            await CheckRemoteChangeAsync(ct).ConfigureAwait(false);
     }
 
     private async Task AttemptAutoUnlockAsync(string reason, CancellationToken ct)
@@ -410,6 +449,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             var proxyPass = _secrets.GetSecret(SecretAccounts.ProxyPassword);
             LastProbe = await S3Probe.ProbeAsync(Settings, secretKey, Preferences, proxyPass, ct);
             AppendLog($"probe dns={LastProbe.Dns} tcp={LastProbe.Tcp} https={LastProbe.Https} list={LastProbe.List} {LastProbe.Detail}");
+            if (IsUnlocked)
+                await CheckRemoteChangeAsync(ct);
         }
         finally
         {
@@ -417,14 +458,26 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
 
+    /// <summary>
+    /// Sync all persisted backup sources. Soft-warn was at add time; Sync hard-fails on nested overlap.
+    /// If the list is empty, falls back to the single BackupSource / VaultFolder fields (CLI/desktop one-shot).
+    /// </summary>
     public async Task SyncAsync(CancellationToken ct = default)
     {
         if (_session is null)
             throw new InvalidOperationException("unlock vault first");
-        if (string.IsNullOrWhiteSpace(BackupSource) || !Directory.Exists(BackupSource))
-            throw new InvalidOperationException("--source directory required");
-        if (string.IsNullOrWhiteSpace(VaultFolder))
-            throw new InvalidOperationException("vault folder name required");
+
+        var sources = BackupSources.Sources.ToList();
+        if (sources.Count == 0)
+        {
+            if (string.IsNullOrWhiteSpace(BackupSource) || !Directory.Exists(BackupSource))
+                throw new InvalidOperationException("add a backup source (or set Source path)");
+            if (string.IsNullOrWhiteSpace(VaultFolder))
+                throw new InvalidOperationException("vault folder name required");
+            sources.Add(CreateBackupSourceEntry(BackupSource, VaultFolder.Trim()));
+        }
+
+        BackupPathOverlap.ThrowIfOverlapping(sources);
 
         Busy = true;
         var linked = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -436,16 +489,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         {
             var engine = new BackupSyncEngine();
             var progress = new Progress<string>(p => AppendLog(p));
-            var result = await engine.SyncAsync(
-                _session,
-                BackupSource,
-                VaultFolder.Trim(),
-                Preferences,
-                syncStatePath: AppPaths.SyncStatePath,
-                progress: progress,
-                ct: linked.Token);
-            AppendLog($"sync done uploaded={result.FilesUploaded} skipped={result.FilesSkipped} bytes={result.BytesUploaded}");
-            Status = $"synced {result.FilesUploaded} files";
+            var uploaded = 0;
+            var skipped = 0;
+            long bytes = 0;
+            foreach (var src in sources)
+            {
+                linked.Token.ThrowIfCancellationRequested();
+                AppendLog($"sync source {src.VaultFolderName} ← {src.Path}");
+                var result = await engine.SyncAsync(
+                    _session,
+                    src.Path,
+                    src.VaultFolderName,
+                    Preferences,
+                    syncStatePath: AppPaths.SyncStatePath,
+                    progress: progress,
+                    ct: linked.Token);
+                uploaded += result.FilesUploaded;
+                skipped += result.FilesSkipped;
+                bytes += result.BytesUploaded;
+            }
+            AppendLog($"sync done uploaded={uploaded} skipped={skipped} bytes={bytes}");
+            Status = $"synced {uploaded} files";
         }
         finally
         {
@@ -454,6 +518,100 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             linked.Dispose();
             OnPropertyChanged(nameof(IsBackupSyncRunning));
             Busy = false;
+        }
+    }
+
+    /// <summary>Add a source path. Soft-warns (log) on nested overlap; still persists the add.</summary>
+    public string? AddBackupSource(string path, string? vaultFolderName = null)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            throw new ArgumentException("path required", nameof(path));
+        var warn = BackupPathOverlap.SoftWarnOnAdd(BackupSources.Sources, path);
+        var src = CreateBackupSourceEntry(path, vaultFolderName);
+        if (BackupSources.Sources.Any(s =>
+                string.Equals(BackupPathOverlap.Resolve(s.Path), BackupPathOverlap.Resolve(src.Path),
+                    OperatingSystem.IsWindows() || OperatingSystem.IsMacOS()
+                        ? StringComparison.OrdinalIgnoreCase
+                        : StringComparison.Ordinal)))
+        {
+            AppendLog($"backup source already listed: {src.Path}");
+            return warn;
+        }
+        BackupSources.Sources.Add(src);
+        PersistBackupSources();
+        if (warn is not null)
+            AppendLog(warn);
+        else
+            AppendLog($"added backup source {src.VaultFolderName} ← {src.Path}");
+        return warn;
+    }
+
+    public void RemoveBackupSource(string id)
+    {
+        var n = BackupSources.Sources.RemoveAll(s => s.Id == id);
+        if (n > 0)
+        {
+            PersistBackupSources();
+            AppendLog($"removed backup source id={id}");
+        }
+    }
+
+    public void PersistBackupSources()
+    {
+        BackupSources.SaveToFile(AppPaths.BackupSourcesPath);
+        RefreshBackupSourcesSummary();
+        OnPropertyChanged(nameof(BackupSources));
+    }
+
+    private void RefreshBackupSourcesSummary()
+    {
+        if (BackupSources.Sources.Count == 0)
+            BackupSourcesSummary = "(none)";
+        else
+            BackupSourcesSummary = string.Join("\n",
+                BackupSources.Sources.Select(s => $"• {s.VaultFolderName} ← {s.Path}"));
+    }
+
+
+    private static global::CryptoMako.Vault.BackupSource CreateBackupSourceEntry(string path, string? vaultFolderName = null) =>
+        global::CryptoMako.Vault.BackupSource.Create(path, vaultFolderName);
+
+    private async Task CaptureVaultMetadataFingerprintAsync(CancellationToken ct)
+    {
+        if (_session is null) return;
+        try
+        {
+            _vaultMetadataFingerprint = await _session.GetVaultMetadataFingerprintAsync(ct);
+            RemoteChanged = false;
+            AppendLog("vault metadata fingerprint captured");
+        }
+        catch (Exception ex)
+        {
+            AppendLog("vault metadata fingerprint: " + ex.Message.Replace('\n', ' '));
+        }
+    }
+
+    /// <summary>Read-only ETag/size check; surfaces remount/refresh hint. No merge.</summary>
+    public async Task CheckRemoteChangeAsync(CancellationToken ct = default)
+    {
+        if (_session is null || _vaultMetadataFingerprint is null) return;
+        try
+        {
+            var now = await _session.GetVaultMetadataFingerprintAsync(ct);
+            if (!string.Equals(now, _vaultMetadataFingerprint, StringComparison.Ordinal))
+            {
+                if (!RemoteChanged)
+                {
+                    RemoteChanged = true;
+                    AppendLog("remote changed — remount/refresh");
+                    if (!Status.Contains("remote changed", StringComparison.OrdinalIgnoreCase))
+                        Status = "remote changed — remount/refresh";
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            AppendLog("remote-change probe: " + ex.Message.Replace('\n', ' '));
         }
     }
 

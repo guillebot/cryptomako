@@ -65,6 +65,7 @@
                          Text="Soft CfAPI viewer (Windows). Lock disconnects automatically." />
             </StackPanel>
 
+            <TextBlock Text="{Binding RemoteChangeHint}" Foreground="OrangeRed" FontWeight="SemiBold" />
             <TextBlock Text="Log" FontWeight="SemiBold" Margin="0,12,0,0" />
             <TextBox Text="{Binding Log}" AcceptsReturn="True" Height="200" IsReadOnly="True"
                      TextWrapping="Wrap" FontFamily="Menlo, Consolas, monospace" />
@@ -76,14 +77,20 @@
         <StackPanel Spacing="8" Margin="0,8">
           <TextBlock Text="Backup Sync" FontSize="18" FontWeight="SemiBold" />
           <TextBlock TextWrapping="Wrap" Opacity="0.8"
-                     Text="Encrypt local folders into Backups/{folder}/. Fail-closed remote puts." />
+                     Text="Encrypt local folders into Backups/{folder}/. Fail-closed remote puts. Nested/overlapping sources soft-warn on add and hard-fail on Sync." />
+          <TextBlock Text="{Binding RemoteChangeHint}" Foreground="OrangeRed" FontWeight="SemiBold" />
+          <TextBlock Text="Sources" FontWeight="SemiBold" />
+          <TextBox Text="{Binding BackupSourcesSummary}" AcceptsReturn="True" Height="80" IsReadOnly="True"
+                   TextWrapping="Wrap" FontFamily="Menlo, Consolas, monospace" />
           <StackPanel Orientation="Horizontal" Spacing="8">
-            <TextBlock Text="Source" Width="100" VerticalAlignment="Center" />
+            <TextBlock Text="Add path" Width="100" VerticalAlignment="Center" />
             <TextBox Width="520" Text="{Binding BackupSource}" Watermark="/path/to/cleartext" />
           </StackPanel>
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="Vault folder" Width="100" VerticalAlignment="Center" />
             <TextBox Width="240" Text="{Binding VaultFolder}" />
+            <Button Content="Add source" Click="OnAddBackupSource" />
+            <Button Content="Clear sources" Click="OnClearBackupSources" />
           </StackPanel>
           <Button Content="Sync now" HorizontalAlignment="Left" Click="OnSync" />
         </StackPanel>
