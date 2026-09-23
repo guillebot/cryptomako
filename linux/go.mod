@@ -4,6 +4,7 @@ go 1.22
 
 require (
 	github.com/NickBall/go-aes-key-wrap v0.0.0-20170929221519-1c3aa3e4dfc5
+	github.com/google/uuid v1.6.0
 	github.com/hanwen/go-fuse/v2 v2.5.1
 	github.com/jacobsa/crypto v0.0.0-20190317225127-9f44e2d11115
 	github.com/spf13/cobra v1.8.1

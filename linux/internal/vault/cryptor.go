@@ -3,6 +3,7 @@ package vault
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/base32"
 	"encoding/base64"
@@ -176,4 +177,66 @@ func (c *Cryptor) DecryptContentFrom(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	return c.DecryptContent(all)
+}
+
+
+// EncryptContent encrypts cleartext to SIV_GCM ciphertext (header + chunks).
+func (c *Cryptor) EncryptContent(clear []byte) ([]byte, error) {
+	headerNonce := make([]byte, gcmNonceSize)
+	if _, err := rand.Read(headerNonce); err != nil {
+		return nil, err
+	}
+	contentKey := make([]byte, 32)
+	if _, err := rand.Read(contentKey); err != nil {
+		return nil, err
+	}
+	payload := make([]byte, headerPayloadSize)
+	for i := 0; i < 8; i++ {
+		payload[i] = 0xFF
+	}
+	copy(payload[8:], contentKey)
+
+	block, err := aes.NewCipher(c.mk.EncKey)
+	if err != nil {
+		return nil, errCorrupt
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		return nil, errCorrupt
+	}
+	headerCT := gcm.Seal(nil, headerNonce, payload, nil) // ct||tag (56)
+
+	out := make([]byte, 0, headerSize+len(clear)+(len(clear)/chunkClearSize+1)*chunkOverhead)
+	out = append(out, headerNonce...)
+	out = append(out, headerCT...)
+
+	contentBlock, err := aes.NewCipher(contentKey)
+	if err != nil {
+		return nil, errCorrupt
+	}
+	contentGCM, err := cipher.NewGCM(contentBlock)
+	if err != nil {
+		return nil, errCorrupt
+	}
+
+	var chunkIdx uint64
+	for off := 0; off < len(clear); {
+		end := off + chunkClearSize
+		if end > len(clear) {
+			end = len(clear)
+		}
+		chunkNonce := make([]byte, gcmNonceSize)
+		if _, err := rand.Read(chunkNonce); err != nil {
+			return nil, err
+		}
+		aad := make([]byte, 8+gcmNonceSize)
+		binary.BigEndian.PutUint64(aad[:8], chunkIdx)
+		copy(aad[8:], headerNonce)
+		sealed := contentGCM.Seal(nil, chunkNonce, clear[off:end], aad)
+		out = append(out, chunkNonce...)
+		out = append(out, sealed...)
+		chunkIdx++
+		off = end
+	}
+	return out, nil
 }

@@ -10,7 +10,7 @@ Lives under `linux/` in the main repo (not a sibling). Shares `fixtures/` with m
 |---------|------|
 | **CLI** (`unlock` / `ls` / `cat`) | First milestone — this folder |
 | **FUSE** (`mount`) | Cleartext read-only mount (`go-fuse` / `/dev/fuse`); never mount ciphertext |
-| **Backup Sync** | Large trees: walk → encrypt → remote put. Fail-closed |
+| **Backup Sync** (`sync`) | Walk cleartext → encrypt → put (local or S3). Fail-closed |
 
 ## Product locks
 
@@ -52,6 +52,9 @@ export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < ../fixtures/PASSWORD)"
 mkdir -p /tmp/cryptomako-mnt
 ./cryptomako mount --local ../fixtures/vault --mountpoint /tmp/cryptomako-mnt
 # cat /tmp/cryptomako-mnt/hello.txt
+
+# Backup sync (encrypt local tree into vault)
+./cryptomako sync --local ../fixtures/vault --source ~/Documents/tree --dest /
 ```
 
 Remote (S3) needs non-secret config plus the secret env:

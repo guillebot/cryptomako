@@ -103,3 +103,9 @@ func isNotFound(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "HTTP 404") || strings.Contains(msg, "NoSuchKey")
 }
+
+
+func (s *s3Store) Put(key string, data []byte) error {
+	// Fail-closed: Client.PutObject only succeeds on HTTP 2xx.
+	return s.client.PutObject(s.ctx, s.fullKey(key), data)
+}

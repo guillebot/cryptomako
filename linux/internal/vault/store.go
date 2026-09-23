@@ -12,6 +12,7 @@ type objectStore interface {
 	Get(key string) ([]byte, error)
 	Exists(key string) bool
 	ListImmediate(prefix string) (objects []string, prefixes []string, err error)
+	Put(key string, data []byte) error
 }
 
 type localStore struct {
@@ -94,4 +95,20 @@ func (s *localStore) ListImmediate(prefix string) (objects []string, prefixes []
 		}
 	}
 	return objects, prefixes, nil
+}
+
+
+func (s *localStore) Put(key string, data []byte) error {
+	path, err := s.resolve(key)
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
