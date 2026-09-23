@@ -1,6 +1,10 @@
 # CryptoMako Linux
 
 <p align="center">
+  <img src="../docs/assets/brand/readme-hero.png" alt="CryptoMako — Cryptomator format-8 vault on any S3-compatible bucket" width="880"/>
+</p>
+
+<p align="center">
   <img src="../docs/assets/brand/icon.png" alt="CryptoMako" width="128"/>
 </p>
 
