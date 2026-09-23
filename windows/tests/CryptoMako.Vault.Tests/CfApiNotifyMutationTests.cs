@@ -172,7 +172,123 @@ public sealed class CfApiNotifyMutationTests
         Assert.False(CloudFilesProvider.TryRenameInVault(null, "/a", "/b"));
     }
 
-    /// <summary>Delegates all ops except DeleteObjectAsync, which simulates remote non-2xx.</summary>
+    [Fact]
+    public void EncodeFileIdentity_NormalizesPath()
+    {
+        Assert.Equal("/notes/a.txt", CloudFilesProvider.NormalizeVaultCleartextPath(@"notes\a.txt"));
+        Assert.Equal("/notes/a.txt", CloudFilesProvider.NormalizeVaultCleartextPath("/notes/a.txt/"));
+        Assert.Equal(
+            "/hello.txt",
+            System.Text.Encoding.UTF8.GetString(CloudFilesProvider.EncodeFileIdentity("hello.txt")));
+    }
+
+    [Fact]
+    public void TryUpdatePlaceholderFileIdentity_MissingFile_ReturnsFalse()
+    {
+        var missing = Path.Combine(Path.GetTempPath(), "cm-missing-" + Guid.NewGuid().ToString("N"), "nope.txt");
+        Assert.False(CloudFilesProvider.TryUpdatePlaceholderFileIdentity(missing, "/nope.txt"));
+        Assert.Null(CloudFilesProvider.TryReadPlaceholderFileIdentity(missing));
+    }
+
+    [Fact]
+    public async Task TryWriteBackCleartext_Success_RoundtripsCat()
+    {
+        Assert.True(Directory.Exists(FixtureVault));
+        var vaultDir = CopyVault();
+        try
+        {
+            await using var session = VaultSession.UnlockLocal(vaultDir, Password);
+            Assert.True(CloudFilesProvider.TryWriteBackCleartext(
+                session, "/cf-wb.txt", Encoding.UTF8.GetBytes("written-back\n")));
+            Assert.Equal("written-back\n", Encoding.UTF8.GetString(await session.CatAsync("/cf-wb.txt")));
+            // overwrite
+            Assert.True(CloudFilesProvider.TryWriteBackCleartext(
+                session, "/cf-wb.txt", Encoding.UTF8.GetBytes("again\n")));
+            Assert.Equal("again\n", Encoding.UTF8.GetString(await session.CatAsync("/cf-wb.txt")));
+        }
+        finally
+        {
+            try { Directory.Delete(vaultDir, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public async Task TryWriteBackCleartext_RemoteFailure_FailClosed()
+    {
+        Assert.True(Directory.Exists(FixtureVault));
+        var vaultDir = CopyVault();
+        try
+        {
+            await using (var seed = VaultSession.UnlockLocal(vaultDir, Password))
+                await seed.PutFileAsync("", "cf-wb-keep.txt", Encoding.UTF8.GetBytes("orig\n"));
+
+            var store = new FailingPutStore(new DirectoryObjectStore(vaultDir));
+            await using var failing = await VaultSession.UnlockAsync(store, prefix: "", Password, rootLabel: vaultDir);
+            Assert.False(CloudFilesProvider.TryWriteBackCleartext(
+                failing, "/cf-wb-keep.txt", Encoding.UTF8.GetBytes("should-not-land\n")));
+
+            await using var check = VaultSession.UnlockLocal(vaultDir, Password);
+            Assert.Equal("orig\n", Encoding.UTF8.GetString(await check.CatAsync("/cf-wb-keep.txt")));
+        }
+        finally
+        {
+            try { Directory.Delete(vaultDir, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public void TryWriteBack_NullSessionOrBadPath_FailClosed()
+    {
+        Assert.False(CloudFilesProvider.TryWriteBackCleartext(null, "/x", new byte[] { 1 }));
+        Assert.False(CloudFilesProvider.TryWriteBackCleartext(null, "/", new byte[] { 1 }));
+    }
+
+    [Fact]
+    public void FileIdentity_Update_Roundtrip_OnWindowsPlaceholder()
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17134))
+            return;
+
+        var root = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "CryptoMako",
+            "cfapi-id-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        using var provider = new CloudFilesProvider(root);
+        try
+        {
+            provider.RegisterSyncRoot("identity-smoke");
+            provider.Connect();
+            var n = provider.CreatePlaceholders(new[]
+            {
+                new CloudFilesPlaceholder
+                {
+                    CleartextRelativePath = "old-name.txt",
+                    CiphertextKey = "",
+                    IsDirectory = false,
+                    FileSize = 4,
+                },
+            });
+            Assert.True(n >= 1);
+            var ph = Path.Combine(root, "old-name.txt");
+            Assert.True(File.Exists(ph));
+
+            var before = CloudFilesProvider.TryReadPlaceholderFileIdentity(ph);
+            Assert.Equal("/old-name.txt", before);
+
+            Assert.True(CloudFilesProvider.TryUpdatePlaceholderFileIdentity(ph, "/new-name.txt"));
+            var after = CloudFilesProvider.TryReadPlaceholderFileIdentity(ph);
+            Assert.Equal("/new-name.txt", after);
+        }
+        finally
+        {
+            try { provider.Disconnect(); } catch { }
+            try { if (provider.GetStatus().Registered) provider.UnregisterSyncRoot(); } catch { }
+            try { Directory.Delete(root, true); } catch { }
+        }
+    }
+
+        /// <summary>Delegates all ops except DeleteObjectAsync, which simulates remote non-2xx.</summary>
     private sealed class FailingDeleteStore : IObjectStore
     {
         private readonly IObjectStore _inner;

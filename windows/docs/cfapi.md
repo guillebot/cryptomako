@@ -45,21 +45,25 @@ Prefer **`cfapi unregister`** over killing the process so WinRT + CfAPI metadata
 | `FETCH_DATA` → vault `CatAsync` → `CfExecute(TRANSFER_DATA)` | OK smoke: hello.txt |
 | Fail-closed write gate | OK `AcknowledgeWriteOnlyIfRemoteOk` |
 | WinRT `StorageProviderSyncRootManager` | OK on windows TFM (`CryptoMako!SID!account`) |
-| NOTIFY_DELETE / NOTIFY_RENAME | OK vault DeleteAsync/RenameAsync then ACK SUCCESS; ACCESS_DENIED on failure |
+| NOTIFY_DELETE / NOTIFY_RENAME | OK vault mutation then ACK SUCCESS; ACCESS_DENIED on failure |
+| NOTIFY_RENAME FileIdentity | OK `CfUpdatePlaceholder` to new cleartext path after vault rename |
+| NOTIFY_FILE_CLOSE_COMPLETION | OK write-back via `PutAtCleartextPathAsync`; mark in-sync only on success |
 | S3-backed hydrate (non-local vault) | Same path once session attached |
 
 ## Fail-closed writes / delete / rename
 
 ```
-local write → encrypt → S3 PutObject (2xx) → AcknowledgeWriteOnlyIfRemoteOk(true)
-                     ↘ any error → do not claim durable
+local write → CLOSE_COMPLETION → encrypt → S3 PutObject (2xx) → CfSetInSyncState(IN_SYNC)
+                     ↘ any error → leave dirty (do not claim durable)
 ```
 
-NOTIFY_FILE_CLOSE does **not** acknowledge vault mutations.
+NOTIFY_FILE_CLOSE_COMPLETION is **completion-only** (no deny ACK). Fail-closed means:
+do not mark in-sync / do not treat as durable when remote put fails.
 
 NOTIFY_DELETE / NOTIFY_RENAME call vault `DeleteAsync` / `RenameAsync` (fail-closed on store errors),
 then ACK `STATUS_SUCCESS` only on success; otherwise `STATUS_CLOUD_FILE_ACCESS_DENIED`.
+After a successful rename, FileIdentity is updated to the new vault path before ACK.
 
-Remaining: placeholder `FileIdentity` may still hold the old cleartext path after a successful rename
-until re-populate (`CfUpdatePlaceholder` during NOTIFY_RENAME is follow-up). Writes on close are still
-not wired (CLOSE does not mutate).
+Remaining blockers: no conflict/merge policy for concurrent remote changes; CLOSE does not
+revert local bytes when remote put fails (placeholder stays dirty); dehydrate/pin policies
+are defaults only.

@@ -1,4 +1,4 @@
-﻿using System.Runtime.InteropServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using CryptoMako.Vault;
 using Vanara.PInvoke;
@@ -591,11 +591,46 @@ public sealed class CloudFilesProvider : IDisposable
         _ = parameters;
     }
 
+    /// <summary>
+    /// NOTIFY_FILE_CLOSE_COMPLETION: completion-only (no deny ACK). Write-back hydrated
+    /// cleartext → vault put (remote 2xx). On success mark in-sync; on failure leave dirty (fail-closed).
+    /// Skips closes flagged DELETED (NOTIFY_DELETE owns vault delete).
+    /// </summary>
     private static void OnNotifyFileClose(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
     {
-        // Durable writes must go through AcknowledgeWriteOnlyIfRemoteOk(true) after remote 2xx.
-        _ = info;
-        _ = parameters;
+        var flags = parameters.CloseCompletion.Flags;
+        if ((flags & CF_CALLBACK_CLOSE_COMPLETION_FLAGS.CF_CALLBACK_CLOSE_COMPLETION_FLAG_DELETED) != 0)
+            return;
+
+        var provider = FromContext(info);
+        if (provider?.Session is null)
+            return;
+
+        var vaultPath = provider.ResolveVaultPathFromCallback(info);
+        var fsPath = provider.TryResolveAbsoluteFsPath(info);
+        if (vaultPath is null || fsPath is null)
+            return;
+        if (!File.Exists(fsPath) || Directory.Exists(fsPath))
+            return;
+
+        byte[]? clear = null;
+        try
+        {
+            clear = File.ReadAllBytes(fsPath);
+            var ok = TryWriteBackCleartext(provider.Session, vaultPath, clear);
+            if (ok)
+                TryMarkPlaceholderInSync(fsPath);
+            // No CfExecute ACK for CLOSE completion — fail-closed means do not mark durable/in-sync.
+        }
+        catch
+        {
+            /* fail closed: leave placeholder dirty */
+        }
+        finally
+        {
+            if (clear is not null)
+                CryptographicOperations.ZeroMemory(clear);
+        }
     }
 
     /// <summary>
@@ -716,9 +751,8 @@ public sealed class CloudFilesProvider : IDisposable
     }
 
     /// <summary>
-    /// NOTIFY_RENAME: mutate vault (remote 2xx), then ACK SUCCESS; any failure → ACCESS_DENIED.
-    /// Note: placeholder FileIdentity may still hold the old cleartext path until re-populate
-    /// (CfUpdatePlaceholder during rename is a follow-up).
+    /// NOTIFY_RENAME: mutate vault (remote 2xx), update FileIdentity to the new cleartext path,
+    /// then ACK SUCCESS; any vault failure → ACCESS_DENIED.
     /// </summary>
     private static void OnNotifyRename(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
     {
@@ -731,7 +765,217 @@ public sealed class CloudFilesProvider : IDisposable
             to = TryMapFsPathToVaultCleartext(provider.SyncRootPath, target, info.VolumeDosName);
         }
         var ok = TryRenameInVault(provider?.Session, from, to);
+        if (ok && to is not null && provider is not null)
+        {
+            // File still at pre-rename FS path during this callback — stamp new vault identity now.
+            var fsPath = provider.TryResolveAbsoluteFsPath(info);
+            if (fsPath is not null)
+                TryUpdatePlaceholderFileIdentity(fsPath, to);
+        }
         AckRename(info, ok);
+    }
+
+    /// <summary>Normalizes vault cleartext identity to "/a/b" form (UTF-8 FileIdentity payload).</summary>
+    public static string NormalizeVaultCleartextPath(string cleartextPath)
+    {
+        var norm = cleartextPath.Replace('\\', '/').Trim();
+        if (string.IsNullOrEmpty(norm) || norm == "/")
+            return "/";
+        if (!norm.StartsWith('/'))
+            norm = "/" + norm.TrimStart('/');
+        return norm.TrimEnd('/');
+    }
+
+    public static byte[] EncodeFileIdentity(string vaultCleartextPath) =>
+        Encoding.UTF8.GetBytes(NormalizeVaultCleartextPath(vaultCleartextPath));
+
+    /// <summary>
+    /// Opens a placeholder and sets FileIdentity to the vault cleartext path.
+    /// Returns false when CfAPI is unavailable or the update fails (non-placeholder, access, etc.).
+    /// </summary>
+    public static bool TryUpdatePlaceholderFileIdentity(string absoluteFsPath, string vaultCleartextPath)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17134))
+            return false;
+        if (string.IsNullOrWhiteSpace(absoluteFsPath) || string.IsNullOrWhiteSpace(vaultCleartextPath))
+            return false;
+        if (vaultCleartextPath == "/")
+            return false;
+
+        try
+        {
+            var identity = EncodeFileIdentity(vaultCleartextPath);
+            var openHr = CfOpenFileWithOplock(
+                absoluteFsPath,
+                CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE,
+                out var protectedHandle);
+            if (openHr.Failed || protectedHandle is null || protectedHandle.IsInvalid)
+                return false;
+
+            using (protectedHandle)
+            {
+                var win32 = CfGetWin32HandleFromProtectedHandle(protectedHandle);
+                if (win32 == HFILE.NULL || win32.IsNull)
+                    return false;
+
+                var idPtr = Marshal.AllocHGlobal(identity.Length);
+                try
+                {
+                    Marshal.Copy(identity, 0, idPtr, identity.Length);
+                    long usn = 0;
+                    FileInfo? fi = null;
+                    try { fi = new FileInfo(absoluteFsPath); } catch { /* optional metadata */ }
+                    var meta = new CF_FS_METADATA
+                    {
+                        BasicInfo = new FILE_BASIC_INFO
+                        {
+                            FileAttributes = (fi is not null && (fi.Attributes & FileAttributes.Directory) != 0)
+                                ? FileFlagsAndAttributes.FILE_ATTRIBUTE_DIRECTORY
+                                : FileFlagsAndAttributes.FILE_ATTRIBUTE_NORMAL,
+                        },
+                        FileSize = fi?.Length ?? 0,
+                    };
+                    CfUpdatePlaceholder(
+                        win32,
+                        meta,
+                        idPtr,
+                        (uint)identity.Length,
+                        Array.Empty<CF_FILE_RANGE>(),
+                        0,
+                        CF_UPDATE_FLAGS.CF_UPDATE_FLAG_MARK_IN_SYNC,
+                        ref usn,
+                        IntPtr.Zero).ThrowIfFailed();
+                    return true;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(idPtr);
+                }
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Reads placeholder FileIdentity (UTF-8 vault path) when possible. Null if unavailable.
+    /// </summary>
+    public static string? TryReadPlaceholderFileIdentity(string absoluteFsPath)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17134))
+            return null;
+        if (string.IsNullOrWhiteSpace(absoluteFsPath))
+            return null;
+        try
+        {
+            var openHr = CfOpenFileWithOplock(
+                absoluteFsPath,
+                CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE,
+                out var protectedHandle);
+            if (openHr.Failed || protectedHandle is null || protectedHandle.IsInvalid)
+                return null;
+            using (protectedHandle)
+            {
+                var win32 = CfGetWin32HandleFromProtectedHandle(protectedHandle);
+                if (win32 == HFILE.NULL || win32.IsNull)
+                    return null;
+                // Buffer: BASIC_INFO + identity blob (cap 4 KiB identity)
+                const int identityCap = 4096;
+                var size = Marshal.SizeOf<CF_PLACEHOLDER_BASIC_INFO>() + identityCap;
+                var buf = Marshal.AllocHGlobal(size);
+                try
+                {
+                    var hr = CfGetPlaceholderInfo(
+                        win32,
+                        CF_PLACEHOLDER_INFO_CLASS.CF_PLACEHOLDER_INFO_BASIC,
+                        buf,
+                        (uint)size,
+                        out var returned);
+                    if (hr.Failed || returned == 0)
+                        return null;
+                    var basic = Marshal.PtrToStructure<CF_PLACEHOLDER_BASIC_INFO>(buf);
+                    if (basic.FileIdentityLength == 0)
+                        return null;
+                    var idOffset = (int)Marshal.OffsetOf<CF_PLACEHOLDER_BASIC_INFO>(nameof(CF_PLACEHOLDER_BASIC_INFO.FileIdentity));
+                    var bytes = new byte[basic.FileIdentityLength];
+                    Marshal.Copy(IntPtr.Add(buf, idOffset), bytes, 0, bytes.Length);
+                    return Encoding.UTF8.GetString(bytes);
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buf);
+                }
+            }
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Vault write-back used by NOTIFY_FILE_CLOSE. True only when PutAtCleartextPathAsync completed.
+    /// </summary>
+    public static bool TryWriteBackCleartext(VaultSession? session, string? cleartextPath, byte[]? cleartextContents)
+    {
+        if (session is null || cleartextContents is null)
+            return false;
+        if (string.IsNullOrWhiteSpace(cleartextPath) || cleartextPath == "/")
+            return false;
+        try
+        {
+            session.PutAtCleartextPathAsync(cleartextPath, cleartextContents).GetAwaiter().GetResult();
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    public static bool TryMarkPlaceholderInSync(string absoluteFsPath)
+    {
+        if (!OperatingSystem.IsWindowsVersionAtLeast(10, 0, 17134))
+            return false;
+        if (string.IsNullOrWhiteSpace(absoluteFsPath))
+            return false;
+        try
+        {
+            var openHr = CfOpenFileWithOplock(
+                absoluteFsPath,
+                CF_OPEN_FILE_FLAGS.CF_OPEN_FILE_FLAG_NONE,
+                out var protectedHandle);
+            if (openHr.Failed || protectedHandle is null || protectedHandle.IsInvalid)
+                return false;
+            using (protectedHandle)
+            {
+                var win32 = CfGetWin32HandleFromProtectedHandle(protectedHandle);
+                if (win32 == HFILE.NULL || win32.IsNull)
+                    return false;
+                long usn = 0;
+                CfSetInSyncState(
+                    win32,
+                    CF_IN_SYNC_STATE.CF_IN_SYNC_STATE_IN_SYNC,
+                    CF_SET_IN_SYNC_FLAGS.CF_SET_IN_SYNC_FLAG_NONE,
+                    ref usn).ThrowIfFailed();
+                return true;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string? TryResolveAbsoluteFsPath(in CF_CALLBACK_INFO info)
+    {
+        var combined = CombineVolumeRelativePath(info.VolumeDosName, info.NormalizedPath ?? "");
+        if (string.IsNullOrWhiteSpace(combined))
+            return null;
+        try { return Path.GetFullPath(combined); }
+        catch { return null; }
     }
 
     private static void AckDelete(in CF_CALLBACK_INFO info, bool success)

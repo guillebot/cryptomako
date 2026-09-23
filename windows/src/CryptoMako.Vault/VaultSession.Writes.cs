@@ -114,6 +114,25 @@ public sealed partial class VaultSession
         return await PutFileAsync(parentDirId, cleartextName, bytes, ct);
     }
 
+    /// <summary>
+    /// Encrypts and puts cleartext at a vault path (e.g. /notes/a.txt).
+    /// Creates parent dirs as needed. Durable only after remote put 2xx.
+    /// Overwrites existing ciphertext object for the same cleartext name.
+    /// </summary>
+    public async Task<VaultNode> PutAtCleartextPathAsync(string cleartextPath, byte[] cleartextContents, CancellationToken ct = default)
+    {
+        var norm = NormalizePath(cleartextPath);
+        var parts = norm.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+            throw new ArgumentException("put destination must include a file name", nameof(cleartextPath));
+        var fileName = parts[^1];
+        var parentPath = parts.Length == 1 ? "/" : "/" + string.Join('/', parts.Take(parts.Length - 1));
+        var parentDirId = parentPath == "/"
+            ? ""
+            : await EnsureDirectoryPathAsync(parentPath, ct);
+        return await PutFileAsync(parentDirId, fileName, cleartextContents, ct);
+    }
+
     /// <summary>Ensures /a/b/c exists; returns leaf dirId.</summary>
     public async Task<string> EnsureDirectoryPathAsync(string cleartextPath, CancellationToken ct = default)
     {
