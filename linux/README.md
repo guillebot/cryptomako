@@ -94,6 +94,31 @@ Local **format 8 / SIV_GCM** unlock, cleartext `ls`, and `cat` are implemented i
 
 Local and S3 unlock share the same cryptor. Remote put/delete remain fail-closed (non-2xx → error) in the S3 client. CLI reads (`unlock`/`ls`/`cat`) never call put/delete.
 
+## Config keys (Platforms alignment)
+
+JSON (`~/.config/cryptomako/config.json`) — **no secrets**:
+
+| Key | Notes |
+|-----|--------|
+| `endpoint` | HTTPS S3 API URL |
+| `region` | e.g. `us-east-1` |
+| `bucket` | Bucket name |
+| `prefix` | Vault prefix (`vault/` style) |
+| `accessKeyId` | Access key id |
+
+Env secrets: `CRYPTOMAKO_PASSWORD`, `CRYPTOMAKO_SECRET_KEY`.
+
+Proposed to Platforms before inventing new keys. Current set matches macOS `ConnectionConfigLoader` / docs/10-m0-fixture.md.
+
+## Docker
+
+```bash
+cd linux
+docker build -t cryptomako .
+docker run --rm -e CRYPTOMAKO_PASSWORD -v "$PWD/../fixtures/vault:/vault:ro" cryptomako unlock --local /vault
+# FUSE: add --device /dev/fuse --cap-add SYS_ADMIN
+```
+
 ## License
 
 AGPL-3.0 (same as the parent repo).
