@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/guillebot/cryptomako/linux/internal/config"
+	"github.com/guillebot/cryptomako/linux/internal/s3"
 )
 
 // Format8 is the locked Cryptomator vault format version for CryptoMako.
@@ -57,14 +58,25 @@ func Unlock(cfg config.Config) (*Session, error) {
 	if cfg.Passphrase == "" {
 		return nil, fmt.Errorf("vault: missing passphrase")
 	}
-	if !cfg.IsLocal() {
-		return nil, fmt.Errorf("vault: S3 unlock not implemented yet; use --local")
+	if cfg.IsLocal() {
+		store, err := newLocalStore(cfg.LocalRoot)
+		if err != nil {
+			return nil, err
+		}
+		return unlockWithStore(cfg, store)
 	}
-	store, err := newLocalStore(cfg.LocalRoot)
+	client, err := s3.New(s3.Settings{
+		Endpoint:  cfg.Endpoint,
+		Region:    cfg.Region,
+		Bucket:    cfg.Bucket,
+		AccessKey: cfg.AccessKey,
+		SecretKey: cfg.SecretKey,
+		PathStyle: cfg.PathStyle,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return unlockWithStore(cfg, store)
+	return unlockWithStore(cfg, newS3StoreFrom(client, cfg.Prefix))
 }
 
 func unlockWithStore(cfg config.Config, store objectStore) (*Session, error) {

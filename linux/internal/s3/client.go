@@ -93,6 +93,30 @@ func (c *Client) GetObject(ctx context.Context, key string) ([]byte, error) {
 	return body, nil
 }
 
+// HeadObject reports whether an object exists (HTTP 200). 404 → false, nil.
+func (c *Client) HeadObject(ctx context.Context, key string) (bool, error) {
+	req, err := c.newRequest(ctx, http.MethodHead, key, nil, nil)
+	if err != nil {
+		return false, err
+	}
+	if err := SignRequest(req, c.creds(), EmptyPayloadSHA256, time.Time{}); err != nil {
+		return false, err
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("s3 head %s: %w", key, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return false, nil
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if err := checkStatus(resp, key, body); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 // PutObject uploads data. Fail-closed: only 2xx is success.
 func (c *Client) PutObject(ctx context.Context, key string, data []byte) error {
 	hash := PayloadSHA256(data)
@@ -166,6 +190,13 @@ func (c *Client) ListObjectsV2(ctx context.Context, prefix, delimiter, continuat
 		return ListResult{}, err
 	}
 	return ParseListObjectsV2(body)
+}
+
+// SetHTTPClient replaces the underlying HTTP client (tests / custom TLS).
+func (c *Client) SetHTTPClient(h *http.Client) {
+	if h != nil {
+		c.http = h
+	}
 }
 
 func (c *Client) creds() Credentials {

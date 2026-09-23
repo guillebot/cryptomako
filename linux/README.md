@@ -77,14 +77,14 @@ Default path: `$XDG_CONFIG_HOME/cryptomako/config.json` or `~/.config/cryptomako
 | Package | Role |
 |---------|------|
 | `internal/s3` | SigV4 HTTPS client: GetObject, PutObject, DeleteObject, ListObjectsV2 |
-| `internal/vault` | Format-8 **SIV_GCM** unlock / ls / cat (local FS; S3 TODO) |
+| `internal/vault` | Format-8 **SIV_GCM** unlock / ls / cat (local FS + S3 SigV4) |
 | `internal/config` | XDG config + env secrets |
 
 ## Crypto status
 
 Local **format 8 / SIV_GCM** unlock, cleartext `ls`, and `cat` are implemented in `internal/vault` (scrypt + AES-KW masterkey, JWT verify with enc||mac, AES-SIV names/dirIds, AES-GCM content, `.c9s` name shortening). Golden tests run against `../fixtures/` when `PASSWORD` is present.
 
-S3 unlock still TODO (use `--local`). Remote put/delete remain fail-closed in the S3 client.
+Local and S3 unlock share the same cryptor. Remote put/delete remain fail-closed (non-2xx → error) in the S3 client. CLI reads (`unlock`/`ls`/`cat`) never call put/delete.
 
 ## License
 

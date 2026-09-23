@@ -47,14 +47,16 @@ func TestCipherDirPrefix(t *testing.T) {
 	}
 }
 
-func TestUnlockRemoteNotImplemented(t *testing.T) {
+func TestUnlockRemoteRequiresHTTPSBucket(t *testing.T) {
 	_, err := Unlock(config.Config{
-		Endpoint:   "https://minio.example",
+		Endpoint:   "http://minio.example",
 		Bucket:     "b",
 		Passphrase: "x",
+		AccessKey:  "ak",
+		SecretKey:  "sk",
 	})
 	if err == nil {
-		t.Fatal("expected not implemented")
+		t.Fatal("expected HTTPS rejection")
 	}
 }
 
