@@ -1,4 +1,4 @@
-﻿using CryptoMako.Vault;
+using CryptoMako.Vault;
 using CryptoMako.App;
 using CryptoMako.CfApi;
 using Xunit;
@@ -19,7 +19,11 @@ public class AppShellTests
             CloudFilesProvider.AcknowledgeWriteOnlyIfRemoteOk(false));
         CloudFilesProvider.AcknowledgeWriteOnlyIfRemoteOk(true);
 
+        Assert.Contains("Partial", CloudFilesProvider.SyncPolicySummary, StringComparison.Ordinal);
+        Assert.Contains("AutoDehydrationAllowed", CloudFilesProvider.SyncPolicySummary, StringComparison.Ordinal);
+        Assert.DoesNotContain("AlwaysFull", CloudFilesProvider.SyncPolicySummary, StringComparison.Ordinal);
         var status = provider.GetStatus();
+        Assert.Equal(CloudFilesProvider.SyncPolicySummary, status.PolicySummary);
         Assert.False(status.Registered);
         Assert.False(status.SessionAttached);
         if (!provider.IsWindowsCloudFilesAvailable)

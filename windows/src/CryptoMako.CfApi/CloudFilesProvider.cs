@@ -90,22 +90,8 @@ public sealed class CloudFilesProvider : IDisposable
             ProviderId = ProviderId,
         };
 
-        var policies = new CF_SYNC_POLICIES
-        {
-            StructSize = (uint)Marshal.SizeOf<CF_SYNC_POLICIES>(),
-            Hydration = new CF_HYDRATION_POLICY
-            {
-                Primary = CF_HYDRATION_POLICY_PRIMARY.CF_HYDRATION_POLICY_PARTIAL,
-                Modifier = CF_HYDRATION_POLICY_MODIFIER.CF_HYDRATION_POLICY_MODIFIER_NONE,
-            },
-            Population = new CF_POPULATION_POLICY
-            {
-                Primary = CF_POPULATION_POLICY_PRIMARY.CF_POPULATION_POLICY_PARTIAL,
-                Modifier = CF_POPULATION_POLICY_MODIFIER.CF_POPULATION_POLICY_MODIFIER_NONE,
-            },
-            InSync = CF_INSYNC_POLICY.CF_INSYNC_POLICY_NONE,
-            HardLink = CF_HARDLINK_POLICY.CF_HARDLINK_POLICY_NONE,
-        };
+        // Align with WinRT path: partial hydrate, auto-dehydrate, partial population (on-demand).
+        var policies = BuildCfSyncPolicies();
 
         CfRegisterSyncRoot(
             SyncRootPath,
@@ -419,6 +405,31 @@ public sealed class CloudFilesProvider : IDisposable
         return CreatePlaceholders(list);
     }
 
+    /// <summary>
+    /// Sync-root policy summary (WinRT + CfRegister). Partial hydrate / on-demand populate;
+    /// auto-dehydrate allowed; user pinning allowed; no AlwaysFull population.
+    /// </summary>
+    public const string SyncPolicySummary =
+        "hydration=Partial; hydrationModifier=AutoDehydrationAllowed; " +
+        "population=Partial(Cf)|Full(WinRT-no-Partial); pin=AllowPinning; hardlink=None";
+
+    public static CF_SYNC_POLICIES BuildCfSyncPolicies() => new()
+    {
+        StructSize = (uint)Marshal.SizeOf<CF_SYNC_POLICIES>(),
+        Hydration = new CF_HYDRATION_POLICY
+        {
+            Primary = CF_HYDRATION_POLICY_PRIMARY.CF_HYDRATION_POLICY_PARTIAL,
+            Modifier = CF_HYDRATION_POLICY_MODIFIER.CF_HYDRATION_POLICY_MODIFIER_AUTO_DEHYDRATION_ALLOWED,
+        },
+        Population = new CF_POPULATION_POLICY
+        {
+            Primary = CF_POPULATION_POLICY_PRIMARY.CF_POPULATION_POLICY_PARTIAL,
+            Modifier = CF_POPULATION_POLICY_MODIFIER.CF_POPULATION_POLICY_MODIFIER_NONE,
+        },
+        InSync = CF_INSYNC_POLICY.CF_INSYNC_POLICY_NONE,
+        HardLink = CF_HARDLINK_POLICY.CF_HARDLINK_POLICY_NONE,
+    };
+
     public static bool IsDurableSuccess(bool remotePutHttp2xx) => remotePutHttp2xx;
 
     public static void AcknowledgeWriteOnlyIfRemoteOk(bool remotePutHttp2xx)
@@ -455,6 +466,7 @@ public sealed class CloudFilesProvider : IDisposable
         ShellSyncRootId = _shellSyncRootId,
         ShellRegistration = _shellDetail,
         WinRtShell = ShellSyncRoot.SupportsWinRt,
+        PolicySummary = SyncPolicySummary,
     };
 
     public void Dispose()
@@ -1036,6 +1048,7 @@ public sealed class CloudFilesStatus
     public string? ShellSyncRootId { get; init; }
     public string? ShellRegistration { get; init; }
     public bool WinRtShell { get; init; }
+    public string? PolicySummary { get; init; }
 }
 
 public sealed class CloudFilesPlaceholder

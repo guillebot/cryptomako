@@ -296,6 +296,10 @@ static int CmdCfApi(ReadOnlySpan<string> args)
             Console.WriteLine($"connected={st.Connected}");
             Console.WriteLine($"sessionAttached={st.SessionAttached}");
             Console.WriteLine($"platformInfo={st.PlatformInfo ?? ""}");
+            Console.WriteLine($"shell={st.ShellRegistration ?? ""}");
+            Console.WriteLine($"shellId={st.ShellSyncRootId ?? ""}");
+            Console.WriteLine($"winRt={st.WinRtShell}");
+            Console.WriteLine($"policies={st.PolicySummary ?? CloudFilesProvider.SyncPolicySummary}");
             return 0;
         }
         case "register":

@@ -120,6 +120,9 @@ internal static class ShellSyncRoot
         catch { /* not registered yet */ }
 
         var folder = Windows.Storage.StorageFolder.GetFolderFromPathAsync(syncRootPath).AsTask().GetAwaiter().GetResult();
+        // Policies: Partial hydration + auto-dehydrate to avoid surprising full-hydrate of huge
+        // trees/files. WinRT PopulationPolicy has no Partial — use Full (on-demand), never AlwaysFull.
+        // AllowPinning lets users "Always keep on this device" without forcing global pin.
         var info = new Windows.Storage.Provider.StorageProviderSyncRootInfo
         {
             Id = syncRootId,
@@ -129,12 +132,13 @@ internal static class ShellSyncRoot
             Path = folder,
             AllowPinning = true,
             ShowSiblingsAsGroup = false,
-            // Match CloudMirror sample policies for Explorer shell integration.
-            HydrationPolicy = Windows.Storage.Provider.StorageProviderHydrationPolicy.Full,
-            HydrationPolicyModifier = Windows.Storage.Provider.StorageProviderHydrationPolicyModifier.None,
-            PopulationPolicy = Windows.Storage.Provider.StorageProviderPopulationPolicy.AlwaysFull,
+            HydrationPolicy = Windows.Storage.Provider.StorageProviderHydrationPolicy.Partial,
+            HydrationPolicyModifier = Windows.Storage.Provider.StorageProviderHydrationPolicyModifier.AutoDehydrationAllowed,
+            PopulationPolicy = Windows.Storage.Provider.StorageProviderPopulationPolicy.Full,
             InSyncPolicy = Windows.Storage.Provider.StorageProviderInSyncPolicy.FileCreationTime
-                | Windows.Storage.Provider.StorageProviderInSyncPolicy.DirectoryCreationTime,
+                | Windows.Storage.Provider.StorageProviderInSyncPolicy.DirectoryCreationTime
+                | Windows.Storage.Provider.StorageProviderInSyncPolicy.FileLastWriteTime
+                | Windows.Storage.Provider.StorageProviderInSyncPolicy.DirectoryLastWriteTime,
             HardlinkPolicy = Windows.Storage.Provider.StorageProviderHardlinkPolicy.None,
             ProviderId = CloudFilesProvider.ProviderId,
             RecycleBinUri = new Uri("https://cryptomako.local/recycle"),
