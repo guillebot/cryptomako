@@ -1,6 +1,6 @@
 # CfAPI (Cloud Files) — Windows
 
-Live on Windows 11 (smoked on build 26100): **Register / Connect / recursive placeholders / FETCH_DATA hydrate**.
+Live on Windows 11 (smoked on build 26100): **Register / Connect / placeholders / FETCH_DATA hydrate / FETCH_PLACEHOLDERS**.
 Explorer can open a placeholder file and receive cleartext from a vault session.
 Shell cloud UI uses real **WinRT `StorageProviderSyncRootManager`** on `net8.0-windows10.0.19041.0` builds
 (Id format `CryptoMako!{SID}!{account}`; WinRT Register also registers with CfAPI — do not call `CfRegisterSyncRoot` after it).
@@ -57,7 +57,8 @@ Rationale: Partial hydration streams on demand (FETCH_DATA); AutoDehydrationAllo
 | `CfGetPlatformInfo` | OK |
 | `CfRegisterSyncRoot` / `Unregister` | OK (fallback path); WinRT path uses SyncRootManager.Register instead |
 | `CfConnectSyncRoot` + Vanara `CF_CALLBACK` | OK FETCH_DATA / CANCEL / CLOSE / DELETE / RENAME |
-| `CfCreatePlaceholders` | OK recursive populate (dirs then nested files) |
+| `CfCreatePlaceholders` | OK populate (default: root level only; `--recursive` for full tree) |
+| `FETCH_PLACEHOLDERS` | OK one vault directory level ? `TRANSFER_PLACEHOLDERS` + disable on-demand for that folder |
 | `FETCH_DATA` → vault `CatAsync` → `CfExecute(TRANSFER_DATA)` | OK smoke: hello.txt |
 | Fail-closed write gate | OK `AcknowledgeWriteOnlyIfRemoteOk` |
 | WinRT `StorageProviderSyncRootManager` | OK on windows TFM (`CryptoMako!SID!account`) |

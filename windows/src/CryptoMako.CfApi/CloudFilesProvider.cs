@@ -37,6 +37,8 @@ public sealed class CloudFilesProvider : IDisposable
     private GCHandle _selfHandle;
     private CF_CALLBACK? _fetchData;
     private CF_CALLBACK? _cancelFetch;
+    private CF_CALLBACK? _fetchPlaceholders;
+    private CF_CALLBACK? _cancelFetchPlaceholders;
     private CF_CALLBACK? _notifyClose;
     private CF_CALLBACK? _notifyDelete;
     private CF_CALLBACK? _notifyRename;
@@ -166,6 +168,8 @@ public sealed class CloudFilesProvider : IDisposable
 
         _fetchData = OnFetchData;
         _cancelFetch = OnCancelFetchData;
+        _fetchPlaceholders = OnFetchPlaceholders;
+        _cancelFetchPlaceholders = OnCancelFetchPlaceholders;
         _notifyClose = OnNotifyFileClose;
         _notifyDelete = OnNotifyDelete;
         _notifyRename = OnNotifyRename;
@@ -180,6 +184,16 @@ public sealed class CloudFilesProvider : IDisposable
             {
                 Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_CANCEL_FETCH_DATA,
                 Callback = _cancelFetch,
+            },
+            new CF_CALLBACK_REGISTRATION
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_FETCH_PLACEHOLDERS,
+                Callback = _fetchPlaceholders,
+            },
+            new CF_CALLBACK_REGISTRATION
+            {
+                Type = CF_CALLBACK_TYPE.CF_CALLBACK_TYPE_CANCEL_FETCH_PLACEHOLDERS,
+                Callback = _cancelFetchPlaceholders,
             },
             new CF_CALLBACK_REGISTRATION
             {
@@ -222,6 +236,8 @@ public sealed class CloudFilesProvider : IDisposable
         _callbackTable = null;
         _fetchData = null;
         _cancelFetch = null;
+        _fetchPlaceholders = null;
+        _cancelFetchPlaceholders = null;
         _notifyClose = null;
         _notifyDelete = null;
         _notifyRename = null;
@@ -330,15 +346,15 @@ public sealed class CloudFilesProvider : IDisposable
     }
 
     /// <summary>
-    /// Lists vault files/dirs (recursive) and creates matching placeholders.
-    /// Directory placeholders are created before nested files.
+    /// Seeds placeholders under the sync root.
+    /// Default recursive=false lists only "/" (one level); nested dirs fill via FETCH_PLACEHOLDERS.
     /// </summary>
-    public async Task<int> PopulateRootPlaceholdersAsync(CancellationToken ct = default)
+    public async Task<int> PopulateRootPlaceholdersAsync(bool recursive = false, CancellationToken ct = default)
     {
         if (Session is null)
             throw new InvalidOperationException("AttachSession first.");
 
-        var entries = await Session.ListAsync("/", recursive: true, ct).ConfigureAwait(false);
+        var entries = await Session.ListAsync("/", recursive: recursive, ct).ConfigureAwait(false);
         var list = new List<CloudFilesPlaceholder>();
         var seenDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -346,6 +362,7 @@ public sealed class CloudFilesProvider : IDisposable
         {
             if (e.Contains(" ->", StringComparison.Ordinal)) continue; // symlink display
             var isDir = e.EndsWith("/", StringComparison.Ordinal);
+            // recursive ListAsync yields "/a/b"; non-recursive yields "a" / "b/" relative names.
             var full = (isDir ? e.TrimEnd('/') : e).TrimStart('/');
             if (string.IsNullOrEmpty(full)) continue;
 
@@ -602,6 +619,217 @@ public sealed class CloudFilesProvider : IDisposable
         _ = info;
         _ = parameters;
     }
+
+    private static void OnCancelFetchPlaceholders(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
+    {
+        _ = info;
+        _ = parameters;
+    }
+
+    /// <summary>
+    /// Builds one-level child placeholders under <paramref name="parentVaultPath"/> from
+    /// <see cref="VaultSession.ListAsync"/> non-recursive entries (names like "a.txt" / "dir/").
+    /// </summary>
+    public static IReadOnlyList<CloudFilesPlaceholder> BuildImmediateChildPlaceholders(
+        string parentVaultPath,
+        IEnumerable<string> listEntries,
+        string? pattern = null)
+    {
+        var parent = NormalizeVaultCleartextPath(parentVaultPath);
+        var parentRel = parent == "/" ? "" : parent.TrimStart('/');
+        var list = new List<CloudFilesPlaceholder>();
+        foreach (var e in listEntries)
+        {
+            if (string.IsNullOrWhiteSpace(e)) continue;
+            if (e.Contains(" ->", StringComparison.Ordinal)) continue;
+            var isDir = e.EndsWith("/", StringComparison.Ordinal);
+            var name = (isDir ? e.TrimEnd('/') : e).Trim().TrimStart('/', '\\');
+            if (string.IsNullOrEmpty(name) || name.Contains('/') || name.Contains('\\'))
+                continue;
+            if (!MatchesFetchPattern(name, pattern))
+                continue;
+            var full = string.IsNullOrEmpty(parentRel) ? name : parentRel + "/" + name;
+            list.Add(new CloudFilesPlaceholder
+            {
+                CleartextRelativePath = full,
+                CiphertextKey = "",
+                IsDirectory = isDir,
+                FileSize = isDir ? 0 : null,
+            });
+        }
+        return list;
+    }
+
+    /// <summary>True when <paramref name="fileName"/> matches CfAPI FETCH_PLACEHOLDERS Pattern (* supported).</summary>
+    public static bool MatchesFetchPattern(string fileName, string? pattern)
+    {
+        if (string.IsNullOrWhiteSpace(pattern) || pattern == "*")
+            return true;
+        var p = pattern.Trim();
+        if (p.StartsWith('*') && p.EndsWith('*') && p.Length >= 2)
+            return fileName.Contains(p.Trim('*'), StringComparison.OrdinalIgnoreCase);
+        if (p.StartsWith('*'))
+            return fileName.EndsWith(p[1..], StringComparison.OrdinalIgnoreCase);
+        if (p.EndsWith('*'))
+            return fileName.StartsWith(p[..^1], StringComparison.OrdinalIgnoreCase);
+        return fileName.Equals(p, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Lists one vault directory level into placeholder descriptors (no CatAsync ? FileSize left null/0).
+    /// Returns empty list on failure (caller fail-closes the transfer).
+    /// </summary>
+    public static IReadOnlyList<CloudFilesPlaceholder> TryListImmediatePlaceholders(
+        VaultSession? session,
+        string? directoryCleartextPath,
+        string? pattern = null)
+    {
+        if (session is null || string.IsNullOrWhiteSpace(directoryCleartextPath))
+            return Array.Empty<CloudFilesPlaceholder>();
+        try
+        {
+            var parent = NormalizeVaultCleartextPath(directoryCleartextPath);
+            var entries = session.ListAsync(parent, recursive: false).GetAwaiter().GetResult();
+            return BuildImmediateChildPlaceholders(parent, entries, pattern);
+        }
+        catch
+        {
+            return Array.Empty<CloudFilesPlaceholder>();
+        }
+    }
+
+    /// <summary>
+    /// FETCH_PLACEHOLDERS: transfer one directory level from the vault session, then disable
+    /// on-demand population for that folder (avoids repeated Explorer callbacks). Child directories
+    /// keep on-demand population so expanding them triggers another FETCH_PLACEHOLDERS.
+    /// </summary>
+    private static void OnFetchPlaceholders(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
+    {
+        var provider = FromContext(info);
+        var pattern = parameters.FetchPlaceholders.Pattern;
+        string? dirPath = null;
+        if (provider is not null)
+            dirPath = provider.ResolveVaultPathFromCallback(info) ?? "/";
+
+        IReadOnlyList<CloudFilesPlaceholder> children = Array.Empty<CloudFilesPlaceholder>();
+        var ok = false;
+        try
+        {
+            if (provider?.Session is not null && dirPath is not null)
+            {
+                children = TryListImmediatePlaceholders(provider.Session, dirPath, pattern);
+                ok = true;
+            }
+        }
+        catch
+        {
+            ok = false;
+            children = Array.Empty<CloudFilesPlaceholder>();
+        }
+
+        TransferPlaceholders(info, children, success: ok);
+    }
+
+    private static void TransferPlaceholders(
+        in CF_CALLBACK_INFO info,
+        IReadOnlyList<CloudFilesPlaceholder> children,
+        bool success)
+    {
+        var pins = new List<IntPtr>();
+        GCHandle arrayHandle = default;
+        try
+        {
+            var infos = new CF_PLACEHOLDER_CREATE_INFO[children.Count];
+            for (var i = 0; i < children.Count; i++)
+            {
+                var p = children[i];
+                var rel = p.CleartextRelativePath.Replace('\\', '/').TrimStart('/');
+                var slash = rel.LastIndexOf('/');
+                var leaf = slash >= 0 ? rel[(slash + 1)..] : rel;
+                var identity = EncodeFileIdentity("/" + rel);
+                var idPtr = Marshal.AllocHGlobal(identity.Length);
+                pins.Add(idPtr);
+                Marshal.Copy(identity, 0, idPtr, identity.Length);
+
+                // Dirs: leave on-demand population enabled (no DISABLE flag) so nested FETCH fires.
+                var flags = CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC;
+                infos[i] = new CF_PLACEHOLDER_CREATE_INFO
+                {
+                    RelativeFileName = leaf.Replace('/', '\\'),
+                    FsMetadata = new CF_FS_METADATA
+                    {
+                        BasicInfo = new FILE_BASIC_INFO
+                        {
+                            FileAttributes = p.IsDirectory
+                                ? FileFlagsAndAttributes.FILE_ATTRIBUTE_DIRECTORY
+                                : FileFlagsAndAttributes.FILE_ATTRIBUTE_NORMAL,
+                        },
+                        FileSize = p.IsDirectory ? 0 : (p.FileSize ?? 0),
+                    },
+                    FileIdentity = idPtr,
+                    FileIdentityLength = (uint)identity.Length,
+                    Flags = flags,
+                };
+            }
+
+            if (infos.Length > 0)
+                arrayHandle = GCHandle.Alloc(infos, GCHandleType.Pinned);
+
+            var opInfo = new CF_OPERATION_INFO
+            {
+                StructSize = (uint)Marshal.SizeOf<CF_OPERATION_INFO>(),
+                Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS,
+                ConnectionKey = info.ConnectionKey,
+                TransferKey = info.TransferKey,
+            };
+            var count = success ? (uint)infos.Length : 0u;
+            var opParams = CF_OPERATION_PARAMETERS.Create(
+                new CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS
+                {
+                    Flags = CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION,
+                    CompletionStatus = success ? NTStatus.STATUS_SUCCESS : StatusCloudFileAccessDenied,
+                    PlaceholderTotalCount = count,
+                    PlaceholderArray = infos.Length > 0 && success
+                        ? arrayHandle.AddrOfPinnedObject()
+                        : IntPtr.Zero,
+                    PlaceholderCount = success ? count : 0,
+                    EntriesProcessed = 0,
+                });
+            CfExecute(opInfo, ref opParams);
+        }
+        catch
+        {
+            try
+            {
+                var opInfo = new CF_OPERATION_INFO
+                {
+                    StructSize = (uint)Marshal.SizeOf<CF_OPERATION_INFO>(),
+                    Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_PLACEHOLDERS,
+                    ConnectionKey = info.ConnectionKey,
+                    TransferKey = info.TransferKey,
+                };
+                var opParams = CF_OPERATION_PARAMETERS.Create(
+                    new CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS
+                    {
+                        Flags = CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION,
+                        CompletionStatus = StatusCloudFileAccessDenied,
+                        PlaceholderTotalCount = 0,
+                        PlaceholderArray = IntPtr.Zero,
+                        PlaceholderCount = 0,
+                        EntriesProcessed = 0,
+                    });
+                CfExecute(opInfo, ref opParams);
+            }
+            catch { /* fail closed */ }
+        }
+        finally
+        {
+            if (arrayHandle.IsAllocated) arrayHandle.Free();
+            foreach (var ptr in pins)
+                Marshal.FreeHGlobal(ptr);
+        }
+    }
+
 
     /// <summary>
     /// NOTIFY_FILE_CLOSE_COMPLETION: completion-only (no deny ACK). Write-back hydrated

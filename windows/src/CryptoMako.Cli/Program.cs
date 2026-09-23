@@ -259,6 +259,7 @@ static int CmdCfApi(ReadOnlySpan<string> args)
               --root DIR     Sync root (default: %LOCALAPPDATA%/CryptoMako/SyncRoot)
               --account NAME Sync root account id (default: default)
               --local DIR    Vault directory for populate (CRYPTOMAKO_PASSWORD)
+              --recursive    populate: seed entire tree (default: root level only; nested via FETCH_PLACEHOLDERS)
             """);
         return args.Length == 0 ? 2 : 0;
     }
@@ -266,6 +267,7 @@ static int CmdCfApi(ReadOnlySpan<string> args)
     string? root = null;
     string account = "default";
     string? localVault = null;
+    var recursivePopulate = false;
     var cmd = args[0];
     for (var i = 1; i < args.Length; i++)
     {
@@ -273,6 +275,7 @@ static int CmdCfApi(ReadOnlySpan<string> args)
         if (a is "--root" && i + 1 < args.Length) { root = args[++i]; continue; }
         if (a is "--account" && i + 1 < args.Length) { account = args[++i]; continue; }
         if (a is "--local" && i + 1 < args.Length) { localVault = args[++i]; continue; }
+        if (a is "--recursive") { recursivePopulate = true; continue; }
         return Fail(2, $"unknown cfapi flag: {a}");
     }
 
@@ -329,8 +332,8 @@ static int CmdCfApi(ReadOnlySpan<string> args)
             provider.Connect();
             var session = VaultSession.UnlockLocal(localVault, password);
             provider.AttachSession(session);
-            var n = provider.PopulateRootPlaceholdersAsync().GetAwaiter().GetResult();
-            Console.Error.WriteLine($"placeholders={n} under {root} - holding 45s; try Explorer (cloud glyph / nested dirs / hello.txt)");
+            var n = provider.PopulateRootPlaceholdersAsync(recursive: recursivePopulate).GetAwaiter().GetResult();
+            Console.Error.WriteLine($"placeholders={n} recursive={recursivePopulate} under {root} - holding 45s; try Explorer (expand dirs -> FETCH_PLACEHOLDERS / hello.txt hydrate)");
             try { Thread.Sleep(TimeSpan.FromSeconds(45)); }
             catch (ThreadInterruptedException) { }
             provider.Disconnect();
