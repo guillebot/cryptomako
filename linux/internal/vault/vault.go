@@ -108,8 +108,13 @@ func unlockWithStore(cfg config.Config, store objectStore) (*Session, error) {
 	if err != nil {
 		return nil, errUnlockFailed
 	}
+	// Passphrase no longer needed after unwrap (Go strings are immutable;
+	// blank the field to drop the live reference on Session.cfg).
+	cfg.Passphrase = ""
 
-	payload, err := verifyVaultJWT(jwt, mk.RawKey())
+	raw := mk.RawKey()
+	payload, err := verifyVaultJWT(jwt, raw)
+	wipe(raw)
 	if err != nil {
 		wipe(mk.EncKey)
 		wipe(mk.MacKey)
@@ -148,11 +153,15 @@ func unlockWithStore(cfg config.Config, store objectStore) (*Session, error) {
 	}, nil
 }
 
-// Close wipes key material.
+// Close wipes key material and blanks retained secret fields.
 func (s *Session) Close() error {
 	if s.cryptor != nil {
 		s.cryptor.close()
 		s.cryptor = nil
+	}
+	s.cfg.ClearSecrets()
+	if w, ok := s.store.(interface{ WipeSecrets() }); ok {
+		w.WipeSecrets()
 	}
 	return nil
 }

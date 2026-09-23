@@ -7,6 +7,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,8 @@ func DefaultConfigPath() string {
 }
 
 // Resolve merges flags, config file, and env into a Config.
+// On success, secret env vars named by the request are unset in this process
+// so they no longer appear in /proc/self/environ (FUSE mounts stay long-lived).
 func Resolve(req Request) (Config, error) {
 	if req.PasswordEnv == "" {
 		req.PasswordEnv = EnvPassword
@@ -91,6 +94,7 @@ func Resolve(req Request) (Config, error) {
 		if err != nil {
 			return Config{}, err
 		}
+		scrubSecretEnvs(req.PasswordEnv, req.SecretKeyEnv)
 		return Config{
 			Region:     "local",
 			Bucket:     "local",
@@ -130,6 +134,9 @@ func Resolve(req Request) (Config, error) {
 	if !strings.HasPrefix(strings.ToLower(endpoint), "https://") {
 		return Config{}, fmt.Errorf("endpoint must be HTTPS (got %q)", endpoint)
 	}
+	if err := rejectEndpointUserinfo(endpoint); err != nil {
+		return Config{}, err
+	}
 	if bucket == "" {
 		return Config{}, fmt.Errorf("missing --bucket")
 	}
@@ -140,6 +147,8 @@ func Resolve(req Request) (Config, error) {
 	if secretKey == "" {
 		return Config{}, fmt.Errorf("missing env %s", req.SecretKeyEnv)
 	}
+
+	scrubSecretEnvs(req.PasswordEnv, req.SecretKeyEnv)
 
 	return Config{
 		Endpoint:   strings.TrimRight(endpoint, "/"),
@@ -168,7 +177,7 @@ func loadFile(path string) (File, error) {
 	// Reject accidental secrets in JSON.
 	var raw map[string]json.RawMessage
 	if err := json.Unmarshal(data, &raw); err == nil {
-		for _, banned := range []string{"password", "secretKey", "secret_key", "secretAccessKey"} {
+		for _, banned := range bannedSecretJSONKeys {
 			if _, ok := raw[banned]; ok {
 				return File{}, fmt.Errorf("config %s must not contain %q (use env)", path, banned)
 			}
@@ -187,6 +196,51 @@ func normalizePrefix(p string) string {
 		return ""
 	}
 	return p + "/"
+}
+
+// bannedSecretJSONKeys must never appear in on-disk JSON configs.
+var bannedSecretJSONKeys = []string{
+	"password", "passphrase", "secretKey", "secret_key", "secretAccessKey",
+	"aws_secret_access_key", "secret", "proxyPassword", "proxy_password",
+}
+
+// scrubSecretEnvs removes secret values from this process environment.
+func scrubSecretEnvs(names ...string) {
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		_ = os.Unsetenv(name)
+	}
+}
+
+// ScrubProxyPasswordEnv unsets CRYPTOMAKO_PROXY_PASSWORD after it has been
+// copied into the HTTP transport (see NewHTTPClient).
+func ScrubProxyPasswordEnv() {
+	_ = os.Unsetenv(EnvProxyPassword)
+}
+
+// ClearSecrets blanks secret fields on Config (does not zero underlying string
+// bytes — Go strings are immutable; prefer scrubSecretEnvs for /proc exposure).
+func (c *Config) ClearSecrets() {
+	if c == nil {
+		return
+	}
+	c.Passphrase = ""
+	c.SecretKey = ""
+}
+
+func rejectEndpointUserinfo(endpoint string) error {
+	// Avoid secrets in URL userinfo (https://key:secret@host) landing in JSON/argv.
+	// Parse after scheme check; url.Parse accepts https.
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("endpoint: %w", err)
+	}
+	if u.User != nil {
+		return fmt.Errorf("endpoint must not include userinfo (credentials belong in env %s)", EnvSecretKey)
+	}
+	return nil
 }
 
 func firstNonEmpty(vals ...string) string {

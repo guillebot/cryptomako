@@ -9,7 +9,7 @@ import (
 )
 
 var (
-	flagFixtureOut string
+	flagFixtureOut   string
 	flagFixtureHello string
 )
 
@@ -27,6 +27,7 @@ new VaultSettings keys.`,
 		if pass == "" {
 			return fmt.Errorf("missing env %s", flagPasswordEnv)
 		}
+		_ = os.Unsetenv(flagPasswordEnv)
 		if err := os.RemoveAll(flagFixtureOut); err != nil {
 			return err
 		}

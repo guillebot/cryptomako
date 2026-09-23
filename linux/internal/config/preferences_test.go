@@ -196,3 +196,24 @@ func mustURL(t *testing.T, raw string) *url.URL {
 	}
 	return u
 }
+
+func TestLoadAppPreferencesSoftFailsBannedSecrets(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app-preferences.json")
+	if err := os.WriteFile(path, []byte(`{"proxyMode":"direct","proxyPassword":"nope"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadAppPreferences(path)
+	def := DefaultAppPreferences()
+	if got != def {
+		t.Fatalf("want defaults on banned secrets, got %+v", got)
+	}
+}
+
+func TestNewHTTPClientScrubsProxyPasswordEnv(t *testing.T) {
+	t.Setenv(EnvProxyPassword, "proxy-secret")
+	_ = NewHTTPClient(DefaultAppPreferences())
+	if os.Getenv(EnvProxyPassword) != "" {
+		t.Fatal("expected CRYPTOMAKO_PROXY_PASSWORD unset after NewHTTPClient")
+	}
+}
