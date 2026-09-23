@@ -148,27 +148,40 @@ struct SettingsView: View {
 
     private var networkSection: some View {
         GroupBox("Network / Proxy") {
-            Form {
+            // VStack (not Form): nested Form inside ScrollView/GroupBox on macOS
+            // proposes unbounded widths and clips/scatters controls off-screen.
+            VStack(alignment: .leading, spacing: 10) {
+                Text("Proxy mode")
+                    .font(.caption.weight(.semibold))
                 Picker("Proxy mode", selection: $prefs.proxyMode) {
                     Text("System").tag(AppPreferences.ProxyMode.system)
-                    Text("Direct (no proxy)").tag(AppPreferences.ProxyMode.direct)
-                    Text("Custom HTTP(S)").tag(AppPreferences.ProxyMode.custom)
+                    Text("Direct").tag(AppPreferences.ProxyMode.direct)
+                    Text("Custom").tag(AppPreferences.ProxyMode.custom)
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
+                .frame(maxWidth: .infinity)
 
                 if prefs.proxyMode == .custom {
                     TextField("Host", text: $prefs.proxyHost)
+                        .textFieldStyle(.roundedBorder)
                     TextField("Port", value: $prefs.proxyPort, format: .number)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 120)
                     TextField("Username (optional)", text: $prefs.proxyUsername)
+                        .textFieldStyle(.roundedBorder)
                     SecureField("Password (optional, Keychain)", text: $proxyPassword)
+                        .textFieldStyle(.roundedBorder)
                 }
 
                 Text(proxyHelp)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -187,12 +200,13 @@ struct SettingsView: View {
 
     private var bandwidthSection: some View {
         GroupBox("Backup Sync bandwidth") {
-            Form {
+            VStack(alignment: .leading, spacing: 10) {
                 Toggle("Limit Sync upload bandwidth", isOn: $prefs.limitSyncUploadBandwidth)
                 if prefs.limitSyncUploadBandwidth {
                     HStack {
                         Text("Cap")
                         TextField("Mbps", value: $prefs.syncUploadCapMbps, format: .number.precision(.fractionLength(0...1)))
+                            .textFieldStyle(.roundedBorder)
                             .frame(width: 72)
                         Text("Mbps")
                             .foregroundStyle(.secondary)
@@ -204,8 +218,10 @@ struct SettingsView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -213,7 +229,7 @@ struct SettingsView: View {
 
     private var syncWorkersSection: some View {
         GroupBox("Backup Sync workers") {
-            Form {
+            VStack(alignment: .leading, spacing: 10) {
                 workerRow(
                     title: "Small files",
                     help: "Concurrent puts under 256 KB (many tiny files).",
@@ -245,8 +261,10 @@ struct SettingsView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -353,8 +371,10 @@ struct SettingsView: View {
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -438,14 +458,19 @@ struct SettingsView: View {
     }
 }
 
-/// Simple wrapping chip row for toggleable exclude names.
+/// Wrapping checkbox grid for toggleable exclude names.
+/// Width-bounded adaptive columns so chips wrap instead of one jammed row.
 private struct FlowChips: View {
     let items: [String]
     let isOn: (String) -> Bool
     let toggle: (String) -> Void
 
+    private let columns = [
+        GridItem(.adaptive(minimum: 110, maximum: 220), spacing: 8, alignment: .leading)
+    ]
+
     var body: some View {
-        LazyVGrid(columns: [GridItem(.adaptive(minimum: 120), spacing: 6)], alignment: .leading, spacing: 6) {
+        LazyVGrid(columns: columns, alignment: .leading, spacing: 8) {
             ForEach(items, id: \.self) { item in
                 Toggle(item, isOn: Binding(
                     get: { isOn(item) },
@@ -453,7 +478,10 @@ private struct FlowChips: View {
                 ))
                 .toggleStyle(.checkbox)
                 .font(.caption)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .lineLimit(1)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
