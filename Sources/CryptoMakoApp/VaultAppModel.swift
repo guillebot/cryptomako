@@ -282,6 +282,12 @@ final class VaultAppModel: ObservableObject {
     func lock() {
         userWantsUnlocked = false
         resignFields()
+        // High: stop Backup Sync / rclone and drop cleartext FUSE before clearing
+        // session so masterkey cannot survive UI Lock via the sync volume.
+        // Idempotent when already locked / no mount / no sync. Keychain untouched.
+        cancelBackupSync()
+        RcloneDriver.cancel()
+        fuseMount.unmount()
         let storeToClose = activeStore
         activeStore = nil
         activeSession = nil
@@ -295,8 +301,8 @@ final class VaultAppModel: ObservableObject {
         settings = VaultSettings.load() ?? settings
         secretKey = (try? CredentialStore.readSharedOrLocal(account: AppIdentifiers.secretKeyAccount)) ?? ""
         password = (try? CredentialStore.readSharedOrLocal(account: AppIdentifiers.passwordAccount)) ?? ""
-        detail = "Locked. Unmounting Finder domain so writers cannot keep filling a local leftover."
-        // Disconnect must kill the mount path — otherwise rclone keeps writing into CloudStorage.
+        detail = "Locked. Sync cancelled; cleartext volume and Finder domain unmounting."
+        // Disconnect must kill the File Provider mount path — otherwise leftover CloudStorage fills.
         Task {
             await self.unmountAllDomains(cleanupLeftoverFolder: true)
             if let storeToClose, let s3 = storeToClose as? S3ObjectStore {
