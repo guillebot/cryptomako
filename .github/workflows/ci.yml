@@ -44,6 +44,32 @@ jobs:
         working-directory: linux
         run: go build -o cryptomako .
 
+  linux-fuse-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.22.x"
+          cache-dependency-path: linux/go.sum
+
+      - name: Install fuse3
+        run: sudo apt-get update && sudo apt-get install -y fuse3
+
+      - name: Build CLI
+        working-directory: linux
+        run: go build -o cryptomako .
+
+      - name: FUSE smoke (ro + rw)
+        working-directory: linux
+        env:
+          CRYPTOMAKO_PASSWORD: ci-fuse-smoke-password
+          CRYPTOMAKO_BIN: ${{ github.workspace }}/linux/cryptomako
+          CRYPTOMAKO_FUSE_RW: "1"
+        run: ./scripts/fuse-smoke.sh
+
   security:
     runs-on: ubuntu-latest
     permissions:

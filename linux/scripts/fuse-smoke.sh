@@ -1,22 +1,15 @@
 #!/usr/bin/env bash
-# FUSE smoke: mount fixtures vault read-only, read hello.txt, unmount.
+# FUSE smoke: mount a format-8 vault, read hello.txt, optionally exercise --rw, unmount.
 # Intended for real Linux (or Docker with /dev/fuse passthrough).
-# Docker Desktop on macOS typically cannot expose /dev/fuse — use a Linux host/CI.
+# When fixtures/ are missing, creates a minimal vault via `cryptomako fixture`.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 LINUX="$ROOT/linux"
 FIXTURES="$ROOT/fixtures"
-VAULT="$FIXTURES/vault"
 MNT="${CRYPTOMAKO_MNT:-/tmp/cryptomako-fuse-smoke}"
 PASSWORD_FILE="$FIXTURES/PASSWORD"
-
-if [[ ! -f "$PASSWORD_FILE" ]]; then
-  echo "missing $PASSWORD_FILE (gitignored)" >&2
-  exit 1
-fi
-export CRYPTOMAKO_PASSWORD
-CRYPTOMAKO_PASSWORD="$(tr -d '\n' < "$PASSWORD_FILE")"
+RW="${CRYPTOMAKO_FUSE_RW:-0}"
 
 if [[ ! -e /dev/fuse ]]; then
   echo "BLOCKER: /dev/fuse not present on this host (expected on bare macOS)." >&2
@@ -31,6 +24,31 @@ if [[ -z "$BIN" ]]; then
   BIN=/tmp/cryptomako-fuse-smoke
 fi
 
+VAULT="${CRYPTOMAKO_VAULT:-}"
+if [[ -z "$VAULT" ]]; then
+  if [[ -f "$PASSWORD_FILE" && -d "$FIXTURES/vault" ]]; then
+    export CRYPTOMAKO_PASSWORD
+    CRYPTOMAKO_PASSWORD="$(tr -d '\n' < "$PASSWORD_FILE")"
+    VAULT="$FIXTURES/vault"
+  else
+    echo "fixtures missing; creating minimal vault for smoke" >&2
+    export CRYPTOMAKO_PASSWORD="${CRYPTOMAKO_PASSWORD:-ci-fuse-smoke-password}"
+    VAULT="${CRYPTOMAKO_VAULT_OUT:-/tmp/cryptomako-fuse-vault}"
+    rm -rf "$VAULT"
+    "$BIN" fixture --output "$VAULT"
+  fi
+else
+  if [[ -z "${CRYPTOMAKO_PASSWORD:-}" ]]; then
+    if [[ -f "$PASSWORD_FILE" ]]; then
+      export CRYPTOMAKO_PASSWORD
+      CRYPTOMAKO_PASSWORD="$(tr -d '\n' < "$PASSWORD_FILE")"
+    else
+      echo "CRYPTOMAKO_PASSWORD required when CRYPTOMAKO_VAULT is set without fixtures/PASSWORD" >&2
+      exit 1
+    fi
+  fi
+fi
+
 mkdir -p "$MNT"
 cleanup() {
   if mountpoint -q "$MNT" 2>/dev/null || mount | grep -q " $MNT "; then
@@ -40,7 +58,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-"$BIN" mount --local "$VAULT" --mountpoint "$MNT" &
+MOUNT_FLAGS=(mount --local "$VAULT" --mountpoint "$MNT")
+if [[ "$RW" == "1" || "$RW" == "true" ]]; then
+  MOUNT_FLAGS+=(--rw)
+fi
+
+"$BIN" "${MOUNT_FLAGS[@]}" &
 MPID=$!
 # Wait for hello.txt to appear
 for i in $(seq 1 50); do
@@ -66,9 +89,24 @@ if [[ "$got" != *"$expect"* ]]; then
 fi
 echo "FUSE smoke OK: read cleartext hello.txt"
 
+if [[ "$RW" == "1" || "$RW" == "true" ]]; then
+  echo "rw-smoke" > "$MNT/rw-smoke.txt"
+  got_rw="$(cat "$MNT/rw-smoke.txt")"
+  if [[ "$got_rw" != "rw-smoke" ]]; then
+    echo "rw write/read mismatch: $got_rw" >&2
+    kill "$MPID" 2>/dev/null || true
+    wait "$MPID" 2>/dev/null || true
+    exit 1
+  fi
+  mv "$MNT/rw-smoke.txt" "$MNT/rw-renamed.txt"
+  rm -f "$MNT/rw-renamed.txt"
+  mkdir "$MNT/rw-dir"
+  rmdir "$MNT/rw-dir"
+  echo "FUSE smoke OK: rw create/write/rename/unlink/mkdir"
+fi
+
 kill -INT "$MPID" 2>/dev/null || true
 wait "$MPID" 2>/dev/null || true
-# Explicit unmount if still mounted
 cleanup
 trap - EXIT
 echo "unmounted cleanly"
