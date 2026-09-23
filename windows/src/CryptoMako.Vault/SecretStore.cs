@@ -1,12 +1,14 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
+using System.Text.Json;
 
 namespace CryptoMako.Vault;
 
 /// <summary>
 /// Secret lookup/store. Never write secrets to settings.json.
-/// Production Windows: Credential Manager; elsewhere / CI: environment variables.
+/// Windows: Credential Manager. Elsewhere: chmod 600 JSON under ~/.config/cryptomako/.
+/// Environment variables always override for CI.
 /// </summary>
 public interface ISecretStore
 {
@@ -39,6 +41,73 @@ public sealed class EnvSecretStore : ISecretStore
 
     public void DeleteSecret(string account) =>
         Environment.SetEnvironmentVariable(account, null);
+}
+
+/// <summary>Dev-host persistence on macOS/Linux (mode 600). Not used on Windows.</summary>
+public sealed class FileSecretStore : ISecretStore
+{
+    private readonly string _path;
+
+    public FileSecretStore(string? path = null)
+    {
+        _path = path ?? Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".config", "cryptomako", "secrets.json");
+    }
+
+    public bool IsPersistent => true;
+
+    public string? GetSecret(string account)
+    {
+        var map = Load();
+        return map.TryGetValue(account, out var v) && !string.IsNullOrEmpty(v) ? v : null;
+    }
+
+    public void SetSecret(string account, string value)
+    {
+        var map = Load();
+        map[account] = value;
+        Save(map);
+    }
+
+    public void DeleteSecret(string account)
+    {
+        var map = Load();
+        if (map.Remove(account))
+            Save(map);
+    }
+
+    private Dictionary<string, string> Load()
+    {
+        try
+        {
+            if (!File.Exists(_path)) return new(StringComparer.Ordinal);
+            return JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(_path))
+                ?? new(StringComparer.Ordinal);
+        }
+        catch
+        {
+            return new(StringComparer.Ordinal);
+        }
+    }
+
+    private void Save(Dictionary<string, string> map)
+    {
+        var dir = Path.GetDirectoryName(_path);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+        var json = JsonSerializer.Serialize(map, new JsonSerializerOptions { WriteIndented = true });
+        File.WriteAllText(_path, json);
+        try
+        {
+            if (!OperatingSystem.IsWindows())
+                File.SetUnixFileMode(_path, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        }
+        catch
+        {
+            // Best-effort permissions.
+        }
+    }
 }
 
 /// <summary>
@@ -159,13 +228,20 @@ public sealed class WindowsCredentialStore : ISecretStore
     }
 }
 
-/// <summary>Env overrides Credential Manager so CI/`CRYPTOMAKO_*` keep working.</summary>
+/// <summary>Env overrides persistent store (Credential Manager on Windows, file on Mac/Linux).</summary>
 public sealed class CompositeSecretStore : ISecretStore
 {
     private readonly EnvSecretStore _env = new();
-    private readonly WindowsCredentialStore _windows = new();
+    private readonly ISecretStore _persistent;
 
-    public bool IsPersistent => _windows.IsPersistent;
+    public CompositeSecretStore(ISecretStore? persistent = null)
+    {
+        _persistent = persistent ?? (WindowsCredentialStore.IsSupported
+            ? new WindowsCredentialStore()
+            : new FileSecretStore());
+    }
+
+    public bool IsPersistent => _persistent.IsPersistent;
 
     public static CompositeSecretStore Default { get; } = new();
 
@@ -174,23 +250,14 @@ public sealed class CompositeSecretStore : ISecretStore
         var fromEnv = _env.GetSecret(account);
         if (!string.IsNullOrEmpty(fromEnv))
             return fromEnv;
-        if (WindowsCredentialStore.IsSupported)
-            return _windows.GetSecret(account);
-        return null;
+        return _persistent.GetSecret(account);
     }
 
-    public void SetSecret(string account, string value)
-    {
-        if (WindowsCredentialStore.IsSupported)
-            _windows.SetSecret(account, value);
-        else
-            _env.SetSecret(account, value);
-    }
+    public void SetSecret(string account, string value) => _persistent.SetSecret(account, value);
 
     public void DeleteSecret(string account)
     {
-        if (WindowsCredentialStore.IsSupported)
-            _windows.DeleteSecret(account);
+        _persistent.DeleteSecret(account);
         _env.DeleteSecret(account);
     }
 }

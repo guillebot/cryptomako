@@ -14,9 +14,8 @@ public class VaultGoldenTests
     {
         get
         {
-            var fromEnv = Environment.GetEnvironmentVariable("CRYPTOMAKO_PASSWORD");
-            if (!string.IsNullOrEmpty(fromEnv))
-                return fromEnv;
+            // Prefer fixtures/PASSWORD so a developer shell CRYPTOMAKO_PASSWORD
+            // cannot poison unlock against the golden vault.
             var path = Path.Combine(RepoRoot, "fixtures", "PASSWORD");
             Assert.True(File.Exists(path), $"missing password fixture at {path}");
             return File.ReadAllText(path).TrimEnd('\n', '\r');

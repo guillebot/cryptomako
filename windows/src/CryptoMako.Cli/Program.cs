@@ -21,6 +21,7 @@ static async Task<int> MainAsync(string[] args)
             "get" => await CmdGetAsync(ParseOpts(args.AsSpan(1))),
             "stat" => await CmdStatAsync(ParseOpts(args.AsSpan(1))),
             "sync" => await CmdSyncAsync(ParseOpts(args.AsSpan(1))),
+            "cred" => CmdCred(args.AsSpan(1)),
             _ => Fail(2, $"unknown command: {args[0]}"),
         };
     }
@@ -186,6 +187,106 @@ static AppPreferences LoadAppPreferences(Opts o)
     return new AppPreferences();
 }
 
+
+static int CmdCred(ReadOnlySpan<string> args)
+{
+    if (args.Length == 0 || args[0] is "-h" or "--help")
+    {
+        Console.WriteLine("""
+            cryptomako cred — manage secrets (env / Windows Credential Manager)
+
+            Usage:
+              cryptomako cred list
+              cryptomako cred get <account>
+              cryptomako cred set <account>     # secret on stdin (one line); never argv
+              cryptomako cred delete <account>
+
+            Accounts:
+              CRYPTOMAKO_PASSWORD | password
+              CRYPTOMAKO_SECRET_KEY | secret-key | secret
+              CRYPTOMAKO_PROXY_PASSWORD | proxy-password | proxy
+            """);
+        return args.Length == 0 ? 2 : 0;
+    }
+
+    var store = CompositeSecretStore.Default;
+    var op = args[0];
+    switch (op)
+    {
+        case "list":
+            foreach (var (label, account) in KnownAccounts())
+            {
+                var present = !string.IsNullOrEmpty(store.GetSecret(account));
+                var backend = WindowsCredentialStore.IsSupported ? "credman|env" : "file|env";
+                Console.WriteLine($"{account}\t{(present ? "set" : "missing")}\t{backend}");
+            }
+            return 0;
+        case "get":
+        {
+            if (args.Length < 2) return Fail(2, "cred get requires <account>");
+            var account = NormalizeAccount(args[1]);
+            var value = store.GetSecret(account);
+            if (string.IsNullOrEmpty(value))
+                return Fail(1, $"missing: {account}");
+            Console.Write(value);
+            if (!value.EndsWith('\n')) Console.WriteLine();
+            return 0;
+        }
+        case "set":
+        {
+            if (args.Length < 2) return Fail(2, "cred set requires <account>");
+            var account = NormalizeAccount(args[1]);
+            string? secret;
+            if (!Console.IsInputRedirected && args.Length >= 3)
+                return Fail(2, "refusing secret on argv; pipe the secret on stdin");
+            using (var reader = new StreamReader(Console.OpenStandardInput()))
+                secret = reader.ReadLine();
+            if (string.IsNullOrEmpty(secret))
+                return Fail(2, "empty secret on stdin");
+            try
+            {
+                store.SetSecret(account, secret);
+            }
+            catch (PlatformNotSupportedException ex)
+            {
+                // On non-Windows Composite falls back to env for Set when CM unsupported.
+                return Fail(1, Sanitize(ex.Message));
+            }
+            Console.Error.WriteLine($"set {account} ({(WindowsCredentialStore.IsSupported ? "Credential Manager" : "~/.config/cryptomako/secrets.json")})");
+            return 0;
+        }
+        case "delete":
+        {
+            if (args.Length < 2) return Fail(2, "cred delete requires <account>");
+            var account = NormalizeAccount(args[1]);
+            store.DeleteSecret(account);
+            Console.Error.WriteLine($"deleted {account}");
+            return 0;
+        }
+        default:
+            return Fail(2, $"unknown cred subcommand: {op}");
+    }
+}
+
+static IEnumerable<(string Label, string Account)> KnownAccounts() =>
+[
+    ("vault password", SecretAccounts.Password),
+    ("S3 secret key", SecretAccounts.SecretKey),
+    ("proxy password", SecretAccounts.ProxyPassword),
+];
+
+static string NormalizeAccount(string raw)
+{
+    var s = raw.Trim();
+    return s.ToLowerInvariant() switch
+    {
+        "password" or "vault-password" or "pass" => SecretAccounts.Password,
+        "secret-key" or "secret" or "secretkey" or "s3-secret" => SecretAccounts.SecretKey,
+        "proxy-password" or "proxy" or "proxy-pass" => SecretAccounts.ProxyPassword,
+        _ => s, // allow full CRYPTOMAKO_* or custom
+    };
+}
+
 static Opts ParseOpts(ReadOnlySpan<string> args)
 {
     string? local = null, endpoint = null, region = null, bucket = null, prefix = null, accessKey = null;
@@ -277,6 +378,7 @@ static void PrintHelp()
           cryptomako get    (...) <cleartext-path> --output FILE
           cryptomako stat   (...) <cleartext-path>
           cryptomako sync   (...) --source DIR --vault-folder NAME
+          cryptomako cred   list|get|set|delete <account>
 
         Connection:
           --local DIR              Unlock a vault directory on disk
@@ -297,6 +399,10 @@ static void PrintHelp()
         Sync workers (app-preferences.json): syncSmallPutConcurrency (1–256, default 96),
           syncMediumPutConcurrency (1–128, default 32), syncLargePutConcurrency (1–16, default 4),
           limitSyncUploadBandwidth + syncUploadCapMbps (min 1).
+
+        Credentials:
+          cryptomako cred list|get|set|delete <account>
+          set reads secret from stdin (never argv)
         """);
 }
 

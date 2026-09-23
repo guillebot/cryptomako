@@ -62,7 +62,7 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
     private readonly HttpClient _http;
     private readonly bool _ownsHttp;
 
-    public S3ObjectStore(S3Settings settings, HttpClient? httpClient = null)
+    public S3ObjectStore(S3Settings settings, HttpClient? httpClient = null, bool ownsHttpClient = false)
     {
         _settings = settings;
         if (httpClient is null)
@@ -73,7 +73,7 @@ public sealed class S3ObjectStore : IObjectStore, IDisposable
         else
         {
             _http = httpClient;
-            _ownsHttp = false;
+            _ownsHttp = ownsHttpClient;
         }
     }
 

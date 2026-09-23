@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>CryptoMako.CfApi</RootNamespace>
+    <AssemblyName>CryptoMako.CfApi</AssemblyName>
+    <Description>Cloud Files (CfAPI) provider scaffold. Full registration requires Windows.</Description>
+    <!-- Keep net8.0 so the Mac build host can compile stubs; Windows APIs are runtime-gated. -->
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\CryptoMako.Vault\CryptoMako.Vault.csproj" />
+    <ProjectReference Include="..\CryptoMako.App\CryptoMako.App.csproj" />
+  </ItemGroup>
+</Project>

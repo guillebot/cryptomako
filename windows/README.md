@@ -84,6 +84,12 @@ Then: `cryptomako unlock --config /path/to/settings.json`
 
 Secrets: env / Credential Manager only.
 
+## Desktop + CfAPI
+
+- **Desktop (Avalonia):** `dotnet run --project src/CryptoMako.Desktop` — Vault / Backup / Settings tabs (builds on macOS + Windows). See `docs/desktop.md`.
+- **CfAPI scaffold:** `src/CryptoMako.CfApi` + `docs/cfapi.md` — sync-root registration requires a **Windows** box.
+- **Credentials CLI:** `cryptomako cred list|get|set|delete` (stdin for set; Credential Manager on Windows).
+
 ## Backup Sync
 
 ```bash

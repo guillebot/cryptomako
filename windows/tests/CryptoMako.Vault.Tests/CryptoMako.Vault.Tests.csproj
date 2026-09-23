@@ -11,5 +11,7 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\CryptoMako.Vault\CryptoMako.Vault.csproj" />
     <ProjectReference Include="..\..\src\CryptoMako.S3\CryptoMako.S3.csproj" />
+    <ProjectReference Include="..\..\src\CryptoMako.App\CryptoMako.App.csproj" />
+    <ProjectReference Include="..\..\src\CryptoMako.CfApi\CryptoMako.CfApi.csproj" />
   </ItemGroup>
 </Project>
