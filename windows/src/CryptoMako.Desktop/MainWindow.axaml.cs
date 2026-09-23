@@ -1,5 +1,6 @@
 using Avalonia;
 using System;
+using System.Linq;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
 using CryptoMako.App;
@@ -74,6 +75,27 @@ public partial class MainWindow : Window
     private async void OnSync(object? sender, RoutedEventArgs e)
     {
         try { await Vm.SyncAsync(); }
+        catch (Exception ex) { VmLog(ex); }
+    }
+
+    private void OnAddBackupSource(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(Vm.BackupSource))
+                throw new InvalidOperationException("source path required");
+            Vm.AddBackupSource(Vm.BackupSource, string.IsNullOrWhiteSpace(Vm.VaultFolder) ? null : Vm.VaultFolder);
+        }
+        catch (Exception ex) { VmLog(ex); }
+    }
+
+    private void OnClearBackupSources(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            foreach (var id in Vm.BackupSources.Sources.Select(s => s.Id).ToList())
+                Vm.RemoveBackupSource(id);
+        }
         catch (Exception ex) { VmLog(ex); }
     }
 

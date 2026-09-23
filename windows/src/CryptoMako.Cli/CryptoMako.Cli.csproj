@@ -4,6 +4,8 @@
     <OutputType>Exe</OutputType>
     <RootNamespace>CryptoMako.Cli</RootNamespace>
     <AssemblyName>cryptomako</AssemblyName>
+      <Product>CryptoMako</Product>
+    <AssemblyTitle>CryptoMako</AssemblyTitle>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\CryptoMako.App\CryptoMako.App.csproj" />

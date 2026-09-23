@@ -1,8 +1,13 @@
 # CryptoMako Windows
 
+![CryptoMako](../docs/assets/brand/readme-hero.png)
+
 Windows port of [CryptoMako](https://github.com/guillebot/cryptomako): S3-compatible bucket → Cryptomator **format 8** vault over HTTPS, cleartext UX locally, unrecognizable names+contents in the bucket.
 
-Lives under `windows/` in the main repo (not a sibling). Shares `fixtures/` with macOS as the golden vault.
+**Product display name:** CryptoMako (C+M). CLI/package id: `cryptomako` (lowercase).
+
+**Brand:** single canonical mark from [`docs/assets/brand/`](../docs/assets/brand/) — Desktop tray uses `tray-windows.png` (copied to `src/CryptoMako.Desktop/Assets/tray.png`). Do not invent alternate marks.
+
 
 ## Surfaces (locked)
 
@@ -93,6 +98,9 @@ Secrets: env / Credential Manager only.
 
 ## Backup Sync
 
+Nested/overlapping sources: soft-warn on add, hard-fail on Sync — see [`docs/backup-sources.md`](docs/backup-sources.md).
+
+
 ```bash
 dotnet run --project src/CryptoMako.Cli -- sync --local ../fixtures/vault \
   --source /path/to/cleartext --vault-folder MyHost
@@ -122,3 +130,12 @@ Non-CfAPI library/CLI/Desktop paths also build on Mac hosts; Mac builds of `Cryp
 ## License
 
 AGPL-3.0 (same as the parent repo).
+
+## Publish (win-x64)
+
+```powershell
+cd windows
+pwsh ./scripts/publish-win-x64.ps1
+```
+
+See [`docs/packaging.md`](docs/packaging.md).
