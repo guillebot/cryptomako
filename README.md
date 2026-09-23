@@ -1,5 +1,13 @@
 # CryptoMako
 
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-macOS%2014%2B-black.svg)](https://github.com/guillebot/cryptomako)
+[![Swift](https://img.shields.io/badge/Swift-5.10%2B-orange.svg)](https://swift.org)
+[![S3](https://img.shields.io/badge/storage-S3%20%2F%20MinIO-569A31.svg)](https://github.com/guillebot/cryptomako)
+[![Cryptomator](https://img.shields.io/badge/vault-Cryptomator%20format%208-6B4EFF.svg)](https://cryptomator.org)
+[![GitHub release](https://img.shields.io/github/v/release/guillebot/cryptomako?include_prereleases)](https://github.com/guillebot/cryptomako/releases)
+
+
 **Point CryptoMako at any S3-compatible bucket, unlock a [Cryptomator](https://cryptomator.org) vault, and work with your files as plaintext** — in the app, in Finder, and through high-throughput Backup Sync for large trees.
 
 CryptoMako is a macOS companion, not a Cryptomator fork. Ciphertext stays on the object store; decryption happens in-process. Licensed under **AGPLv3** (including paid distribution).
