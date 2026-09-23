@@ -8,8 +8,8 @@ Lives under `linux/` in the main repo (not a sibling). Shares `fixtures/` with m
 
 | Surface | Role |
 |---------|------|
-| **CLI** (`unlock` / `ls` / `cat`) | First milestone — this folder |
-| **FUSE** (`mount`) | Cleartext read-only mount (`go-fuse` / `/dev/fuse`); never mount ciphertext |
+| **CLI** (`unlock` / `ls` / `cat` / `fixture`) | Unlock/browse; `fixture` builds a minimal format-8 vault for CI |
+| **FUSE** (`mount`) | Cleartext mount (`go-fuse` / `/dev/fuse`); default **ro**, optional **`--rw`** with fail-closed remote put/delete |
 | **Backup Sync** (`sync`) | Walk cleartext → encrypt → put (local or S3). Fail-closed |
 
 ## Product locks
@@ -51,10 +51,14 @@ export CRYPTOMAKO_PASSWORD="$(tr -d '\n' < ../fixtures/PASSWORD)"
 ./cryptomako cat --local ../fixtures/vault /hello.txt
 # → hello cryptomako
 
-# FUSE cleartext mount (Linux; read-only)
+# FUSE cleartext mount (Linux; default read-only)
 mkdir -p /tmp/cryptomako-mnt
 ./cryptomako mount --local ../fixtures/vault --mountpoint /tmp/cryptomako-mnt
 # cat /tmp/cryptomako-mnt/hello.txt
+
+# Writable FUSE (fail-closed: create/write/rename/unlink/mkdir → PutObject/DeleteObject)
+./cryptomako mount --local /path/to/vault --mountpoint /tmp/cryptomako-mnt --rw
+# echo hi > /tmp/cryptomako-mnt/new.txt   # encrypts + puts; errors if store put fails
 
 # Backup sync (encrypt local tree into vault)
 ./cryptomako sync --local ../fixtures/vault --source ~/Documents/tree --dest /
@@ -155,15 +159,34 @@ docker run --rm -it \
      fusermount3 -u /mnt/cm'
 ```
 
-Or use the host script (same expectations: cleartext `hello cryptomako`, clean unmount):
+Or use the host script (cleartext `hello cryptomako`, clean unmount). Creates a
+minimal vault via `cryptomako fixture` when `fixtures/` is absent (CI):
 
 ```bash
 ./scripts/fuse-smoke.sh
+# Writable smoke (create/write/rename/unlink/mkdir through the mount):
+CRYPTOMAKO_FUSE_RW=1 ./scripts/fuse-smoke.sh
 ```
 
 **Host macOS** has no `/dev/fuse`, so `./scripts/fuse-smoke.sh` exits 2 on the Mac host itself.
 
 **Docker Desktop (macOS):** with `--device /dev/fuse --cap-add SYS_ADMIN` the FUSE smoke **can** succeed (verified: cleartext `hello cryptomako` + clean `fusermount3 -u`). If your Docker engine cannot expose `/dev/fuse`, use Linux CI/hosts with the same flags or `./scripts/fuse-smoke.sh`. Unit tests under `internal/fusefs` construct the FUSE root without a live mount.
+
+
+## Install (deb sketch)
+
+No new VaultSettings keys; secrets stay env-only; S3 is path-style (locked with Platforms).
+
+```bash
+cd linux
+go build -o cryptomako .
+sudo install -m 0755 cryptomako /usr/local/bin/cryptomako
+sudo apt-get install -y fuse3   # or fuse3 from your distro
+```
+
+Optional thin deb layout (manual / `nfpm` later): binary → `/usr/bin/cryptomako`,
+depends on `fuse3`, no config package (XDG `~/.config/cryptomako/config.json` is
+user-owned; never ship secrets). See `packaging/README.md`.
 
 ## License
 
