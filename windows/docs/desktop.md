@@ -1,40 +1,68 @@
-# Desktop host
+﻿# Desktop host
 
-## Avalonia (`CryptoMako.Desktop`)
+## WinUI 3 (`CryptoMako.Desktop`)
 
-Cross-platform host sharing `CryptoMako.App` ViewModels (Vault / Backup / Settings).
+Windows-native Fluent host sharing `CryptoMako.App` ViewModels (Vault / Backup / Settings).
+Unpackaged (`WindowsPackageType=None`) with self-contained Windows App SDK.
 
-```bash
+### Requirements
+
+- .NET 8 SDK
+- Windows 10 1809+ (Cloud Files / CfAPI soft viewer needs 1803+)
+- NuGet restore pulls `Microsoft.WindowsAppSDK` + BuildTools (no Visual Studio required for `dotnet build`)
+
+### Run
+
+```powershell
 cd windows
-dotnet build src/CryptoMako.Desktop
-dotnet run --project src/CryptoMako.Desktop
+dotnet build src/CryptoMako.Desktop -c Release -p:Platform=x64
+dotnet run --project src/CryptoMako.Desktop -c Release -p:Platform=x64
 ```
 
-Works on **macOS** (UI + tray smoke) and **Windows** (intended daily driver until WinUI lands).
+Publish:
 
-### System tray / status item
+```powershell
+pwsh ./scripts/publish-win-x64.ps1
+```
 
-Avalonia `TrayIcon` (Mac menu bar / Windows notification area):
+### Status strip
+
+Top of the main window:
+
+| Element | Source |
+|---------|--------|
+| Vault state | `StatusTrayLabel` (locked / unlocking busy… / unlocked / error text) |
+| Probe lamps | dns → tcp → https → list (`LastProbe` / `ProbeTrayLabel`) |
+| Explorer badge | `IsExplorerViewerConnected` (soft CfAPI viewer) |
+
+Soft CfAPI connect failure after Unlock does **not** clear vault-unlocked (macOS soft Finder semantics).
+
+### System tray
+
+`H.NotifyIcon.WinUI` notification-area icon (brand `docs/assets/brand/tray-windows.png` → `Assets/tray.ico`):
 
 | Action | Behavior |
 |--------|----------|
 | Click tray / **Open CryptoMako** | Show + activate main window |
 | **Unlock** / **Lock** | Same as Vault tab |
 | **Probe S3** | dns / tcp / https / list lamps |
-| Status + Probe lines | Read-only labels (● ok / ✖ fail / – skip) |
-| **Quit** | Explicit shutdown |
+| Status + Probe lines | Read-only labels |
+| **Quit** | Explicit shutdown (only quit path) |
 | Close window (✕) | **Hides** to tray (does not quit) |
+| Minimize | **Hides** to tray |
 
-`ShutdownMode=OnExplicitShutdown` so the process stays alive while hidden.
+### Native folder picker
 
-## Needs a Windows box (CfAPI / Explorer)
+Backup tab **Browse…** uses WinRT `FolderPicker` + `InitializeWithWindow` (StorageFolder path).
 
-Live **Cloud Files API** registration and Explorer placeholder mount are **Windows-only**. The `CryptoMako.CfApi` project on Mac is **stubs + docs only** — it does not claim a working Explorer mount. See `docs/cfapi.md`.
+### Soft CfAPI Explorer viewer
 
-## Windows-native notes
+After successful **Unlock**, Desktop binds live `CloudFilesProvider` to `MainViewModel.ExplorerViewer` (auto + **Connect Explorer**). **Lock** cancels Backup Sync, then `DisconnectExplorerViewer()` (disconnect + clear binding). **CredMan is not wiped.** Sync-root unregister happens on process exit / explicit tear-down, not Lock.
 
-- Secrets: `cryptomako cred` → Credential Manager on Windows (`get` requires `--reveal`); env / `~/.config/cryptomako/secrets.json` on Mac.
-- Settings paths: `%AppData%/CryptoMako/settings.json` + `app-preferences.json` (Windows); `~/.config/cryptomako/` on Mac.
+### Brand icons
+
+- Window / app: `Assets/AppIcon.ico` from `docs/assets/brand/icon-{16,32,48,256}.png`
+- Tray: `Assets/tray.ico` from `docs/assets/brand/tray-windows.png`
 
 ### Secret lifetime (in-process)
 
@@ -49,7 +77,11 @@ When **auto-reconnect** is checked (VaultSettings `autoReconnect`, no new keys):
 - On launch / toggle: attempt unlock if password + (local path | S3 secrets) are available.
 - Background probe ~every 20s; after an outage→reachable transition, unlock again if the user still wants an unlocked session (Unlock sets that; Lock clears it).
 
-## Soft CfAPI Explorer viewer wiring
+## Needs a Windows box (CfAPI / Explorer)
 
-On Windows, after a successful **Unlock**, Desktop binds the live `CloudFilesProvider` to `MainViewModel.ExplorerViewer` (auto + **Connect Explorer** button). **Lock** cancels Backup Sync, then `DisconnectExplorerViewer()` (disconnect + clear binding). CredMan is not wiped. Sync-root unregister happens on process exit / explicit tear-down, not Lock.
+Live **Cloud Files API** registration and Explorer placeholder mount are **Windows-only**. See `docs/cfapi.md`.
 
+## Windows-native notes
+
+- Secrets: `cryptomako cred` → Credential Manager on Windows (`get` requires `--reveal`); env / `~/.config/cryptomako/secrets.json` on Mac hosts for CLI-only work.
+- Settings paths: `%AppData%/CryptoMako/settings.json` + `app-preferences.json` (Windows).

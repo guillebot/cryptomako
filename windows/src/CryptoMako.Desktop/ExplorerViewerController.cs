@@ -1,16 +1,13 @@
-using System;
-using System.IO;
-using System.Threading;
-using System.Threading.Tasks;
 using CryptoMako.App;
 using CryptoMako.CfApi;
 
 namespace CryptoMako.Desktop;
 
 /// <summary>
-/// Owns the soft CfAPI <see cref="CloudFilesProvider"/> lifetime for the Avalonia host.
+/// Owns the soft CfAPI <see cref="CloudFilesProvider"/> lifetime for the WinUI host.
 /// On successful Connect, binds the provider to <see cref="MainViewModel.ExplorerViewer"/>
 /// so Lock High can Disconnect it. Unregister is explicit / process exit — not Lock.
+/// Soft Connect failures must not clear vault-unlocked state (macOS soft Finder semantics).
 /// </summary>
 internal sealed class ExplorerViewerController : IDisposable
 {

@@ -1,8 +1,8 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <RootNamespace>CryptoMako.App</RootNamespace>
     <AssemblyName>CryptoMako.App</AssemblyName>
-    <Description>Shared ViewModels for CryptoMako desktop hosts (Avalonia / future WinUI).</Description>
+    <Description>Shared ViewModels for CryptoMako WinUI 3 Desktop host.</Description>
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\CryptoMako.Vault\CryptoMako.Vault.csproj" />
