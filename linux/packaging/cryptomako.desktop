@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=CryptoMako
+GenericName=Encrypted vault
+Comment=Cryptomator format-8 vault CLI (S3-compatible, FUSE, Backup Sync)
+Exec=cryptomako
+Icon=cryptomako
+Terminal=true
+Categories=Utility;Security;Filesystem;
+Keywords=cryptomator;vault;s3;fuse;encryption;
+StartupNotify=false
