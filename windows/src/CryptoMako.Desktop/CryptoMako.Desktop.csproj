@@ -18,5 +18,6 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CryptoMako.App\CryptoMako.App.csproj" />
+    <ProjectReference Include="..\CryptoMako.CfApi\CryptoMako.CfApi.csproj" />
   </ItemGroup>
 </Project>

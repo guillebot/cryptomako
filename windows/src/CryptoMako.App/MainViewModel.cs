@@ -86,10 +86,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public bool IsUnlocked => _session is not null;
 
+    /// <summary>Live vault session while unlocked; null when locked.</summary>
+    public VaultSession? Session => _session;
+
     public string StatusTrayLabel =>
         Busy ? "busy…" : (IsUnlocked ? "unlocked" : Status);
 
-    /// <summary>Optional soft CfAPI viewer. Set by Desktop/CLI when a sync root is connected.</summary>
+    /// <summary>Optional soft CfAPI viewer. Bound by Desktop/CLI after a successful sync-root Connect.</summary>
     public IExplorerViewer? ExplorerViewer
     {
         get => _explorerViewer;
@@ -99,8 +102,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             {
                 _explorerViewer = value;
                 OnPropertyChanged();
+                OnPropertyChanged(nameof(IsExplorerViewerConnected));
             }
         }
+    }
+
+    /// <summary>True when a bound soft CfAPI viewer reports connected.</summary>
+    public bool IsExplorerViewerConnected => _explorerViewer?.IsConnected == true;
+
+    /// <summary>Bind (or clear) the live soft CfAPI provider so Lock can Disconnect it.</summary>
+    public void BindExplorerViewer(IExplorerViewer? viewer)
+    {
+        ExplorerViewer = viewer;
+        if (viewer is null)
+            AppendLog("CfAPI viewer cleared");
+        else if (viewer.IsConnected)
+            AppendLog("CfAPI viewer bound (connected)");
+        else
+            AppendLog("CfAPI viewer bound");
     }
 
     /// <summary>True while a Backup Sync run is cancellable via Lock.</summary>
@@ -228,7 +247,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         AppendLog("Backup Sync cancel requested");
     }
 
-    /// <summary>Disconnect soft CfAPI viewer if connected. Does not unregister the sync root.</summary>
+    /// <summary>Disconnect soft CfAPI viewer if connected, then clear the binding. Does not unregister the sync root.</summary>
     public void DisconnectExplorerViewer()
     {
         var viewer = _explorerViewer;
@@ -244,6 +263,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         catch (Exception ex)
         {
             AppendLog("CfAPI disconnect: " + ex.Message.Replace('\n', ' '));
+        }
+        finally
+        {
+            // Clear so the next Connect re-binds a live provider (Lock High complete).
+            if (ReferenceEquals(_explorerViewer, viewer))
+                ExplorerViewer = null;
         }
     }
 

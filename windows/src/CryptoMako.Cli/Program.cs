@@ -1,4 +1,5 @@
 ﻿using CryptoMako.CfApi;
+using CryptoMako.App;
 using CryptoMako.S3;
 using CryptoMako.Vault;
 
@@ -320,10 +321,21 @@ static int CmdCfApi(ReadOnlySpan<string> args)
         case "connect":
             try { provider.RegisterSyncRoot(account); } catch { /* already registered */ }
             provider.Connect();
-            Console.Error.WriteLine($"connected {root} - holding 60s for Explorer callbacks");
-            try { Thread.Sleep(TimeSpan.FromSeconds(60)); }
-            catch (ThreadInterruptedException) { }
-            provider.Disconnect();
+            // Soft parity with Desktop: bind live IExplorerViewer so Lock-shaped Disconnect works.
+            var host = new MainViewModel(secrets: new EnvSecretStore());
+            try
+            {
+                host.BindExplorerViewer(provider);
+                Console.Error.WriteLine($"connected {root} explorerBound={host.IsExplorerViewerConnected} - holding 60s for Explorer callbacks");
+                try { Thread.Sleep(TimeSpan.FromSeconds(60)); }
+                catch (ThreadInterruptedException) { }
+                host.DisconnectExplorerViewer();
+            }
+            finally
+            {
+                host.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            }
+            if (provider.IsConnected) provider.Disconnect();
             return 0;
         case "refresh-dir":
         {
@@ -372,7 +384,7 @@ static int CmdCred(ReadOnlySpan<string> args)
     if (args.Length == 0 || args[0] is "-h" or "--help")
     {
         Console.WriteLine("""
-            cryptomako cred â€” manage secrets (env / Windows Credential Manager)
+            cryptomako cred — manage secrets (env / Windows Credential Manager)
 
             Usage:
               cryptomako cred list
@@ -565,7 +577,7 @@ static int Fail(int code, string message)
 static void PrintHelp()
 {
     Console.WriteLine("""
-        cryptomako â€” CryptoMako Windows CLI (Cryptomator format 8)
+        cryptomako — CryptoMako Windows CLI (Cryptomator format 8)
 
         Usage:
           cryptomako unlock (--local DIR | S3 flags)

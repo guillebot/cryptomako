@@ -14,6 +14,7 @@ namespace CryptoMako.Desktop;
 public partial class App : Application
 {
     private MainViewModel? _vm;
+    private ExplorerViewerController? _explorer;
     private MainWindow? _mainWindow;
     private TrayIcon? _tray;
     private NativeMenuItem? _trayStatusItem;
@@ -26,6 +27,7 @@ public partial class App : Application
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
             _vm = new MainViewModel();
+            _explorer = new ExplorerViewerController(_vm);
             _mainWindow = new MainWindow { DataContext = _vm };
             desktop.MainWindow = _mainWindow;
             desktop.ShutdownMode = ShutdownMode.OnExplicitShutdown;
@@ -33,6 +35,7 @@ public partial class App : Application
             {
                 if (_vm is not null)
                     await _vm.DisposeAsync();
+                _explorer?.Dispose();
                 _tray?.Dispose();
             };
 
@@ -93,9 +96,19 @@ public partial class App : Application
             or nameof(MainViewModel.IsUnlocked)
             or nameof(MainViewModel.Busy)
             or nameof(MainViewModel.StatusTrayLabel)
-            or nameof(MainViewModel.ProbeTrayLabel))
+            or nameof(MainViewModel.ProbeTrayLabel)
+            or nameof(MainViewModel.IsExplorerViewerConnected)
+            or nameof(MainViewModel.ExplorerViewer))
         {
             Dispatcher.UIThread.Post(RefreshTrayLabels);
+        }
+
+        // Soft parity with macOS Finder mount: bind CfAPI viewer after unlock; Lock disconnects via VM.
+        if (e.PropertyName == nameof(MainViewModel.IsUnlocked) && _vm is not null)
+        {
+            if (_vm.IsUnlocked)
+                Dispatcher.UIThread.Post(() => _ = ConnectExplorerAfterUnlockAsync());
+            // LockAsync already DisconnectExplorerViewer(); controller keeps registered root.
         }
     }
 
@@ -136,6 +149,41 @@ public partial class App : Application
     {
         try { if (_vm is not null) await _vm.ProbeAsync(); }
         catch { /* VM logs */ }
+        RefreshTrayLabels();
+    }
+
+
+    internal async System.Threading.Tasks.Task ConnectExplorerAfterUnlockAsync()
+    {
+        if (_vm is null || _explorer is null || !_vm.IsUnlocked) return;
+        if (_vm.IsExplorerViewerConnected) return;
+        try
+        {
+            await _explorer.ConnectAsync();
+        }
+        catch (PlatformNotSupportedException)
+        {
+            // Soft viewer is Windows-only; macOS Desktop builds skip quietly.
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+        }
+        RefreshTrayLabels();
+    }
+
+    internal async System.Threading.Tasks.Task ConnectExplorerManualAsync()
+    {
+        if (_vm is null || _explorer is null) return;
+        if (!_vm.IsUnlocked)
+            throw new InvalidOperationException("unlock vault first");
+        await _explorer.ConnectAsync();
+        RefreshTrayLabels();
+    }
+
+    internal void DisconnectExplorerManual()
+    {
+        _explorer?.Disconnect();
         RefreshTrayLabels();
     }
 

@@ -1,3 +1,4 @@
+using Avalonia;
 using System;
 using Avalonia.Controls;
 using Avalonia.Interactivity;
@@ -73,6 +74,27 @@ public partial class MainWindow : Window
     private async void OnSync(object? sender, RoutedEventArgs e)
     {
         try { await Vm.SyncAsync(); }
+        catch (Exception ex) { VmLog(ex); }
+    }
+
+
+    private async void OnConnectExplorer(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (Application.Current is App app)
+                await app.ConnectExplorerManualAsync();
+        }
+        catch (Exception ex) { VmLog(ex); }
+    }
+
+    private void OnDisconnectExplorer(object? sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (Application.Current is App app)
+                app.DisconnectExplorerManual();
+        }
         catch (Exception ex) { VmLog(ex); }
     }
 

@@ -45,3 +45,23 @@ Smoked on monster (Win11): CredMan `cred set/get/delete`, `cfapi platform` suppo
 5. WinRT `GetCurrentSyncRoots` empty on some hosts while Cf+registry still provides Explorer awareness.
 
 Do **not** treat Mac builds of `CryptoMako.CfApi` as a working Explorer mount.
+
+## Soft-parity closeout (Windows)
+
+| Gap | Resolution |
+|-----|------------|
+| Lock High order (cancel Backup Sync → disconnect CfAPI viewer; no CredMan wipe) | Shipped |
+| Soft CfAPI `ExplorerViewer` binding on connect | Shipped — Desktop auto-binds on unlock; CLI `cfapi connect` binds a host VM; Lock clears binding |
+| Unlock / ls / cat / Backup Sync / CredMan / HTTPS-only / settings keys / tray probes | Shipped (soft bar) |
+| Remote-change conflict watcher | **Deferred** — see below |
+| CredMan wipe on Lock / Forget credentials | **Deferred** (Platforms) |
+| App Store / installer polish | **Deferred** |
+
+### Conflict watcher — Platforms-ready deferral
+
+No merge engine and **no new shared settings keys** in this soft bar.
+
+**Intent (when Platforms approves):** a read-only probe (e.g. vault `vault.cryptomator` / root dir ETag or mtime) while the soft viewer is connected; on change, surface a non-blocking “remote changed — remount/refresh” status (no auto-merge, no conflict copies). Poll interval / enablement would need Platforms-approved keys if not hard-coded.
+
+Until then Windows soft release remains single-writer / last-writer-wins at the object store, matching the CfAPI CLOSE write-back policy in `cfapi.md`.
+

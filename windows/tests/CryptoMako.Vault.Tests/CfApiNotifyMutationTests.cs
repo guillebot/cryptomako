@@ -59,10 +59,14 @@ public sealed class CfApiNotifyMutationTests
             Assert.Null(CloudFilesProvider.TryMapFsPathToVaultCleartext(
                 root, Path.Combine(Path.GetTempPath(), "outside.txt")));
 
-            var volRel = root.Substring(2); // drop "C:" → "\Users\..."
-            var viaVol = CloudFilesProvider.TryMapFsPathToVaultCleartext(
-                root, volRel + "\\hello.txt", volumeDosName: root[..2]);
-            Assert.Equal("/hello.txt", viaVol);
+            // Volume DOS name mapping is Windows-only (drive letter paths).
+            if (OperatingSystem.IsWindows())
+            {
+                var volRel = root.Substring(2); // drop "C:" → "\Users\..."
+                var viaVol = CloudFilesProvider.TryMapFsPathToVaultCleartext(
+                    root, volRel + "\\hello.txt", volumeDosName: root[..2]);
+                Assert.Equal("/hello.txt", viaVol);
+            }
         }
         finally
         {

@@ -58,6 +58,12 @@
               <Button Content="Lock" Click="OnLock" />
               <Button Content="Probe S3" Click="OnProbe" />
             </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <Button Content="Connect Explorer" Click="OnConnectExplorer" />
+              <Button Content="Disconnect Explorer" Click="OnDisconnectExplorer" />
+              <TextBlock VerticalAlignment="Center" Opacity="0.75"
+                         Text="Soft CfAPI viewer (Windows). Lock disconnects automatically." />
+            </StackPanel>
 
             <TextBlock Text="Log" FontWeight="SemiBold" Margin="0,12,0,0" />
             <TextBox Text="{Binding Log}" AcceptsReturn="True" Height="200" IsReadOnly="True"

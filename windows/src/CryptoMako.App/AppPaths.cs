@@ -9,4 +9,8 @@ public static class AppPaths
     public static string PreferencesPath => Path.Combine(ConfigDir, "app-preferences.json");
     public static string SyncStatePath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CryptoMako", "backup-sync-state.json");
+
+    /// <summary>Default soft CfAPI sync root under LocalAppData (Explorer viewer).</summary>
+    public static string SyncRootPath =>
+        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CryptoMako", "SyncRoot");
 }

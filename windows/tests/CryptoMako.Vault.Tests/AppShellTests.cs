@@ -197,10 +197,35 @@ public class AppShellTests
     {
         var viewer = new FakeExplorerViewer { IsConnected = true };
         await using var vm = new MainViewModel(secrets: new EnvSecretStore());
-        vm.ExplorerViewer = viewer;
+        vm.BindExplorerViewer(viewer);
+        Assert.True(vm.IsExplorerViewerConnected);
         await vm.LockAsync();
         Assert.Equal(1, viewer.DisconnectCalls);
         Assert.False(viewer.IsConnected);
+        Assert.Null(vm.ExplorerViewer);
+        Assert.False(vm.IsExplorerViewerConnected);
+    }
+
+    [Fact]
+    public async Task MainViewModel_BindExplorerViewer_assign_and_clear()
+    {
+        var viewer = new FakeExplorerViewer { IsConnected = true };
+        await using var vm = new MainViewModel(secrets: new EnvSecretStore());
+        vm.BindExplorerViewer(viewer);
+        Assert.Same(viewer, vm.ExplorerViewer);
+        Assert.True(vm.IsExplorerViewerConnected);
+        vm.DisconnectExplorerViewer();
+        Assert.Equal(1, viewer.DisconnectCalls);
+        Assert.Null(vm.ExplorerViewer);
+        Assert.False(vm.IsExplorerViewerConnected);
+    }
+
+    [Fact]
+    public async Task MainViewModel_DisconnectExplorerViewer_noop_when_unset()
+    {
+        await using var vm = new MainViewModel(secrets: new EnvSecretStore());
+        vm.DisconnectExplorerViewer(); // must not throw
+        Assert.Null(vm.ExplorerViewer);
     }
 
     [Fact]

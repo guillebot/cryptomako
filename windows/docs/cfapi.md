@@ -85,6 +85,9 @@ After a successful rename, FileIdentity is updated to the new vault path before 
 
 ## Conflicts / merge (residual — not implemented)
 
+**Soft-parity deferral (Platforms-ready):** ship a read-only remote-change probe (ETag/mtime of vault metadata or listed root) that only notifies “remote changed — remount/refresh”. No merge policy and **no new shared settings keys** without Platforms approval. Hard-coded interval is acceptable for a first probe; anything user-tunable needs a Platforms key review.
+
+
 CryptoMako does **not** ship a merge engine. Concurrent remote vs local edits are fail-closed / last-writer-wins at the object-store layer only:
 
 - Local CLOSE write-back overwrites the ciphertext object on successful put (no 3-way merge, no conflict copies).

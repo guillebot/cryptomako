@@ -49,3 +49,7 @@ When **auto-reconnect** is checked (VaultSettings `autoReconnect`, no new keys):
 - On launch / toggle: attempt unlock if password + (local path | S3 secrets) are available.
 - Background probe ~every 20s; after an outage→reachable transition, unlock again if the user still wants an unlocked session (Unlock sets that; Lock clears it).
 
+## Soft CfAPI Explorer viewer wiring
+
+On Windows, after a successful **Unlock**, Desktop binds the live `CloudFilesProvider` to `MainViewModel.ExplorerViewer` (auto + **Connect Explorer** button). **Lock** cancels Backup Sync, then `DisconnectExplorerViewer()` (disconnect + clear binding). CredMan is not wiped. Sync-root unregister happens on process exit / explicit tear-down, not Lock.
+
