@@ -1,6 +1,18 @@
 import Foundation
 
 enum RcloneDriver {
+    private static let processLock = NSLock()
+    private static weak var runningProcess: Process?
+
+    /// Terminate an in-flight `copy` (Lock / disconnect). Idempotent when idle.
+    static func cancel() {
+        processLock.lock()
+        let proc = runningProcess
+        processLock.unlock()
+        guard let proc, proc.isRunning else { return }
+        proc.terminate()
+    }
+
     static var executableURL: URL? {
         let candidates = [
             "/opt/homebrew/bin/rclone",
@@ -87,6 +99,9 @@ enum RcloneDriver {
         proc.standardOutput = out
         proc.standardError = err
         try proc.run()
+        processLock.lock()
+        runningProcess = proc
+        processLock.unlock()
 
         let queue = DispatchQueue(label: "rclone.output")
         queue.async {
@@ -100,6 +115,11 @@ enum RcloneDriver {
             }
         }
         proc.waitUntilExit()
+        processLock.lock()
+        if runningProcess === proc {
+            runningProcess = nil
+        }
+        processLock.unlock()
         return proc.terminationStatus
     }
 }
