@@ -12,7 +12,7 @@ From `linux/`:
 # → packaging/dist/cryptomako_${VERSION}_${ARCH}.deb
 
 # Optional overrides:
-VERSION=0.1.0 ARCH=amd64 ./packaging/build-deb.sh
+VERSION=1.0.0 ARCH=amd64 ./packaging/build-deb.sh
 ```
 
 Requires **dpkg-deb** (Debian/Ubuntu) or **nfpm**. The script cross-compiles
@@ -60,7 +60,7 @@ without Platforms. Path-style S3 is locked on (`pathStyle` default `true`).
 
 ```bash
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o cryptomako .
-ARCH=amd64 VERSION=0.1.0 nfpm package -f packaging/nfpm.yaml -p deb -t packaging/dist
+ARCH=amd64 VERSION=1.0.0 nfpm package -f packaging/nfpm.yaml -p deb -t packaging/dist
 ```
 
 CI uploads the `.deb` as a workflow artifact (`cryptomako-deb`).
