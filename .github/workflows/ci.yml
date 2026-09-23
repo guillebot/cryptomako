@@ -121,7 +121,7 @@ jobs:
         id: grype
         uses: anchore/scan-action@v6
         with:
-          path: Package.resolved
+          path: .
           fail-build: true
           severity-cutoff: high
           output-format: sarif
