@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>CryptoMako.Vault</RootNamespace>
+    <AssemblyName>CryptoMako.Vault</AssemblyName>
+  </PropertyGroup>
+</Project>
