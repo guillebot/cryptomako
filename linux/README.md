@@ -21,7 +21,7 @@ Lives under `linux/` in the main repo (not a sibling). Shares `fixtures/` with m
 
 ## Requirements
 
-- Go **1.22+**
+- Go **1.26+**
 - Vault password in `CRYPTOMAKO_PASSWORD` (never argv; never JSON)
 - S3 secret in `CRYPTOMAKO_SECRET_KEY` (never JSON)
 

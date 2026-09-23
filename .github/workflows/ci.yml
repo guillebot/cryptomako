@@ -33,7 +33,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22.x"
+          go-version: "1.26.x"
           cache-dependency-path: linux/go.sum
 
       - name: Test
@@ -52,7 +52,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22.x"
+          go-version: "1.26.x"
           cache-dependency-path: linux/go.sum
 
       - name: Install fuse3
@@ -79,7 +79,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.22.x"
+          go-version: "1.26.x"
           cache-dependency-path: linux/go.sum
 
       - name: Build .deb
