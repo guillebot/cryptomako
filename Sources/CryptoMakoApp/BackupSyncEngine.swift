@@ -436,9 +436,12 @@ final class BackupSyncEngine: ObservableObject {
         }
 
         // Three priority streams: large / medium / small. Walk yields without
-        // awaiting MinIO so the buffers fill from local disk; workers resolve
-        // vault dirs and PUT. Previous design did resolveDirId on the walk
-        // thread → stream starved → inFlight collapsed to 1–2.
+        // awaiting MinIO so the buffers fill from local disk; put drainers
+        // resolve vault dirs and PUT. Each stream has exactly ONE consumer that
+        // spawns a bounded TaskGroup (limit = Settings workers for that tier).
+        // Previous design ran N `for await` workers on the same AsyncStream —
+        // AsyncStream is single-consumer, so put concurrency collapsed (~1)
+        // despite small/medium/large worker knobs.
         let (largeStream, largeCont) = AsyncStream.makeStream(
             of: PendingUpload.self,
             bufferingPolicy: .unbounded
@@ -467,6 +470,8 @@ final class BackupSyncEngine: ObservableObject {
         final class StateBox: @unchecked Sendable {
             let lock = NSLock()
             var files: [String: BackupFileFingerprint]
+            /// Puts since last persist (skip path has its own counter).
+            var putsSinceSave = 0
             init(_ state: BackupSyncState) { self.files = state.files }
             func snapshot() -> BackupSyncState {
                 lock.lock(); defer { lock.unlock() }
@@ -480,6 +485,17 @@ final class BackupSyncEngine: ObservableObject {
                 return files[key]
             }
             func save() { snapshot().save() }
+            /// Persist after successful puts so a crash mid-drain does not
+            /// re-upload everything already committed. Returns true when a
+            /// save should run (caller saves outside the lock).
+            func notePutCommittedForPersist(every: Int = 64) -> Bool {
+                lock.lock()
+                putsSinceSave += 1
+                let should = putsSinceSave >= every
+                if should { putsSinceSave = 0 }
+                lock.unlock()
+                return should
+            }
         }
         let box = StateBox(syncState)
         let bootstrapRemoteSkip = syncState.files.isEmpty
@@ -513,48 +529,74 @@ final class BackupSyncEngine: ObservableObject {
             }
         }
 
-        func runWorker(stream: AsyncStream<PendingUpload>) async throws {
-            for await job in stream {
-                try Task.checkCancellation()
-                // Pace Sync puts only (Finder File Provider uses a different path).
-                if let limiter = bandwidthLimiter {
-                    await limiter.acquire(job.size)
-                }
-                let parentId = try await dirCache.resolve(job.parentRel)
-                _ = try await session.createOrOverwriteFile(
-                    parentDirId: parentId,
-                    cleartextName: job.fileURL.lastPathComponent,
-                    contentsURL: job.fileURL
-                )
-                let key = BackupSyncState.key(
-                    vaultFolder: vaultFolder,
-                    relativePath: job.relativePath
-                )
-                let fp = BackupFileFingerprint(
-                    size: job.size,
-                    contentModification: job.contentModification
-                )
-                box.set(key, fp)
-                counter.add(fileBytes: job.size)
-                if let batch = uiBatcher.note(path: job.relativePath, bytes: job.size) {
-                    await applyUIBatch(batch)
-                }
+        func putOne(_ job: PendingUpload) async throws {
+            try Task.checkCancellation()
+            // Pace Sync puts only (Finder File Provider uses a different path).
+            if let limiter = bandwidthLimiter {
+                await limiter.acquire(job.size)
             }
+            let parentId = try await dirCache.resolve(job.parentRel)
+            _ = try await session.createOrOverwriteFile(
+                parentDirId: parentId,
+                cleartextName: job.fileURL.lastPathComponent,
+                contentsURL: job.fileURL
+            )
+            let key = BackupSyncState.key(
+                vaultFolder: vaultFolder,
+                relativePath: job.relativePath
+            )
+            let fp = BackupFileFingerprint(
+                size: job.size,
+                contentModification: job.contentModification
+            )
+            box.set(key, fp)
+            counter.add(fileBytes: job.size)
+            if box.notePutCommittedForPersist() {
+                box.save()
+            }
+            if let batch = uiBatcher.note(path: job.relativePath, bytes: job.size) {
+                await applyUIBatch(batch)
+            }
+        }
+
+        /// Single AsyncStream consumer + bounded TaskGroup. Spawning N
+        /// `for await` on one stream does not fan out (single-consumer API).
+        func drainTier(
+            stream: AsyncStream<PendingUpload>,
+            limit: Int,
+            label: String
+        ) async throws {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                var inFlight = 0
+                for await job in stream {
+                    try Task.checkCancellation()
+                    if inFlight >= limit {
+                        try await group.next()
+                        inFlight -= 1
+                    }
+                    inFlight += 1
+                    group.addTask {
+                        try await putOne(job)
+                    }
+                }
+                try await group.waitForAll()
+            }
+            Self.syncLog.info("drainTier done tier=\(label) limit=\(limit)")
         }
 
         async let uploadResult: Count = {
             try await withThrowingTaskGroup(of: Void.self) { group in
-                for _ in 0..<smallWorkers {
-                    group.addTask { try await runWorker(stream: smallStream) }
+                group.addTask {
+                    try await drainTier(stream: smallStream, limit: smallWorkers, label: "small")
                 }
-                for _ in 0..<mediumWorkers {
-                    group.addTask { try await runWorker(stream: mediumStream) }
+                group.addTask {
+                    try await drainTier(stream: mediumStream, limit: mediumWorkers, label: "medium")
                 }
-                for _ in 0..<largeWorkers {
-                    group.addTask { try await runWorker(stream: largeStream) }
+                group.addTask {
+                    try await drainTier(stream: largeStream, limit: largeWorkers, label: "large")
                 }
                 Self.syncLog.info(
-                    "uploadPending worker pool start small=\(smallWorkers) medium=\(mediumWorkers) large=\(largeWorkers) total=\(workerCount)"
+                    "uploadPending tier drainers start small=\(smallWorkers) medium=\(mediumWorkers) large=\(largeWorkers) total=\(workerCount)"
                 )
                 try await group.waitForAll()
             }
