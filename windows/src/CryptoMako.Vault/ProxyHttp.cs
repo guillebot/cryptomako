@@ -10,13 +10,21 @@ public static class ProxyHttp
         var handler = new SocketsHttpHandler
         {
             AutomaticDecompression = DecompressionMethods.All,
+            ConnectTimeout = TimeSpan.FromSeconds(30),
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
         };
         ApplyProxy(handler, prefs, proxyPassword);
         return handler;
     }
 
-    public static HttpClient CreateClient(AppPreferences prefs, string? proxyPassword = null) =>
-        new(CreateHandler(prefs, proxyPassword), disposeHandler: true);
+    public static HttpClient CreateClient(AppPreferences prefs, string? proxyPassword = null)
+    {
+        return new HttpClient(CreateHandler(prefs, proxyPassword), disposeHandler: true)
+        {
+            // Fail hung Sync/FETCH rather than waiting forever.
+            Timeout = TimeSpan.FromSeconds(100),
+        };
+    }
 
     public static void ApplyProxy(SocketsHttpHandler handler, AppPreferences prefs, string? proxyPassword = null)
     {
@@ -48,9 +56,13 @@ public static class ProxyHttp
                 break;
             }
             default: // system
+            {
+                // Keep system proxy, but never tunnel loopback (local MinIO) through it —
+                // system proxies often black-hole 127.0.0.1 and stall Sync on the last file.
                 handler.UseProxy = true;
-                handler.Proxy = null; // HttpClient uses system proxy
+                handler.Proxy = new BypassLoopbackProxy(HttpClient.DefaultProxy);
                 break;
+            }
         }
     }
 
@@ -67,4 +79,31 @@ public static class ProxyHttp
             _ => "system",
         };
     }
+
+    /// <summary>Wraps the system proxy but always bypasses loopback hosts.</summary>
+    private sealed class BypassLoopbackProxy : IWebProxy
+    {
+        private readonly IWebProxy _inner;
+
+        public BypassLoopbackProxy(IWebProxy? inner) =>
+            _inner = inner ?? new WebProxy { BypassProxyOnLocal = true };
+
+        public ICredentials? Credentials
+        {
+            get => _inner.Credentials;
+            set => _inner.Credentials = value;
+        }
+
+        public Uri? GetProxy(Uri destination) =>
+            IsLoopback(destination) ? destination : _inner.GetProxy(destination);
+
+        public bool IsBypassed(Uri host) =>
+            IsLoopback(host) || _inner.IsBypassed(host);
+
+        private static bool IsLoopback(Uri host) =>
+            host.IsLoopback
+            || string.Equals(host.Host, "localhost", StringComparison.OrdinalIgnoreCase)
+            || host.Host is "127.0.0.1" or "::1" or "[::1]";
+    }
+
 }

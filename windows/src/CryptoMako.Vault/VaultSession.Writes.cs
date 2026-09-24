@@ -110,8 +110,29 @@ public sealed partial class VaultSession
         string cleartextFilePath,
         CancellationToken ct = default)
     {
-        var bytes = await File.ReadAllBytesAsync(cleartextFilePath, ct);
-        return await PutFileAsync(parentDirId, cleartextName, bytes, ct);
+        // FileShare.ReadWrite: allow Backup Sync to read SQLite/config files while apps
+        // (e.g. ShareX History.db) hold them open — exclusive ReadAllBytes hangs/fails Sync at N-1/N.
+        await using (var fs = new FileStream(
+            cleartextFilePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 64 * 1024,
+            options: FileOptions.Asynchronous | FileOptions.SequentialScan))
+        {
+            var bytes = new byte[fs.Length];
+            var read = 0;
+            while (read < bytes.Length)
+            {
+                ct.ThrowIfCancellationRequested();
+                var n = await fs.ReadAsync(bytes.AsMemory(read, bytes.Length - read), ct).ConfigureAwait(false);
+                if (n == 0) break;
+                read += n;
+            }
+            if (read != bytes.Length)
+                Array.Resize(ref bytes, read);
+            return await PutFileAsync(parentDirId, cleartextName, bytes, ct).ConfigureAwait(false);
+        }
     }
 
     /// <summary>

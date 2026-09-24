@@ -422,23 +422,15 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
                 continue;
             }
 
-            long? size = null;
-            try
-            {
-                var bytes = await Session.CatAsync("/" + full, ct).ConfigureAwait(false);
-                size = bytes.LongLength;
-            }
-            catch
-            {
-                size = 0;
-            }
-
+            // Do NOT CatAsync here — downloading every root file for size stalls Connect,
+            // contends with Backup Sync / FETCH_DATA, and can leave Explorer on an empty root.
+            // Placeholder size 0 is fine; FETCH_DATA supplies real bytes on hydrate.
             list.Add(new CloudFilesPlaceholder
             {
                 CleartextRelativePath = full,
                 CiphertextKey = "",
                 IsDirectory = false,
-                FileSize = size,
+                FileSize = 0,
             });
         }
 
@@ -558,7 +550,12 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             if (provider?.Session is null)
                 throw new InvalidOperationException("no vault session");
 
-            var clear = provider.Session.CatAsync(path).GetAwaiter().GetResult();
+            // Offload vault I/O so CfAPI filter threads are not pinned on S3 awaits
+            // (deadlocks / starvation with Backup Sync workers on the same HttpClient).
+            var session = provider.Session;
+            var clear = Task.Run(
+                    () => session.CatAsync(path).ConfigureAwait(false).GetAwaiter().GetResult())
+                .GetAwaiter().GetResult();
             try
             {
                 var offset = parameters.FetchData.RequiredFileOffset;
@@ -699,26 +696,44 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
     }
 
     /// <summary>
-    /// Lists one vault directory level into placeholder descriptors (no CatAsync ? FileSize left null/0).
-    /// Returns empty list on failure (caller fail-closes the transfer).
+    /// Lists one vault directory level into placeholder descriptors (no CatAsync).
+    /// Returns false on missing session/path or list failure (caller must fail-close TRANSFER).
+    /// Empty vault directories return true with an empty list.
     /// </summary>
+    public static bool TryListImmediatePlaceholders(
+        VaultSession? session,
+        string? directoryCleartextPath,
+        out IReadOnlyList<CloudFilesPlaceholder> placeholders,
+        string? pattern = null)
+    {
+        placeholders = Array.Empty<CloudFilesPlaceholder>();
+        if (session is null || string.IsNullOrWhiteSpace(directoryCleartextPath))
+            return false;
+        try
+        {
+            var parent = NormalizeVaultCleartextPath(directoryCleartextPath);
+            // Offload await continuations off the CfAPI callback thread when callers use GetResult.
+            var entries = Task.Run(
+                    () => session.ListAsync(parent, recursive: false).ConfigureAwait(false).GetAwaiter().GetResult())
+                .GetAwaiter().GetResult();
+            placeholders = BuildImmediateChildPlaceholders(parent, entries, pattern);
+            return true;
+        }
+        catch
+        {
+            placeholders = Array.Empty<CloudFilesPlaceholder>();
+            return false;
+        }
+    }
+
+    /// <summary>Compat overload — empty on failure (prefer the bool-returning form for FETCH).</summary>
     public static IReadOnlyList<CloudFilesPlaceholder> TryListImmediatePlaceholders(
         VaultSession? session,
         string? directoryCleartextPath,
         string? pattern = null)
     {
-        if (session is null || string.IsNullOrWhiteSpace(directoryCleartextPath))
-            return Array.Empty<CloudFilesPlaceholder>();
-        try
-        {
-            var parent = NormalizeVaultCleartextPath(directoryCleartextPath);
-            var entries = session.ListAsync(parent, recursive: false).GetAwaiter().GetResult();
-            return BuildImmediateChildPlaceholders(parent, entries, pattern);
-        }
-        catch
-        {
-            return Array.Empty<CloudFilesPlaceholder>();
-        }
+        TryListImmediatePlaceholders(session, directoryCleartextPath, out var placeholders, pattern);
+        return placeholders;
     }
 
     /// <summary>
@@ -730,18 +745,18 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
     {
         var provider = FromContext(info);
         var pattern = parameters.FetchPlaceholders.Pattern;
-        string? dirPath = null;
-        if (provider is not null)
-            dirPath = provider.ResolveVaultPathFromCallback(info) ?? "/";
+        // Sync-root FileIdentity is often the provider Context / SyncRootId ("CryptoMako!SID!account"),
+        // not a vault path. ResolveVaultPathFromCallback must reject that or we TRANSFER 0 children
+        // with DISABLE_ON_DEMAND and Explorer stays empty forever.
+        var dirPath = provider?.ResolveVaultPathFromCallback(info) ?? "/";
 
         IReadOnlyList<CloudFilesPlaceholder> children = Array.Empty<CloudFilesPlaceholder>();
         var ok = false;
         try
         {
-            if (provider?.Session is not null && dirPath is not null)
+            if (provider?.Session is not null)
             {
-                children = TryListImmediatePlaceholders(provider.Session, dirPath, pattern);
-                ok = true;
+                ok = TryListImmediatePlaceholders(provider.Session, dirPath, out children, pattern);
             }
         }
         catch
@@ -988,17 +1003,56 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
     private string? ResolveVaultPathFromCallback(in CF_CALLBACK_INFO info)
     {
         var identity = ReadFileIdentityPath(info);
-        if (!string.IsNullOrWhiteSpace(identity))
+        if (!string.IsNullOrWhiteSpace(identity) && LooksLikeVaultCleartextIdentity(identity))
         {
             var norm = identity.Replace('\\', '/');
             if (!norm.StartsWith('/'))
                 norm = "/" + norm.TrimStart('/');
-            return norm;
+            return NormalizeVaultCleartextPath(norm);
         }
 
-        // Fallback: map NormalizedPath under sync root (REQUIRE_FULL_FILE_PATH â†’ absolute).
+        // Fallback: map NormalizedPath under sync root (REQUIRE_FULL_FILE_PATH → absolute).
+        // Sync root itself maps to null here — callers use ?? "/" for FETCH_PLACEHOLDERS.
         var normalized = info.NormalizedPath;
         return TryMapFsPathToVaultCleartext(SyncRootPath, normalized, info.VolumeDosName);
+    }
+
+    /// <summary>
+    /// True when FileIdentity looks like a vault cleartext path ("/a/b" or "a/b"), not a
+    /// SyncRootId / WinRT Context blob ("CryptoMako!SID!account").
+    /// </summary>
+    public static bool LooksLikeVaultCleartextIdentity(string? identity)
+    {
+        if (string.IsNullOrWhiteSpace(identity))
+            return false;
+        var s = identity.Trim().Replace('\\', '/');
+        var nul = s.IndexOf('\0');
+        if (nul >= 0)
+            s = s[..nul];
+        if (s.Length == 0)
+            return false;
+        // Provider sync-root id / WinRT context.
+        if (s.StartsWith(SyncRootIdPrefix, StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (s.Contains('!', StringComparison.Ordinal) && s.Contains("CryptoMako", StringComparison.OrdinalIgnoreCase))
+            return false;
+        // UTF-16 sync-root id misread as UTF-8 often contains NULs or odd control bytes.
+        foreach (var ch in s)
+        {
+            if (ch == '\0' || (char.IsControl(ch) && ch != '\t'))
+                return false;
+        }
+        if (s == "/")
+            return true;
+        var body = s.StartsWith('/') ? s[1..] : s;
+        if (string.IsNullOrEmpty(body))
+            return true;
+        foreach (var part in body.Split('/', StringSplitOptions.None))
+        {
+            if (part.Length == 0 || part == "." || part == "..")
+                return false;
+        }
+        return true;
     }
 
     /// <summary>

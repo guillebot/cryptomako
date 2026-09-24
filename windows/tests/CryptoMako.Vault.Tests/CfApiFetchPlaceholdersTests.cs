@@ -62,4 +62,15 @@ public sealed class CfApiFetchPlaceholdersTests
     {
         Assert.Empty(CloudFilesProvider.TryListImmediatePlaceholders(null, "/"));
     }
+
+    [Theory]
+    [InlineData("/hello.txt", true)]
+    [InlineData("hello.txt", true)]
+    [InlineData("/", true)]
+    [InlineData("CryptoMako!S-1-5-21!default", false)]
+    [InlineData("CryptoMako!SID!account", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void LooksLikeVaultCleartextIdentity_SyncRootIdRejected(string? id, bool expected) =>
+        Assert.Equal(expected, CloudFilesProvider.LooksLikeVaultCleartextIdentity(id));
 }

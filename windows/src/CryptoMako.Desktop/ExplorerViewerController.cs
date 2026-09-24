@@ -69,11 +69,29 @@ internal sealed class ExplorerViewerController : IDisposable
                 var n = await _provider.PopulateRootPlaceholdersAsync(recursive: false, ct: ct)
                     .ConfigureAwait(false);
                 _vm.LogLine($"CfAPI placeholders seeded: {n} under {AppPaths.SyncRootPath}");
+                // Re-enable on-demand population on the root so Explorer FETCH_PLACEHOLDERS
+                // still fires after soft seed (and recovers if a prior empty TRANSFER disabled it).
+                if (CloudFilesProvider.TryEnableOnDemandPopulation(AppPaths.SyncRootPath))
+                    _vm.LogLine("CfAPI: root on-demand population enabled");
+                if (n == 0)
+                {
+                    try
+                    {
+                        var refreshed = await _provider.RefreshDirectoryAsync("/", ct).ConfigureAwait(false);
+                        _vm.LogLine($"CfAPI root refresh placeholders: {refreshed}");
+                    }
+                    catch (Exception rex)
+                    {
+                        _vm.LogLine("CfAPI root refresh (soft): " + rex.Message.Replace("\n", " "));
+                    }
+                }
             }
             catch (Exception ex)
             {
                 // Soft: stay connected so Explorer can enumerate / FETCH_PLACEHOLDERS on demand.
-                _vm.LogLine("CfAPI populate (soft): " + ex.Message.Replace('\n', ' '));
+                _vm.LogLine("CfAPI populate (soft): " + ex.Message.Replace("\n", " "));
+                try { CloudFilesProvider.TryEnableOnDemandPopulation(AppPaths.SyncRootPath); }
+                catch { /* ignore */ }
             }
 
             var probe = ProbeSyncRootListing();

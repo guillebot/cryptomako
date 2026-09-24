@@ -181,12 +181,14 @@ public sealed partial class VaultSession : IAsyncDisposable, IDisposable
 
     public async Task<byte[]> CatAsync(string cleartextPath, CancellationToken ct = default)
     {
-        var node = await ResolveAsync(cleartextPath, ct);
+        var node = await ResolveAsync(cleartextPath, ct).ConfigureAwait(false);
         if (node.Kind != NodeKind.File)
             throw new InvalidOperationException($"not a file: {cleartextPath}");
 
-        var ciphertext = await _store.GetObjectAsync(node.CiphertextKey, ct);
-        return _cryptor.DecryptContent(ciphertext);
+        var ciphertext = await _store.GetObjectAsync(node.CiphertextKey, ct).ConfigureAwait(false);
+        // Worker cryptor: shared AesSiv is not safe across CfAPI FETCH + Backup Sync threads.
+        using var worker = MakeWorkerCryptor();
+        return worker.DecryptContent(ciphertext);
     }
 
     public async Task GetAsync(string cleartextPath, string destinationPath, CancellationToken ct = default)
@@ -218,7 +220,7 @@ public sealed partial class VaultSession : IAsyncDisposable, IDisposable
 
             var bare = name[..^4];
             string clear;
-            try { clear = _cryptor.DecryptFileName(bare, dirIdBytes); }
+            try { clear = WithCryptor(c => c.DecryptFileName(bare, dirIdBytes)); }
             catch { continue; }
 
             nodes.Add(new VaultNode
@@ -249,7 +251,7 @@ public sealed partial class VaultSession : IAsyncDisposable, IDisposable
             {
                 var bare = folderName[..^4];
                 string clear;
-                try { clear = _cryptor.DecryptFileName(bare, dirIdBytes); }
+                try { clear = WithCryptor(c => c.DecryptFileName(bare, dirIdBytes)); }
                 catch { continue; }
 
                 try
@@ -303,7 +305,7 @@ public sealed partial class VaultSession : IAsyncDisposable, IDisposable
         var longName = Encoding.UTF8.GetString(nameBytes).Trim();
         var bare = longName.EndsWith(".c9r", StringComparison.Ordinal) ? longName[..^4] : longName;
         string clear;
-        try { clear = _cryptor.DecryptFileName(bare, dirIdBytes); }
+        try { clear = WithCryptor(c => c.DecryptFileName(bare, dirIdBytes)); }
         catch { return null; }
 
         try
