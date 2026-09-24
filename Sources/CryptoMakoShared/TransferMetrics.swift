@@ -59,12 +59,17 @@ public struct TransferSnapshot: Codable, Equatable, Sendable {
 
     public var tooltip: String { tooltipLines.joined(separator: "\n") }
 
-        public static func formatBytes(_ n: Int64) -> String {
+    /// Human size for Sync / transfer UI (decimal SI units: 1000-based KB/MB/GB/TB).
+    /// At or above 1000 GB (1e12 bytes) shows TB with 2 decimal places so large
+    /// photo libraries read as e.g. `1.25 TB` instead of `1250.00 GB`.
+    public static func formatBytes(_ n: Int64) -> String {
         let abs = Double(Swift.abs(n))
         if abs < 1000 { return "\(n) B" }
         if abs < 1_000_000 { return String(format: "%.1f KB", abs / 1_000) }
         if abs < 1_000_000_000 { return String(format: "%.1f MB", abs / 1_000_000) }
-        return String(format: "%.2f GB", abs / 1_000_000_000)
+        // Keep GB below 1000 GB; switch to TB at ≥ 1000 * 10^9 bytes.
+        if abs < 1_000_000_000_000 { return String(format: "%.2f GB", abs / 1_000_000_000) }
+        return String(format: "%.2f TB", abs / 1_000_000_000_000)
     }
 
     /// Human rate for the strip / tooltip (avoids "44 B/s" looking like a frozen bug when idle).

@@ -99,6 +99,7 @@ final class VaultAppModel: ObservableObject {
     enum SettingsSection: String, Hashable {
         case about
         case network
+        case transferMode
         case bandwidth
         case syncWorkers
         case excludes
@@ -841,10 +842,15 @@ final class VaultAppModel: ObservableObject {
             detail = error.localizedDescription
             return
         }
+        let mode = AppPreferences.load().backupTransferMode
         if sources.count == 1, let one = sources.first {
-            detail = "Syncing Backups/\(one.vaultFolderName)/ via direct remote puts…"
+            detail = mode == .sync
+                ? "Syncing Backups/\(one.vaultFolderName)/ (puts + delete vault-only under that folder)…"
+                : "Backing up Backups/\(one.vaultFolderName)/ via direct remote puts (no vault deletes)…"
         } else {
-            detail = "Syncing all backup folders into vault (Backups/…) via direct remote puts…"
+            detail = mode == .sync
+                ? "Syncing all backup folders (puts + delete vault-only under each Backups/<folder>/)…"
+                : "Backing up all folders into vault (Backups/…) via direct remote puts (no vault deletes)…"
         }
         backupSync.sync(sources: sources, session: session)
         watchBackupSyncForFinderRefresh()
@@ -881,7 +887,12 @@ final class VaultAppModel: ObservableObject {
             await self.signalFinderRefresh()
             await MainActor.run {
                 if case .finished(let files, let bytes) = self.backupSync.state {
-                    self.detail = "Backup finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)). Refresh Finder (CryptoMako → Backups/) or tap List root."
+                    let deleted = self.backupSync.filesDeleted
+                    if deleted > 0 {
+                        self.detail = "Finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)); removed \(deleted) vault-only item(s). Source untouched. Refresh Finder (CryptoMako → Backups/) or tap List root."
+                    } else {
+                        self.detail = "Finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)). Source untouched. Refresh Finder (CryptoMako → Backups/) or tap List root."
+                    }
                 }
             }
         }

@@ -26,7 +26,7 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Settings")
                         .font(.title2.weight(.semibold))
-                    Text("Network, Sync workers & bandwidth, path excludes, and About. Vault endpoint / bucket / password stay on the Vault tab. Changes save automatically.")
+                    Text("Network, Backup/Sync mode, Sync workers & bandwidth, path excludes, and About. Vault endpoint / bucket / password stay on the Vault tab. Changes save automatically.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -35,6 +35,8 @@ struct SettingsView: View {
                         .id(VaultAppModel.SettingsSection.about)
                     networkSection
                         .id(VaultAppModel.SettingsSection.network)
+                    transferModeSection
+                        .id(VaultAppModel.SettingsSection.transferMode)
                     bandwidthSection
                         .id(VaultAppModel.SettingsSection.bandwidth)
                     syncWorkersSection
@@ -193,6 +195,38 @@ struct SettingsView: View {
             return "Bypasses HTTP(S) system proxies for CryptoMako S3 sessions (useful behind Zscaler-style middleboxes when you want a direct path)."
         case .custom:
             return "Routes S3 URLSessions through the given HTTP(S) proxy. Password is stored in the Keychain; host/port/user in app-group JSON."
+        }
+    }
+
+    // MARK: - Transfer mode
+
+    private var transferModeSection: some View {
+        GroupBox("Backup / Sync mode") {
+            VStack(alignment: .leading, spacing: 10) {
+                Picker("Transfer mode", selection: $prefs.backupTransferMode) {
+                    Text("Backup").tag(AppPreferences.BackupTransferMode.backup)
+                    Text("Sync").tag(AppPreferences.BackupTransferMode.sync)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                if prefs.backupTransferMode == .backup {
+                    Text("Backup (default): copy/update source → vault. Never deletes the local source. Does not remove vault files missing from source.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                } else {
+                    Text("Sync: copy/update, then delete vault ciphertext under Backups/<folder>/ that is missing from the local source. Never deletes the local source. Prefer Backup unless you want vault orphans removed.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Text("Prefs key backupTransferMode (\"backup\" | \"sync\"). Applies on the next run.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 

@@ -93,3 +93,31 @@ final class CredentialStoreTests: XCTestCase {
         XCTAssertThrowsError(try CredentialStore.read(account: account, useAccessGroup: false))
     }
 }
+
+final class UploadBandwidthLimiterTests: XCTestCase {
+    func testAcquireLargerThanBurstCompletes() async {
+        // 1 MB/s bucket holds only 1 MB; old code deadlocked forever on >burst.
+        let rate = 1_000_000.0
+        let limiter = UploadBandwidthLimiter(bytesPerSecond: rate)
+        let start = CFAbsoluteTimeGetCurrent()
+        await limiter.acquire(Int64(3.5 * rate))
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+        // Initial 1s burst is free; remaining 2.5 MB needs ~2.5s.
+        XCTAssertGreaterThanOrEqual(elapsed, 2.0)
+        XCTAssertLessThan(elapsed, 6.0)
+    }
+
+    func testZeroRateIsImmediateNoOp() async {
+        let limiter = UploadBandwidthLimiter(bytesPerSecond: 0)
+        let start = CFAbsoluteTimeGetCurrent()
+        await limiter.acquire(100_000_000)
+        XCTAssertLessThan(CFAbsoluteTimeGetCurrent() - start, 0.5)
+    }
+
+    func testDisabledFromPreferencesWhenCapOff() {
+        var prefs = AppPreferences()
+        prefs.limitSyncUploadBandwidth = false
+        prefs.syncUploadCapMbps = 100
+        XCTAssertNil(UploadBandwidthLimiter.fromPreferences(prefs))
+    }
+}
