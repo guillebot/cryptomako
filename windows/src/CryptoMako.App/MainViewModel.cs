@@ -872,14 +872,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 FormatBytes(u.BytesDone),
                 FormatBytes(bytesTot > 0 ? bytesTot : u.BytesTotal));
         }
+        else if (u.Phase == "scanning")
+        {
+            // macOS parity: "N files — bytes found so far" + current path while counting.
+            if (u.FilesScanned > 0)
+                BackupProgressLabel =
+                    $"Counting local files... — {u.FilesScanned} files — {FormatBytes(u.BytesScanned)} found so far";
+            else
+                BackupProgressLabel = "Counting local files...";
+        }
         else if (u.FilesScanned > 0)
         {
             BackupProgressLabel = u.FilesSkipped >= u.FilesScanned
                 ? $"All {u.FilesSkipped} files up-to-date - {FormatBytes(u.BytesScanned)}"
                 : $"Scanned {u.FilesScanned} files...";
         }
-        else if (u.Phase == "scanning")
-            BackupProgressLabel = "Counting local files...";
         else
             BackupProgressLabel = string.IsNullOrWhiteSpace(u.CurrentPath) ? u.Phase : u.CurrentPath;
         BackupSpeedLabel = u.BytesPerSecond > 0 ? FormatRate(u.BytesPerSecond) : "";

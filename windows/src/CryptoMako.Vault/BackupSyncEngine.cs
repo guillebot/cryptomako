@@ -194,8 +194,13 @@ public sealed class BackupSyncEngine
             }
         }
 
-        syncProgress?.Report(new BackupSyncProgressUpdate { Phase = "scanning", CurrentPath = localRoot });
-        var (jobs, skipped, skippedBytes) = CollectJobs(localRoot, excludes, syncState, vaultFolderName);
+        syncProgress?.Report(new BackupSyncProgressUpdate
+        {
+            Phase = "scanning",
+            CurrentPath = localRoot,
+        });
+        var (jobs, skipped, skippedBytes) = CollectJobs(
+            localRoot, excludes, syncState, vaultFolderName, syncProgress, ct);
         filesTotal = jobs.Count;
         bytesTotal = jobs.Sum(j => j.Size);
         var filesScanned = jobs.Count + skipped;
@@ -275,14 +280,20 @@ public sealed class BackupSyncEngine
         string localRoot,
         BackupSyncExcludes excludes,
         BackupSyncState syncState,
-        string vaultFolderName)
+        string vaultFolderName,
+        IProgress<BackupSyncProgressUpdate>? syncProgress = null,
+        CancellationToken ct = default)
     {
         var jobs = new List<PendingUpload>();
         var skipped = 0;
         long skippedBytes = 0;
+        var scanned = 0;
+        long scannedBytes = 0;
+        var sinceUi = 0;
         var rootFull = localRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         foreach (var path in Directory.EnumerateFiles(localRoot, "*", SearchOption.AllDirectories))
         {
+            ct.ThrowIfCancellationRequested();
             var rel = Path.GetRelativePath(rootFull, path).Replace('\\', '/');
             var parts = rel.Split('/');
             var hide = false;
@@ -298,6 +309,26 @@ public sealed class BackupSyncEngine
             if (!info.Exists || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
                 continue;
 
+            scanned++;
+            scannedBytes += info.Length;
+            sinceUi++;
+            // macOS parity: throttle UI (~every 25 regular files) so huge trees stay responsive.
+            if (sinceUi >= 25)
+            {
+                sinceUi = 0;
+                syncProgress?.Report(new BackupSyncProgressUpdate
+                {
+                    Phase = "scanning",
+                    FilesScanned = scanned,
+                    FilesDone = scanned,
+                    FilesTotal = scanned,
+                    BytesScanned = scannedBytes,
+                    BytesDone = scannedBytes,
+                    BytesTotal = scannedBytes,
+                    CurrentPath = rel,
+                });
+            }
+
             var mtime = info.LastWriteTimeUtc;
             var key = BackupSyncState.Key(vaultFolderName, rel);
             if (syncState.Files.TryGetValue(key, out var fp) && fp.Matches(info.Length, mtime))
@@ -311,6 +342,20 @@ public sealed class BackupSyncEngine
             if (parentRel == ".") parentRel = "";
             jobs.Add(new PendingUpload(path, rel, parentRel, Path.GetFileName(path), info.Length, mtime));
         }
+
+        syncProgress?.Report(new BackupSyncProgressUpdate
+        {
+            Phase = "scanning",
+            FilesScanned = scanned,
+            FilesDone = scanned,
+            FilesTotal = scanned,
+            BytesScanned = scannedBytes,
+            BytesDone = scannedBytes,
+            BytesTotal = scannedBytes,
+            CurrentPath = scanned == 0
+                ? localRoot
+                : $"Scan complete — {scanned} files",
+        });
         return (jobs, skipped, skippedBytes);
     }
 }
