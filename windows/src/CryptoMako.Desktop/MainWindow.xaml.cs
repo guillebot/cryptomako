@@ -84,10 +84,34 @@ public sealed partial class MainWindow : Window
             ? ("Open " + AppPaths.SyncRootPath)
             : "Open sync root";
 
-        // Backup Sync requires an unlocked vault — greyed when locked/disconnected.
-        SyncNowButton.IsEnabled = _vm.IsUnlocked;
+        // Vault / Explorer / Sync command enablement (mutual exclusive pairs + Sync needs unlock).
+        RefreshCommandEnablement();
 
         RefreshBackupProgressUi();
+    }
+
+
+    /// <summary>
+    /// Grey inactive Vault/Explorer actions from live unlock + CfAPI connected state.
+    /// Unlock/Lock and Connect Explorer/Disconnect Explorer are mutual exclusives;
+    /// Sync stays disabled while locked. Updated from RefreshStatusStrip on every
+    /// unlock/lock/connect/disconnect/auto-reconnect PropertyChanged.
+    /// </summary>
+    private void RefreshCommandEnablement()
+    {
+        var unlocked = _vm.IsUnlocked;
+        var explorer = _vm.IsExplorerViewerConnected;
+
+        UnlockButton.IsEnabled = !unlocked;
+        LockButton.IsEnabled = unlocked;
+
+        // Connect needs an unlocked vault and an idle (disconnected) viewer.
+        ConnectExplorerButton.IsEnabled = unlocked && !explorer;
+        DisconnectExplorerButton.IsEnabled = explorer;
+
+        SyncNowButton.IsEnabled = unlocked;
+
+        ExplorerPathLink.IsEnabled = explorer;
     }
 
     private void RefreshVaultStatusText()
