@@ -66,4 +66,53 @@ public class BackupProgressFormatTests
         Assert.Equal(50, u.Percent);
         Assert.Equal(16, Math.Max(u.FilesScanned, u.FilesTotal));
     }
+
+    [Fact]
+    public void BuildBackupProgressLabel_scanning_includes_count_bytes_and_path()
+    {
+        var u = new BackupSyncProgressUpdate
+        {
+            Phase = "scanning",
+            FilesScanned = 42,
+            BytesScanned = 1536,
+            CurrentPath = "Documents/notes.txt",
+            // Poisonous if label builder preferred percent branch: Done==Total => 100%.
+            FilesDone = 42,
+            FilesTotal = 42,
+            BytesDone = 1536,
+            BytesTotal = 1536,
+        };
+        var label = MainViewModel.BuildBackupProgressLabel(u);
+        Assert.StartsWith("Counting local files...", label);
+        Assert.Contains("42 files", label);
+        Assert.Contains("1.5 KB found so far", label);
+        Assert.Contains("Documents/notes.txt", label);
+        Assert.DoesNotContain("%", label);
+    }
+
+    [Fact]
+    public void BuildBackupProgressLabel_scanning_empty_stays_counting()
+    {
+        var u = new BackupSyncProgressUpdate { Phase = "scanning" };
+        Assert.Equal("Counting local files...", MainViewModel.BuildBackupProgressLabel(u));
+    }
+
+    [Fact]
+    public void BuildBackupProgressLabel_uploading_uses_percent()
+    {
+        var u = new BackupSyncProgressUpdate
+        {
+            Phase = "uploading",
+            FilesDone = 1,
+            FilesTotal = 4,
+            FilesScanned = 4,
+            BytesDone = 50,
+            BytesTotal = 100,
+            BytesScanned = 100,
+        };
+        var label = MainViewModel.BuildBackupProgressLabel(u);
+        Assert.StartsWith("50%", label);
+        Assert.Contains("1/4 files", label);
+    }
 }
+

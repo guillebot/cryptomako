@@ -166,6 +166,68 @@ public class BackupSyncTests
         }
     }
 
+
+    [Fact]
+    public async Task Sync_reports_scanning_progress_with_names_before_upload()
+    {
+        var vaultDir = Path.Combine(Path.GetTempPath(), "cm-vault-scan-" + Guid.NewGuid().ToString("N"));
+        var sourceDir = Path.Combine(Path.GetTempPath(), "cm-src-scan-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(sourceDir);
+        // Enough files that throttle fires multiple times.
+        for (var i = 0; i < 80; i++)
+            await File.WriteAllTextAsync(Path.Combine(sourceDir, $"f{i:D3}.txt"), "x" + i);
+
+        try
+        {
+            var fixture = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "fixtures", "vault"));
+            Assert.True(Directory.Exists(fixture));
+            var passPath = Path.GetFullPath(Path.Combine(fixture, "..", "PASSWORD"));
+            var pass = File.ReadAllText(passPath).TrimEnd('\n', '\r');
+            CopyDir(fixture, vaultDir);
+            await using var session = VaultSession.UnlockLocal(vaultDir, pass);
+
+            // Synchronous IProgress: Progress<T> posts to ThreadPool when no SyncContext,
+            // so updates can still be in-flight after SyncAsync returns.
+            var scanning = new List<BackupSyncProgressUpdate>();
+            var progress = new SyncProgressCollector(scanning);
+
+            var engine = new BackupSyncEngine();
+            var result = await engine.SyncAsync(
+                session,
+                sourceDir,
+                "ScanProgTest",
+                new AppPreferences(),
+                syncProgress: progress);
+
+            Assert.True(scanning.Count >= 2, $"expected multiple live scanning updates, got {scanning.Count}");
+            Assert.Contains(scanning, u => !string.IsNullOrEmpty(u.CurrentPath) && u.CurrentPath.EndsWith(".txt", StringComparison.Ordinal));
+            Assert.True(scanning[^1].FilesScanned >= 80);
+            Assert.Equal(80, result.FilesScanned);
+            // Labels must stay in Counting form (not 100% percent branch).
+            var mid = scanning[scanning.Count / 2];
+            var label = CryptoMako.App.MainViewModel.BuildBackupProgressLabel(mid);
+            Assert.StartsWith("Counting local files...", label);
+            Assert.DoesNotContain("%", label);
+        }
+        finally
+        {
+            try { Directory.Delete(sourceDir, true); } catch { /* ignore */ }
+            try { Directory.Delete(vaultDir, true); } catch { /* ignore */ }
+        }
+    }
+
+
+    private sealed class SyncProgressCollector : IProgress<BackupSyncProgressUpdate>
+    {
+        private readonly List<BackupSyncProgressUpdate> _scanning;
+        public SyncProgressCollector(List<BackupSyncProgressUpdate> scanning) => _scanning = scanning;
+        public void Report(BackupSyncProgressUpdate value)
+        {
+            if (value.Phase == "scanning" && value.FilesScanned > 0)
+                _scanning.Add(value);
+        }
+    }
+
     private static void CopyDir(string src, string dst)
     {
         Directory.CreateDirectory(dst);

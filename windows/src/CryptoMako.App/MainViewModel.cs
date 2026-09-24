@@ -648,9 +648,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             foreach (var src in sources)
             {
                 linked.Token.ThrowIfCancellationRequested();
-                AppendLog($"sync source {src.VaultFolderName} ? {src.Path}");
-                BackupPhase = "uploading";
+                AppendLog($"sync source {src.VaultFolderName} -> {src.Path}");
+                BackupPhase = "scanning";
                 BackupCurrentPath = src.Path;
+                BackupProgressLabel = "Counting local files...";
                 var result = await engine.SyncAsync(
                     _session,
                     src.Path,
@@ -858,12 +859,38 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         BackupBytesTotal = u.BytesTotal;
         BackupBytesPerSecond = u.BytesPerSecond;
         BackupCurrentPath = u.CurrentPath ?? "";
-        BackupProgressPercent = u.Percent;
+        // Counting has no known total - keep bar at 0 (Percent would be 100 if Done==Total).
+        BackupProgressPercent = u.Phase == "scanning" ? 0 : u.Percent;
+        BackupProgressLabel = BuildBackupProgressLabel(u);
+        BackupSpeedLabel = u.BytesPerSecond > 0 ? FormatRate(u.BytesPerSecond) : "";
+        BackupEtaLabel = u.Phase == "scanning"
+            ? ""
+            : FormatEta(u.BytesDone, u.BytesTotal, u.BytesPerSecond);
+        OnPropertyChanged(nameof(IsBackupProgressVisible));
+    }
+
+    /// <summary>Pure label builder (unit-tested). Scanning checked before percent format.</summary>
+    public static string BuildBackupProgressLabel(BackupSyncProgressUpdate u)
+    {
+        if (u.Phase == "scanning")
+        {
+            // macOS parity: count + bytes found so far + current relative path.
+            if (u.FilesScanned <= 0)
+                return "Counting local files...";
+            var pathBit = string.IsNullOrWhiteSpace(u.CurrentPath) ? "" : " - " + u.CurrentPath;
+            return string.Format(
+                CultureInfo.InvariantCulture,
+                "Counting local files... - {0} files - {1} found so far{2}",
+                u.FilesScanned,
+                FormatBytes(u.BytesScanned),
+                pathBit);
+        }
+
         var totalFiles = Math.Max(u.FilesScanned, Math.Max(u.FilesTotal, u.FilesDone));
         if (totalFiles > 0 || u.BytesTotal > 0 || u.BytesScanned > 0)
         {
             var bytesTot = Math.Max(u.BytesScanned, u.BytesTotal);
-            BackupProgressLabel = string.Format(
+            return string.Format(
                 CultureInfo.InvariantCulture,
                 "{0:0}% - {1}/{2} files - {3}/{4}",
                 u.Percent,
@@ -872,27 +899,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 FormatBytes(u.BytesDone),
                 FormatBytes(bytesTot > 0 ? bytesTot : u.BytesTotal));
         }
-        else if (u.Phase == "scanning")
+
+        if (u.FilesScanned > 0)
         {
-            // macOS parity: "N files — bytes found so far" + current path while counting.
-            if (u.FilesScanned > 0)
-                BackupProgressLabel =
-                    $"Counting local files... — {u.FilesScanned} files — {FormatBytes(u.BytesScanned)} found so far";
-            else
-                BackupProgressLabel = "Counting local files...";
-        }
-        else if (u.FilesScanned > 0)
-        {
-            BackupProgressLabel = u.FilesSkipped >= u.FilesScanned
+            return u.FilesSkipped >= u.FilesScanned
                 ? $"All {u.FilesSkipped} files up-to-date - {FormatBytes(u.BytesScanned)}"
                 : $"Scanned {u.FilesScanned} files...";
         }
-        else
-            BackupProgressLabel = string.IsNullOrWhiteSpace(u.CurrentPath) ? u.Phase : u.CurrentPath;
-        BackupSpeedLabel = u.BytesPerSecond > 0 ? FormatRate(u.BytesPerSecond) : "";
-        BackupEtaLabel = FormatEta(u.BytesDone, u.BytesTotal, u.BytesPerSecond);
-        OnPropertyChanged(nameof(IsBackupProgressVisible));
+
+        return string.IsNullOrWhiteSpace(u.CurrentPath) ? u.Phase : u.CurrentPath;
     }
+
 
     public static string FormatBytes(long bytes)
     {

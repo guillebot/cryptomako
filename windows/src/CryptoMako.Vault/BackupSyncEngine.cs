@@ -54,7 +54,9 @@ public sealed class BackupSyncEngine
         var vaultRoot = "Backups/" + vaultFolderName.Trim().Trim('/');
         progress?.Report("ensure " + vaultRoot);
         syncProgress?.Report(new BackupSyncProgressUpdate { Phase = "preparing", CurrentPath = vaultRoot });
-        var leafDirId = await session.EnsureDirectoryPathAsync(vaultRoot, ct);
+        // ConfigureAwait(false): CollectJobs must not run on the WinUI dispatcher
+        // (sync EnumerateFiles would freeze the UI on 'Counting local files...').
+        var leafDirId = await session.EnsureDirectoryPathAsync(vaultRoot, ct).ConfigureAwait(false);
 
         var limiter = UploadBandwidthLimiter.FromPreferences(preferences);
         var opts = new UnboundedChannelOptions { SingleReader = false, SingleWriter = true };
@@ -199,8 +201,10 @@ public sealed class BackupSyncEngine
             Phase = "scanning",
             CurrentPath = localRoot,
         });
-        var (jobs, skipped, skippedBytes) = CollectJobs(
-            localRoot, excludes, syncState, vaultFolderName, syncProgress, ct);
+        // Offload the sync walk so Progress<T> callbacks can marshal to the UI thread.
+        var (jobs, skipped, skippedBytes) = await Task.Run(
+            () => CollectJobs(localRoot, excludes, syncState, vaultFolderName, syncProgress, ct),
+            ct).ConfigureAwait(false);
         filesTotal = jobs.Count;
         bytesTotal = jobs.Sum(j => j.Size);
         var filesScanned = jobs.Count + skipped;
@@ -290,6 +294,7 @@ public sealed class BackupSyncEngine
         var scanned = 0;
         long scannedBytes = 0;
         var sinceUi = 0;
+        var lastUi = System.Diagnostics.Stopwatch.StartNew();
         var rootFull = localRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         foreach (var path in Directory.EnumerateFiles(localRoot, "*", SearchOption.AllDirectories))
         {
@@ -312,19 +317,17 @@ public sealed class BackupSyncEngine
             scanned++;
             scannedBytes += info.Length;
             sinceUi++;
-            // macOS parity: throttle UI (~every 25 regular files) so huge trees stay responsive.
-            if (sinceUi >= 25)
+            // First file immediately; then ~10Hz or every 25 files (macOS live-name parity).
+            // Do not set FilesDone/BytesDone here - Percent would jump to 100% while counting.
+            if (scanned == 1 || sinceUi >= 25 || lastUi.ElapsedMilliseconds >= 100)
             {
                 sinceUi = 0;
+                lastUi.Restart();
                 syncProgress?.Report(new BackupSyncProgressUpdate
                 {
                     Phase = "scanning",
                     FilesScanned = scanned,
-                    FilesDone = scanned,
-                    FilesTotal = scanned,
                     BytesScanned = scannedBytes,
-                    BytesDone = scannedBytes,
-                    BytesTotal = scannedBytes,
                     CurrentPath = rel,
                 });
             }
@@ -347,14 +350,10 @@ public sealed class BackupSyncEngine
         {
             Phase = "scanning",
             FilesScanned = scanned,
-            FilesDone = scanned,
-            FilesTotal = scanned,
             BytesScanned = scannedBytes,
-            BytesDone = scannedBytes,
-            BytesTotal = scannedBytes,
             CurrentPath = scanned == 0
                 ? localRoot
-                : $"Scan complete — {scanned} files",
+                : $"Scan complete - {scanned} files",
         });
         return (jobs, skipped, skippedBytes);
     }
