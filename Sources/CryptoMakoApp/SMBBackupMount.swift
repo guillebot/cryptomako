@@ -302,7 +302,7 @@ enum SMBBackupMount {
         normalized: String,
         username: String?,
         password: String,
-        uiOption: CFString
+        uiOption: String
     ) throws -> URL {
         guard let cfURL = CFURLCreateWithString(nil, normalized as CFString, nil) else {
             throw MountError.invalidURL("Invalid SMB URL after normalize.")
