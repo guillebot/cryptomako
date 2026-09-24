@@ -83,4 +83,19 @@ public enum SMBSourceURL {
         let share = shareName(from: normalizedSMBURL) ?? ""
         return share.isEmpty ? host : "\(host)/\(share)"
     }
+
+    /// Build an `smb://` URL for system Connect / `NSWorkspace.open` (optional username; never embed password).
+    public static func connectURL(normalized: String, username: String?) -> URL {
+        guard var components = URLComponents(string: normalized) else {
+            return URL(string: normalized) ?? URL(fileURLWithPath: "/")
+        }
+        if let username {
+            let trimmed = username.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty {
+                components.user = trimmed
+            }
+        }
+        components.password = nil
+        return components.url ?? URL(string: normalized) ?? URL(fileURLWithPath: "/")
+    }
 }

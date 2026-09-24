@@ -1,13 +1,15 @@
+import AppKit
 import CryptoMakoShared
 import Foundation
 import NetFS
 import OSLog
 
-/// Mount / remount SMB Backup Sync sources via macOS (`NetFS` / `/Volumes`), never an embedded SMB client.
+/// Mount / remount SMB Backup Sync sources via macOS (`NetFS` / `NSWorkspace` / `/Volumes`), never an embedded SMB client.
 enum SMBBackupMount {
     enum MountError: Error, LocalizedError {
         case invalidURL(String)
         case mountFailed(String)
+        case mountTimedOut(String)
         case volumeUnavailable(String)
         case volumeLost(String)
         case missingCredentials
@@ -19,6 +21,8 @@ enum SMBBackupMount {
                 return s
             case .mountFailed(let s):
                 return "Could not mount SMB share: \(s)"
+            case .mountTimedOut(let s):
+                return "Timed out waiting for SMB mount: \(s). Complete the system Connect dialog (or mount in Finder), check Local Network privacy for CryptoMako, then retry."
             case .volumeUnavailable(let s):
                 return "SMB source unavailable: \(s). Mount the share and retry Sync (fail-closed — nothing was treated as an empty tree)."
             case .volumeLost(let s):
@@ -32,6 +36,10 @@ enum SMBBackupMount {
     }
 
     private static let log = Logger(subsystem: "net.gschimmel.cryptomako", category: "smb-backup")
+
+    /// How long to wait for `/Volumes` after opening `smb://` via the system UI.
+    private static let systemConnectPollTimeout: TimeInterval = 75
+    private static let systemConnectPollInterval: TimeInterval = 0.5
 
     // MARK: - Public API
 
@@ -56,11 +64,22 @@ enum SMBBackupMount {
         }
 
         let password = try loadPassword(for: source)
+        // Remount may show system Connect UI (AllowUI / NSWorkspace) but always with a poll timeout — never wait forever.
         let mounted = try mount(
             smbURLString: smb,
             username: source.smbUsername,
-            password: password
+            password: password,
+            allowSystemUI: true
         )
+        // Prefer keeping a deeper previously-picked path when it still exists under the remounted volume.
+        if source.path.hasPrefix("/Volumes/"),
+           isReachableDirectory(URL(fileURLWithPath: source.path, isDirectory: true)) {
+            let kept = URL(fileURLWithPath: source.path, isDirectory: true)
+            source.bookmarkData = makeBookmark(for: kept) ?? source.bookmarkData
+            source.smbURL = smb
+            log.info("SMB remounted \(smb, privacy: .public); kept path \(kept.path, privacy: .public)")
+            return kept
+        }
         source.path = mounted.path
         source.smbURL = smb
         source.bookmarkData = makeBookmark(for: mounted) ?? source.bookmarkData
@@ -68,50 +87,67 @@ enum SMBBackupMount {
         return mounted
     }
 
-    static func mount(smbURLString: String, username: String?, password: String) throws -> URL {
+    /// Mount an SMB share using OS NetFS first (silent NoUI), then AllowUI / system Connect UI as needed.
+    /// - Parameter allowSystemUI: When true, fall back to NetFS AllowUI and `NSWorkspace.open(smb://…)` with polling.
+    static func mount(
+        smbURLString: String,
+        username: String?,
+        password: String,
+        allowSystemUI: Bool = true
+    ) throws -> URL {
         let normalized = try SMBSourceURL.normalize(smbURLString)
-        guard let cfURL = CFURLCreateWithString(nil, normalized as CFString, nil) else {
-            throw MountError.invalidURL("Invalid SMB URL after normalize.")
+
+        if let existing = findExistingMount(forSMBURL: normalized) {
+            log.info("SMB already mounted \(normalized, privacy: .public) → \(existing.path, privacy: .public)")
+            return existing
         }
 
-        let openOptions = NSMutableDictionary()
-        // Suppress system auth UI; we supply Keychain credentials ourselves.
-        openOptions[kNAUIOptionKey] = kNAUIOptionNoUI
-
-        let mountOptions = NSMutableDictionary()
-        mountOptions[kNetFSMountAtMountDirKey] = kCFBooleanTrue
-
-        var mountpoints: Unmanaged<CFArray>?
         let user = (username?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
-        let status = NetFSMountURLSync(
-            cfURL,
-            nil,
-            user as CFString?,
-            password as CFString,
-            openOptions,
-            mountOptions,
-            &mountpoints
-        )
 
-        if status != 0 {
-            // Fallback: mount_smbfs (still OS client, not libsmbclient).
-            if let fallback = try? mountViaMountSmbfs(normalized: normalized, username: user, password: password) {
-                return fallback
-            }
-            throw MountError.mountFailed(netFSStatusDescription(status))
+        // 1) Silent remount with Keychain credentials (no system auth sheet).
+        var lastError: Error?
+        do {
+            return try netFSMountReturningURL(
+                normalized: normalized,
+                username: user,
+                password: password,
+                uiOption: kNAUIOptionNoUI
+            )
+        } catch {
+            lastError = error
+            log.info("NetFS NoUI mount failed: \(error.localizedDescription, privacy: .public)")
         }
 
-        guard let array = mountpoints?.takeRetainedValue() as? [String],
-              let first = array.first,
-              !first.isEmpty
-        else {
-            // NetFS may succeed with an empty mountpoints array if already mounted — probe /Volumes.
-            if let existing = findExistingMount(forSMBURL: normalized) {
-                return existing
+        if allowSystemUI {
+            // 2) Allow macOS auth / Local Network UI.
+            do {
+                return try netFSMountReturningURL(
+                    normalized: normalized,
+                    username: user,
+                    password: password,
+                    uiOption: kNAUIOptionAllowUI
+                )
+            } catch {
+                lastError = error
+                log.info("NetFS AllowUI mount failed: \(error.localizedDescription, privacy: .public)")
             }
-            throw MountError.mountFailed("NetFS returned no mount point.")
+
+            // 3) Open smb:// via Finder/system Connect UI, then poll /Volumes (bounded timeout).
+            do {
+                return try openViaSystemConnectAndWait(
+                    normalized: normalized,
+                    username: user
+                )
+            } catch {
+                lastError = error
+                log.info("System connect poll failed: \(error.localizedDescription, privacy: .public)")
+            }
         }
-        return URL(fileURLWithPath: first, isDirectory: true)
+
+        if let lastError {
+            throw lastError
+        }
+        throw MountError.mountFailed("Unknown SMB mount failure.")
     }
 
     static func makeBookmark(for url: URL) -> Data? {
@@ -185,6 +221,25 @@ enum SMBBackupMount {
         }
     }
 
+    /// Present an in-app folder picker rooted at the mounted volume. Returns nil if the user cancels (caller may use share root).
+    static func pickFolderUnderMountedShare(
+        startingAt mounted: URL,
+        message: String = "Choose the share root or a subfolder to sync."
+    ) -> URL? {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.canCreateDirectories = false
+        panel.directoryURL = mounted
+        panel.message = message
+        panel.prompt = "Use this folder"
+        panel.title = "SMB folder"
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        // Soft-guard: prefer paths under the mounted volume (user can navigate elsewhere; we still accept).
+        return url
+    }
+
     // MARK: - Internals
 
     private static func normalizedSMBURL(from source: BackupSource) throws -> String {
@@ -217,7 +272,7 @@ enum SMBBackupMount {
     }
 
     /// Best-effort match of an already-mounted share under `/Volumes`.
-    private static func findExistingMount(forSMBURL smb: String) -> URL? {
+    static func findExistingMount(forSMBURL smb: String) -> URL? {
         let share = SMBSourceURL.shareName(from: smb)?.lowercased()
         let volumes = URL(fileURLWithPath: "/Volumes", isDirectory: true)
         guard let contents = try? FileManager.default.contentsOfDirectory(
@@ -242,62 +297,93 @@ enum SMBBackupMount {
         return nil
     }
 
-    private static func mountViaMountSmbfs(normalized: String, username: String?, password: String) throws -> URL {
-        guard let url = URL(string: normalized), let host = url.host else {
-            throw MountError.invalidURL(normalized)
-        }
-        let parts = url.path.split(separator: "/").map(String.init).filter { !$0.isEmpty }
-        guard let share = parts.first else {
-            throw MountError.invalidURL(normalized)
-        }
-        let subpath = parts.dropFirst().joined(separator: "/")
-        let shareLeaf = share
-        var mountDir = URL(fileURLWithPath: "/Volumes/\(shareLeaf)", isDirectory: true)
-        var n = 1
-        while FileManager.default.fileExists(atPath: mountDir.path) {
-            mountDir = URL(fileURLWithPath: "/Volumes/\(shareLeaf)-\(n)", isDirectory: true)
-            n += 1
-        }
-        try FileManager.default.createDirectory(at: mountDir, withIntermediateDirectories: true)
-
-        // mount_smbfs //user@host/share mountpoint — password via stdin env is awkward;
-        // use //user:pass@host/share only in argv for the child (still OS client). Prefer NetFS.
-        let user = username ?? NSUserName()
-        let remote: String
-        if password.isEmpty {
-            remote = "//\(user)@\(host)/\(share)"
-        } else {
-            let encPass = password.addingPercentEncoding(withAllowedCharacters: .urlUserAllowed) ?? password
-            remote = "//\(user):\(encPass)@\(host)/\(share)"
+    /// NetFS mount that returns the mount URL on success.
+    private static func netFSMountReturningURL(
+        normalized: String,
+        username: String?,
+        password: String,
+        uiOption: String
+    ) throws -> URL {
+        guard let cfURL = CFURLCreateWithString(nil, normalized as CFString, nil) else {
+            throw MountError.invalidURL("Invalid SMB URL after normalize.")
         }
 
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/sbin/mount_smbfs")
-        proc.arguments = [remote, mountDir.path]
-        let errPipe = Pipe()
-        proc.standardError = errPipe
-        proc.standardOutput = Pipe()
-        try proc.run()
-        proc.waitUntilExit()
-        if proc.terminationStatus != 0 {
-            let errData = errPipe.fileHandleForReading.readDataToEndOfFile()
-            let errText = String(data: errData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            try? FileManager.default.removeItem(at: mountDir)
-            throw MountError.mountFailed(errText.isEmpty ? "mount_smbfs exit \(proc.terminationStatus)" : errText)
+        let openOptions = NSMutableDictionary()
+        openOptions[kNAUIOptionKey] = uiOption
+
+        let mountOptions = NSMutableDictionary()
+        mountOptions[kNetFSMountAtMountDirKey] = kCFBooleanTrue
+
+        var mountpoints: Unmanaged<CFArray>?
+        let status = NetFSMountURLSync(
+            cfURL,
+            nil,
+            username as CFString?,
+            password as CFString,
+            openOptions,
+            mountOptions,
+            &mountpoints
+        )
+
+        if status == 0 {
+            if let array = mountpoints?.takeRetainedValue() as? [String],
+               let first = array.first,
+               !first.isEmpty {
+                return URL(fileURLWithPath: first, isDirectory: true)
+            }
+            if let existing = findExistingMount(forSMBURL: normalized) {
+                return existing
+            }
+            throw MountError.mountFailed("NetFS returned no mount point.")
         }
-        if subpath.isEmpty {
-            return mountDir
+
+        // Already mounted can surface as non-zero with the volume present.
+        if let existing = findExistingMount(forSMBURL: normalized) {
+            return existing
         }
-        let nested = mountDir.appendingPathComponent(subpath, isDirectory: true)
-        guard isReachableDirectory(nested) else {
-            throw MountError.volumeUnavailable(nested.path)
+
+        throw MountError.mountFailed(netFSStatusDescription(status))
+    }
+
+
+
+    /// Open `smb://[user@]host/share…` so macOS shows Connect to Server UI, then poll `/Volumes`.
+    private static func openViaSystemConnectAndWait(normalized: String, username: String?) throws -> URL {
+        if let existing = findExistingMount(forSMBURL: normalized) {
+            return existing
         }
-        return nested
+
+        let openURL = connectURL(normalized: normalized, username: username)
+        log.info("Opening system SMB connect UI for \(openURL.absoluteString, privacy: .public)")
+        let opened = NSWorkspace.shared.open(openURL)
+        if !opened {
+            throw MountError.mountFailed(
+                "Could not open \(openURL.absoluteString). Check Local Network privacy for CryptoMako, or use Finder → Go → Connect to Server."
+            )
+        }
+
+        let deadline = Date().addingTimeInterval(systemConnectPollTimeout)
+        while Date() < deadline {
+            if let existing = findExistingMount(forSMBURL: normalized) {
+                log.info("System connect mounted \(normalized, privacy: .public) → \(existing.path, privacy: .public)")
+                return existing
+            }
+            Thread.sleep(forTimeInterval: systemConnectPollInterval)
+        }
+
+        throw MountError.mountTimedOut(normalized)
+    }
+
+    /// Build an `smb://` URL suitable for `NSWorkspace.open` (username optional; never embed password).
+    static func connectURL(normalized: String, username: String?) -> URL {
+        SMBSourceURL.connectURL(normalized: normalized, username: username)
     }
 
     private static func netFSStatusDescription(_ status: Int32) -> String {
         // Common NetFS / errno-ish codes.
         switch status {
+        case Int32(EPERM):
+            return "Operation not permitted (EPERM / status \(status)). Grant CryptoMako Local Network access in System Settings → Privacy & Security, and complete the system Connect to Server prompt if it appears (or mount once in Finder)."
         case Int32(EAUTH), -1:
             return "authentication failed (status \(status))"
         case Int32(ENOENT):
@@ -308,7 +394,12 @@ enum SMBBackupMount {
             return "timed out contacting server (status \(status))"
         default:
             let msg = String(cString: strerror(status))
-            return "status \(status): \(msg)"
+            var text = "status \(status): \(msg)"
+            if status == 1 {
+                // errno 1 is EPERM on Darwin — NetFS often returns raw 1.
+                text += ". If this is EPERM: check Local Network privacy for CryptoMako; the system Connect UI may appear on retry."
+            }
+            return text
         }
     }
 }

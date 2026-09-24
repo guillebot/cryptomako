@@ -540,7 +540,7 @@ struct BackupView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add SMB share")
                 .font(.title3.weight(.semibold))
-            Text("CryptoMako uses macOS mounting (/Volumes via NetFS / mount_smbfs). Password is stored in Keychain; the share is remounted on demand before Sync.")
+            Text("CryptoMako uses macOS mounting under /Volumes (NetFS / system Connect to Server — no embedded SMB client). Password is stored in Keychain; remount-on-demand before Sync. macOS may prompt to connect or for Local Network access. After mount you can use the share root or pick a subfolder.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -568,13 +568,18 @@ struct BackupView: View {
                     smbFormError = ""
                     defer { smbBusy = false }
                     do {
-                        try model.addSMBShare(
+                        let added = try model.addSMBShare(
                             urlString: smbURLText,
                             username: smbUsername,
-                            password: smbPassword
+                            password: smbPassword,
+                            promptForSubfolder: true
                         )
                         smbPassword = ""
-                        showAddSMB = false
+                        if added || model.detail.contains("already in the list") {
+                            showAddSMB = false
+                        } else {
+                            smbFormError = model.detail
+                        }
                     } catch {
                         smbFormError = error.localizedDescription
                     }

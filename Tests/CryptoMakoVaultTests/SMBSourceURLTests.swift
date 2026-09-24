@@ -61,4 +61,19 @@ final class SMBSourceURLTests: XCTestCase {
         XCTAssertEqual(decoded.displayLocation, "smb://nas/share")
         XCTAssertEqual(decoded.smbPasswordKeychainAccount, "smb-password-smb-1")
     }
+
+    func testConnectURLIncludesUsernameWithoutPassword() {
+        let url = SMBSourceURL.connectURL(normalized: "smb://nas/share/photos", username: "guille")
+        XCTAssertEqual(url.scheme, "smb")
+        XCTAssertEqual(url.host, "nas")
+        XCTAssertEqual(url.user, "guille")
+        XCTAssertNil(url.password)
+        XCTAssertTrue(url.path.contains("share"))
+    }
+
+    func testConnectURLOmitsEmptyUsername() {
+        let url = SMBSourceURL.connectURL(normalized: "smb://nas/share", username: "  ")
+        XCTAssertNil(url.user)
+        XCTAssertEqual(url.absoluteString, "smb://nas/share")
+    }
 }

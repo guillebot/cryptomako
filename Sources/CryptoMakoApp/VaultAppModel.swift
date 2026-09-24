@@ -748,32 +748,60 @@ final class VaultAppModel: ObservableObject {
         }
     }
 
-    /// Mount `smb://…`, store password in Keychain, persist bookmark + URL as a Backup source.
-    func addSMBShare(urlString: String, username: String?, password: String) throws {
+    /// Mount `smb://…`, optionally let the user pick a subfolder on the mounted volume, store password in Keychain.
+    /// - Parameter promptForSubfolder: When true (default), shows Use share root / Choose folder after a successful mount.
+    @discardableResult
+    func addSMBShare(urlString: String, username: String?, password: String, promptForSubfolder: Bool = true) throws -> Bool {
         let normalized = try SMBSourceURL.normalize(urlString)
         if backupSources.contains(where: { $0.isSMB && $0.smbURL == normalized }) {
             detail = "That SMB share is already in the list."
-            return
+            return false
         }
         let user = username?.trimmingCharacters(in: .whitespacesAndNewlines)
         let cleanUser = (user?.isEmpty == false) ? user : nil
         let mounted = try SMBBackupMount.mount(
             smbURLString: normalized,
             username: cleanUser,
-            password: password
+            password: password,
+            allowSystemUI: true
         )
+
+        var selected = mounted
+        if promptForSubfolder {
+            let alert = NSAlert()
+            alert.messageText = "SMB share mounted"
+            alert.informativeText = "Mounted at \(mounted.path). Use the share root, or pick a subfolder inside the share. (macOS may have prompted to connect / allow Local Network.)"
+            alert.addButton(withTitle: "Use share root")
+            alert.addButton(withTitle: "Choose folder…")
+            alert.addButton(withTitle: "Cancel")
+            let response = alert.runModal()
+            if response == .alertThirdButtonReturn {
+                // User cancelled after mount — do not add; leave the OS mount as-is.
+                detail = "SMB mount left at \(mounted.path); source not added."
+                return false
+            }
+            if response == .alertSecondButtonReturn {
+                if let picked = SMBBackupMount.pickFolderUnderMountedShare(startingAt: mounted) {
+                    selected = picked
+                }
+                // Cancelled panel → keep share root (one-click still works).
+            }
+        }
+
         var source = BackupSource(
-            path: mounted.path,
+            path: selected.path,
             kind: .smb,
             smbURL: normalized,
             smbUsername: cleanUser,
-            bookmarkData: SMBBackupMount.makeBookmark(for: mounted)
+            bookmarkData: SMBBackupMount.makeBookmark(for: selected)
         )
         try SMBBackupMount.savePassword(password, for: source)
         let softWarn = BackupPathOverlap.softWarnOnAdd(existing: backupSources, candidatePath: source.path)
         backupSources.append(source)
         persistBackupSources()
-        detail = softWarn ?? "Added SMB source \(normalized) → \(mounted.path)"
+        let pathNote = selected.path == mounted.path ? selected.path : "\(selected.path) (share \(normalized))"
+        detail = softWarn ?? "Added SMB source \(normalized) → \(pathNote)"
+        return true
     }
 
     func removeBackupSource(_ id: String) {
