@@ -1,4 +1,6 @@
 using System.ComponentModel;
+using System.Globalization;
+using System.Threading;
 using System.Runtime.CompilerServices;
 using CryptoMako.S3;
 using CryptoMako.Vault;
@@ -28,6 +30,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private string? _vaultMetadataFingerprint;
     private bool _remoteChanged;
     private string _backupSourcesSummary = "(none)";
+    private double _backupProgressPercent;
+    private int _backupFilesDone;
+    private int _backupFilesTotal;
+    private long _backupBytesDone;
+    private long _backupBytesTotal;
+    private double _backupBytesPerSecond;
+    private string _backupCurrentPath = "";
+    private string _backupPhase = "";
+    private string _backupProgressLabel = "";
+    private string _backupSpeedLabel = "";
+    private string _backupEtaLabel = "";
 
     public MainViewModel(ISecretStore? secrets = null)
     {
@@ -56,6 +69,75 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         get => _backupSourcesSummary;
         private set { if (_backupSourcesSummary != value) { _backupSourcesSummary = value; OnPropertyChanged(); } }
     }
+
+    /// <summary>0–100 Backup Sync progress (bytes when known, else files). Cleared when idle.</summary>
+    public double BackupProgressPercent
+    {
+        get => _backupProgressPercent;
+        private set { if (Math.Abs(_backupProgressPercent - value) > 0.01) { _backupProgressPercent = value; OnPropertyChanged(); } }
+    }
+
+    public int BackupFilesDone
+    {
+        get => _backupFilesDone;
+        private set { if (_backupFilesDone != value) { _backupFilesDone = value; OnPropertyChanged(); } }
+    }
+
+    public int BackupFilesTotal
+    {
+        get => _backupFilesTotal;
+        private set { if (_backupFilesTotal != value) { _backupFilesTotal = value; OnPropertyChanged(); } }
+    }
+
+    public long BackupBytesDone
+    {
+        get => _backupBytesDone;
+        private set { if (_backupBytesDone != value) { _backupBytesDone = value; OnPropertyChanged(); } }
+    }
+
+    public long BackupBytesTotal
+    {
+        get => _backupBytesTotal;
+        private set { if (_backupBytesTotal != value) { _backupBytesTotal = value; OnPropertyChanged(); } }
+    }
+
+    public double BackupBytesPerSecond
+    {
+        get => _backupBytesPerSecond;
+        private set { if (Math.Abs(_backupBytesPerSecond - value) > 0.1) { _backupBytesPerSecond = value; OnPropertyChanged(); OnPropertyChanged(nameof(BackupSpeedLabel)); } }
+    }
+
+    public string BackupCurrentPath
+    {
+        get => _backupCurrentPath;
+        private set { if (_backupCurrentPath != value) { _backupCurrentPath = value; OnPropertyChanged(); } }
+    }
+
+    public string BackupPhase
+    {
+        get => _backupPhase;
+        private set { if (_backupPhase != value) { _backupPhase = value; OnPropertyChanged(); } }
+    }
+
+    public string BackupProgressLabel
+    {
+        get => _backupProgressLabel;
+        private set { if (_backupProgressLabel != value) { _backupProgressLabel = value; OnPropertyChanged(); } }
+    }
+
+    public string BackupSpeedLabel
+    {
+        get => _backupSpeedLabel;
+        private set { if (_backupSpeedLabel != value) { _backupSpeedLabel = value; OnPropertyChanged(); } }
+    }
+
+    public string BackupEtaLabel
+    {
+        get => _backupEtaLabel;
+        private set { if (_backupEtaLabel != value) { _backupEtaLabel = value; OnPropertyChanged(); } }
+    }
+
+    public bool IsBackupProgressVisible => IsBackupSyncRunning || BackupProgressPercent > 0 || !string.IsNullOrEmpty(BackupPhase);
 
     /// <summary>True when vault.cryptomator fingerprint changed since unlock (no merge).</summary>
     public bool RemoteChanged
@@ -370,6 +452,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
 
+    private int _probeInFlight;
+
     private async Task ProbeEndpointOnceAsync(CancellationToken ct)
     {
         if (Settings.IsLocal)
@@ -378,49 +462,61 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             return;
         }
 
-        var secretKey = _secrets.GetSecret(SecretAccounts.SecretKey);
-        var proxyPass = _secrets.GetSecret(SecretAccounts.ProxyPassword);
-        S3ProbeResult result;
+        // Debounce overlapping auto-probes (manual ProbeAsync sets Busy separately).
+        if (Interlocked.CompareExchange(ref _probeInFlight, 1, 0) != 0)
+            return;
         try
         {
-            result = await S3Probe.ProbeAsync(Settings, secretKey, Preferences, proxyPass, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex)
-        {
-            result = new S3ProbeResult
+            var secretKey = _secrets.GetSecret(SecretAccounts.SecretKey);
+            var proxyPass = _secrets.GetSecret(SecretAccounts.ProxyPassword);
+            S3ProbeResult result;
+            try
             {
-                Dns = ProbeLamp.Fail,
-                Tcp = ProbeLamp.Fail,
-                Https = ProbeLamp.Fail,
-                List = ProbeLamp.Fail,
-                Detail = ex.Message,
-            };
-        }
-
-        // Do not assign LastProbe here — monitor runs off the UI thread; ProbeAsync owns lamps.
-        // Reachable = TCP ok and HTTPS not failed (list may still fail without credentials).
-        var ok = result.Tcp == ProbeLamp.Ok
-                 && result.Https is not ProbeLamp.Fail
-                 && result.Dns is not ProbeLamp.Fail;
-
-        var previous = _lastReachable;
-        _lastReachable = ok;
-
-        if (ok)
-        {
-            if (previous == false)
-            {
-                AppendLog("S3 endpoint reachable again");
-                await AttemptAutoUnlockAsync("reconnect", ct).ConfigureAwait(false);
+                result = await S3Probe.ProbeAsync(Settings, secretKey, Preferences, proxyPass, ct).ConfigureAwait(false);
             }
-        }
-        else if (previous != false)
-        {
-            AppendLog("No connectivity to S3 endpoint — check VPN or internet");
-        }
+            catch (Exception ex)
+            {
+                result = new S3ProbeResult
+                {
+                    Dns = ProbeLamp.Fail,
+                    Tcp = ProbeLamp.Fail,
+                    Https = ProbeLamp.Fail,
+                    List = ProbeLamp.Fail,
+                    Detail = ex.Message,
+                };
+            }
 
-        if (IsUnlocked)
-            await CheckRemoteChangeAsync(ct).ConfigureAwait(false);
+            // Auto probe updates the same lamps as the manual Probe S3 button (macOS parity).
+            LastProbe = result;
+
+            // Reachable = TCP ok and HTTPS not failed (list may still fail without credentials).
+            var ok = result.Tcp == ProbeLamp.Ok
+                     && result.Https is not ProbeLamp.Fail
+                     && result.Dns is not ProbeLamp.Fail;
+
+            var previous = _lastReachable;
+            _lastReachable = ok;
+
+            if (ok)
+            {
+                if (previous == false)
+                {
+                    AppendLog("S3 endpoint reachable again");
+                    await AttemptAutoUnlockAsync("reconnect", ct).ConfigureAwait(false);
+                }
+            }
+            else if (previous != false)
+            {
+                AppendLog("No connectivity to S3 endpoint — check VPN or internet");
+            }
+
+            if (IsUnlocked)
+                await CheckRemoteChangeAsync(ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _probeInFlight, 0);
+        }
     }
 
     private async Task AttemptAutoUnlockAsync(string reason, CancellationToken ct)
@@ -484,11 +580,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         var prev = Interlocked.Exchange(ref _backupSyncCts, linked);
         try { prev?.Cancel(); } catch { /* ignore */ }
         prev?.Dispose();
+        ResetBackupProgress("scanning");
         OnPropertyChanged(nameof(IsBackupSyncRunning));
+        OnPropertyChanged(nameof(IsBackupProgressVisible));
         try
         {
             var engine = new BackupSyncEngine();
             var progress = new Progress<string>(p => AppendLog(p));
+            var syncProgress = new Progress<BackupSyncProgressUpdate>(ApplyBackupProgress);
             var uploaded = 0;
             var skipped = 0;
             long bytes = 0;
@@ -496,6 +595,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             {
                 linked.Token.ThrowIfCancellationRequested();
                 AppendLog($"sync source {src.VaultFolderName} ← {src.Path}");
+                BackupPhase = "uploading";
+                BackupCurrentPath = src.Path;
                 var result = await engine.SyncAsync(
                     _session,
                     src.Path,
@@ -503,6 +604,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                     Preferences,
                     syncStatePath: AppPaths.SyncStatePath,
                     progress: progress,
+                    syncProgress: syncProgress,
                     ct: linked.Token);
                 uploaded += result.FilesUploaded;
                 skipped += result.FilesSkipped;
@@ -510,6 +612,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             }
             AppendLog($"sync done uploaded={uploaded} skipped={skipped} bytes={bytes}");
             Status = $"synced {uploaded} files";
+            BackupPhase = "done";
+            BackupProgressPercent = 100;
+            BackupProgressLabel = $"Finished - {uploaded} files - {FormatBytes(bytes)}";
+            BackupSpeedLabel = "";
+            BackupEtaLabel = "";
+            BackupCurrentPath = "";
+        }
+        catch (OperationCanceledException)
+        {
+            BackupPhase = "cancelled";
+            BackupProgressLabel = "Cancelled";
+            BackupSpeedLabel = "";
+            BackupEtaLabel = "";
+            throw;
+        }
+        catch
+        {
+            BackupPhase = "error";
+            throw;
         }
         finally
         {
@@ -517,7 +638,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 _backupSyncCts = null;
             linked.Dispose();
             OnPropertyChanged(nameof(IsBackupSyncRunning));
+            OnPropertyChanged(nameof(IsBackupProgressVisible));
             Busy = false;
+            BackupBytesPerSecond = 0;
+            BackupSpeedLabel = "";
+            BackupEtaLabel = "";
         }
     }
 
@@ -625,6 +750,69 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         OnPropertyChanged(nameof(Preferences));
         AppendLog("reloaded settings from disk");
     }
+
+
+    private void ResetBackupProgress(string phase)
+    {
+        BackupPhase = phase;
+        BackupProgressPercent = 0;
+        BackupFilesDone = 0;
+        BackupFilesTotal = 0;
+        BackupBytesDone = 0;
+        BackupBytesTotal = 0;
+        BackupBytesPerSecond = 0;
+        BackupCurrentPath = "";
+        BackupProgressLabel = phase == "scanning" ? "Counting local files..." : "";
+        BackupSpeedLabel = "";
+        BackupEtaLabel = "";
+        OnPropertyChanged(nameof(IsBackupProgressVisible));
+    }
+
+    private void ApplyBackupProgress(BackupSyncProgressUpdate u)
+    {
+        BackupPhase = u.Phase;
+        BackupFilesDone = u.FilesDone;
+        BackupFilesTotal = u.FilesTotal;
+        BackupBytesDone = u.BytesDone;
+        BackupBytesTotal = u.BytesTotal;
+        BackupBytesPerSecond = u.BytesPerSecond;
+        BackupCurrentPath = u.CurrentPath ?? "";
+        BackupProgressPercent = u.Percent;
+        BackupProgressLabel = u.FilesTotal > 0 || u.BytesTotal > 0
+            ? string.Format(CultureInfo.InvariantCulture, "{0:0}% - {1}/{2} files - {3}/{4}", u.Percent, u.FilesDone, Math.Max(u.FilesTotal, u.FilesDone), FormatBytes(u.BytesDone), FormatBytes(u.BytesTotal))
+            : (u.Phase == "scanning" ? "Counting local files..." : u.Phase);
+        BackupSpeedLabel = u.BytesPerSecond > 0 ? FormatRate(u.BytesPerSecond) : "";
+        BackupEtaLabel = FormatEta(u.BytesDone, u.BytesTotal, u.BytesPerSecond);
+        OnPropertyChanged(nameof(IsBackupProgressVisible));
+    }
+
+    public static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        double v = bytes;
+        string[] units = ["KB", "MB", "GB", "TB"];
+        var u = -1;
+        do { v /= 1024; u++; } while (v >= 1024 && u < units.Length - 1);
+        return string.Format(CultureInfo.InvariantCulture, "{0:0.##} {1}", v, units[u]);
+    }
+
+    public static string FormatRate(double bytesPerSecond)
+    {
+        if (bytesPerSecond <= 0) return "";
+        return FormatBytes((long)bytesPerSecond) + "/s";
+    }
+
+    public static string FormatEta(long bytesDone, long bytesTotal, double bytesPerSecond)
+    {
+        if (bytesPerSecond <= 1 || bytesTotal <= bytesDone) return "";
+        var remain = (bytesTotal - bytesDone) / bytesPerSecond;
+        if (remain < 60) return string.Format(CultureInfo.InvariantCulture, "ETA {0:0}s", remain);
+        if (remain < 3600) return string.Format(CultureInfo.InvariantCulture, "ETA {0:0.0}m", remain / 60);
+        return string.Format(CultureInfo.InvariantCulture, "ETA {0:0.0}h", remain / 3600);
+    }
+
+    /// <summary>Host/UI log sink (Explorer connect, soft CfAPI notes).</summary>
+    public void LogLine(string line) => AppendLog(line);
 
     private void AppendLog(string line)
     {

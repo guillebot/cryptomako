@@ -1,4 +1,4 @@
-# macOS ? Windows feature parity
+﻿# macOS ? Windows feature parity
 
 Checklist vs the Swift app (`Sources/CryptoMako*`) as of the Windows branch.
 Legend: ? parity ? ? partial / stub ? ? blocked (needs Windows box or macOS-only)
@@ -18,7 +18,7 @@ Legend: ? parity ? ? partial / stub ? ? blocked (needs Windows box or macOS-only
 | Settings keys (Platforms-locked) | ? | ? same JSON keys | ? |
 | Proxy (system/direct/custom) | ? | ? | ? |
 | Credentials store | Keychain | Cred Manager (Win) / env+secrets.json (Mac host) + `cred` CLI | ? |
-| Tray / status item | ? NSStatusItem | ? Avalonia `TrayIcon` | ? |
+| Tray / status item | ? NSStatusItem | ? WinUI `H.NotifyIcon` + status strip | ? |
 | Tray unlock / lock / open / quit | ? | ? | ? |
 | Connectivity probe lamps | TCP-focused + banner | dns/tcp/https/list + tray labels | ? |
 | autoReconnect monitor | ? 20s + launch unlock | ? 20s + launch/preference unlock | ? |
@@ -27,7 +27,7 @@ Legend: ? parity ? ? partial / stub ? ? blocked (needs Windows box or macOS-only
 | FUSE / rclone path | ? optional | ? (not applicable) | ? N/A |
 | Update checker | ? | ? | ? deferred |
 | Transfer metrics in menu | ? | ? | ? deferred |
-| WinUI / MSIX installer | ? | ? publish folder only | ? deferred |
+| WinUI / MSIX installer | ? | ? WinUI 3 unpackaged Desktop; MSIX store listing deferred | ? partial |
 | Golden fixture tests | ? | ? + mutation / CfAPI unit tests | ? |
 
 ## Soft release (Windows side)
@@ -41,7 +41,7 @@ Smoked on monster (Win11): CredMan `cred set/get/delete`, `cfapi platform` suppo
 1. Conflict/merge / remote-change watcher (see `docs/cfapi.md`).
 2. Forget-credentials / CredMan wipe on Lock (Lock = in-process clear only).
 3. CLOSE fail cannot deny; dirty local bytes on failed write-back.
-4. Update checker, transfer metrics menu, WinUI/MSIX.
+4. Update checker, transfer metrics menu, MSIX store listing (WinUI host shipped).
 5. WinRT `GetCurrentSyncRoots` empty on some hosts while Cf+registry still provides Explorer awareness.
 
 Do **not** treat Mac builds of `CryptoMako.CfApi` as a working Explorer mount.
@@ -50,18 +50,19 @@ Do **not** treat Mac builds of `CryptoMako.CfApi` as a working Explorer mount.
 
 | Gap | Resolution |
 |-----|------------|
-| Lock High order (cancel Backup Sync → disconnect CfAPI viewer; no CredMan wipe) | Shipped |
-| Soft CfAPI `ExplorerViewer` binding on connect | Shipped — Desktop auto-binds on unlock; CLI `cfapi connect` binds a host VM; Lock clears binding |
+| Lock High order (cancel Backup Sync â†’ disconnect CfAPI viewer; no CredMan wipe) | Shipped |
+| Soft CfAPI `ExplorerViewer` binding on connect | Shipped â€” Desktop auto-binds on unlock; CLI `cfapi connect` binds a host VM; Lock clears binding |
 | Unlock / ls / cat / Backup Sync / CredMan / HTTPS-only / settings keys / tray probes | Shipped (soft bar) |
-| Nested Backup Sync source overlap (soft-warn add / hard-fail Sync) | **Shipped** — `backup-sources.json` + `BackupPathOverlap` (no new settings.json keys) |
-| Remote-change read-only probe (ETag/mtime, remount/refresh hint) | **Shipped** — no merge; no new shared keys |
+| Nested Backup Sync source overlap (soft-warn add / hard-fail Sync) | **Shipped** â€” `backup-sources.json` + `BackupPathOverlap` (no new settings.json keys) |
+| Remote-change read-only probe (ETag/mtime, remount/refresh hint) | **Shipped** â€” no merge; no new shared keys |
 | CredMan wipe on Lock / Forget credentials | **Deferred** (Platforms) |
 | App Store / MSIX store listing | **Deferred** (logo + listing wait on Guillermo/Platforms) |
-| Shared schedule keys (`scheduleEnabled`, …) | **Deferred** (Platforms Settings) |
+| Shared schedule keys (`scheduleEnabled`, â€¦) | **Deferred** (Platforms Settings) |
 
 ### Remote-change probe (shipped) + conflict/merge (still deferred)
 
 Read-only `vault.cryptomator` fingerprint probe is wired into the existing connectivity/Probe loop (see `backup-sources.md`). **No merge engine** and **no new shared settings keys**.
 
 Conflict copies / multi-writer policy remain Platforms-deferred. Windows stays single-writer / last-writer-wins at the object store, matching CfAPI CLOSE write-back in `cfapi.md`.
+
 

@@ -22,7 +22,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
     public const string SyncRootIdPrefix = "CryptoMako!";
     public static readonly Guid ProviderId = new("C8A7E5D1-4B2F-4E9A-9C31-7F6D2A1B0E44");
 
-    // STATUS_CLOUD_FILE_ACCESS_DENIED — fail-closed ACK when vault/remote mutation fails.
+    // STATUS_CLOUD_FILE_ACCESS_DENIED â€” fail-closed ACK when vault/remote mutation fails.
     private static readonly NTStatus StatusCloudFileAccessDenied = new(unchecked((int)0xC000CF0B));
 
     public string SyncRootPath { get; }
@@ -65,7 +65,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         _accountName = accountName.Trim();
 
         // WinRT StorageProviderSyncRootManager.Register also registers with CfAPI.
-        // Do not CfRegisterSyncRoot after a successful WinRT register (double-register → invalid).
+        // Do not CfRegisterSyncRoot after a successful WinRT register (double-register â†’ invalid).
         if (ShellSyncRoot.SupportsWinRt &&
             ShellSyncRoot.TryRegisterWinRtOnly(SyncRootPath, _accountName, out var winRtId, out var winRtDetail))
         {
@@ -105,7 +105,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         _registered = true;
         _registeredViaWinRt = false;
 
-        // Cf path already registered — do not call WinRT Register (would double-register).
+        // Cf path already registered â€” do not call WinRT Register (would double-register).
         var stubId = ShellSyncRoot.BuildSyncRootId(_accountName);
         _shellSyncRootId = stubId;
         _shellDetail = ShellSyncRoot.TryRegisterViaRegistry(SyncRootPath, stubId)
@@ -153,11 +153,30 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
                         if (Directory.Exists(f)) Directory.Delete(f, recursive: true);
                         else File.Delete(f);
                     }
-                    catch { /* locked / reparse — leave */ }
+                    catch { /* locked / reparse â€” leave */ }
                 }
             }
         }
         catch { /* best-effort */ }
+    }
+
+    /// <summary>
+    /// Clears orphan CfAPI / WinRT / registry sync-root state for this path before a fresh Register.
+    /// Call when in-process state says unregistered but Explorer still treats the folder as a cloud root.
+    /// </summary>
+    public string CleanupOrphans(string accountName = "default")
+    {
+        EnsureWindows();
+        if (!string.IsNullOrWhiteSpace(accountName))
+            _accountName = accountName.Trim();
+        Disconnect();
+        var detail = ShellSyncRoot.TryCleanupOrphans(SyncRootPath, _accountName ?? "default");
+        _registered = false;
+        _registeredViaWinRt = false;
+        _shellSyncRootId = null;
+        _shellDetail = detail;
+        FreeSyncRootIdentity();
+        return detail;
     }
 
     public void Connect()
@@ -252,7 +271,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
     /// <summary>
     /// Creates on-demand placeholders under the sync root for the given vault nodes.
     /// FileIdentity = UTF-8 cleartext path (e.g. /hello.txt) used by FETCH_DATA.
-    /// Nested RelativeFileName may contain '\' — create parents (dirs) before children.
+    /// Nested RelativeFileName may contain '\' â€” create parents (dirs) before children.
     /// </summary>
     public int CreatePlaceholders(IReadOnlyList<CloudFilesPlaceholder> placeholders)
     {
@@ -837,7 +856,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
 
     /// <summary>
     /// NOTIFY_FILE_CLOSE_COMPLETION: completion-only (no deny ACK). Write-back hydrated
-    /// cleartext → vault put (remote 2xx). On success mark in-sync; on failure leave dirty (fail-closed).
+    /// cleartext â†’ vault put (remote 2xx). On success mark in-sync; on failure leave dirty (fail-closed).
     /// Skips closes flagged DELETED (NOTIFY_DELETE owns vault delete).
     /// </summary>
     private static void OnNotifyFileClose(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
@@ -864,7 +883,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             var ok = TryWriteBackCleartext(provider.Session, vaultPath, clear);
             if (ok)
                 TryMarkPlaceholderInSync(fsPath);
-            // No CfExecute ACK for CLOSE completion — fail-closed means do not mark durable/in-sync.
+            // No CfExecute ACK for CLOSE completion â€” fail-closed means do not mark durable/in-sync.
         }
         catch
         {
@@ -977,13 +996,13 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             return norm;
         }
 
-        // Fallback: map NormalizedPath under sync root (REQUIRE_FULL_FILE_PATH → absolute).
+        // Fallback: map NormalizedPath under sync root (REQUIRE_FULL_FILE_PATH â†’ absolute).
         var normalized = info.NormalizedPath;
         return TryMapFsPathToVaultCleartext(SyncRootPath, normalized, info.VolumeDosName);
     }
 
     /// <summary>
-    /// NOTIFY_DELETE: mutate vault (remote 2xx), then ACK SUCCESS; any failure → ACCESS_DENIED.
+    /// NOTIFY_DELETE: mutate vault (remote 2xx), then ACK SUCCESS; any failure â†’ ACCESS_DENIED.
     /// </summary>
     private static void OnNotifyDelete(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
     {
@@ -996,7 +1015,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
 
     /// <summary>
     /// NOTIFY_RENAME: mutate vault (remote 2xx), update FileIdentity to the new cleartext path,
-    /// then ACK SUCCESS; any vault failure → ACCESS_DENIED.
+    /// then ACK SUCCESS; any vault failure â†’ ACCESS_DENIED.
     /// </summary>
     private static void OnNotifyRename(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
     {
@@ -1011,7 +1030,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         var ok = TryRenameInVault(provider?.Session, from, to);
         if (ok && to is not null && provider is not null)
         {
-            // File still at pre-rename FS path during this callback — stamp new vault identity now.
+            // File still at pre-rename FS path during this callback â€” stamp new vault identity now.
             var fsPath = provider.TryResolveAbsoluteFsPath(info);
             if (fsPath is not null)
                 TryUpdatePlaceholderFileIdentity(fsPath, to);

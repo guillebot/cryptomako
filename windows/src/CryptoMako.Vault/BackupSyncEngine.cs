@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Threading.Channels;
 
 namespace CryptoMako.Vault;
@@ -35,6 +36,7 @@ public sealed class BackupSyncEngine
         BackupSyncState? syncState = null,
         string? syncStatePath = null,
         IProgress<string>? progress = null,
+        IProgress<BackupSyncProgressUpdate>? syncProgress = null,
         CancellationToken ct = default)
     {
         excludes ??= new BackupSyncExcludes();
@@ -49,6 +51,7 @@ public sealed class BackupSyncEngine
 
         var vaultRoot = "Backups/" + vaultFolderName.Trim().Trim('/');
         progress?.Report("ensure " + vaultRoot);
+        syncProgress?.Report(new BackupSyncProgressUpdate { Phase = "preparing", CurrentPath = vaultRoot });
         var leafDirId = await session.EnsureDirectoryPathAsync(vaultRoot, ct);
 
         var limiter = UploadBandwidthLimiter.FromPreferences(preferences);
@@ -62,6 +65,11 @@ public sealed class BackupSyncEngine
         var stateLock = new object();
         var dirCache = new Dictionary<string, string>(StringComparer.Ordinal) { [""] = leafDirId };
         var dirCacheLock = new object();
+        var rateWindowStart = DateTime.UtcNow;
+        long rateWindowBytes = 0;
+        double emaRate = 0;
+        var filesTotal = 0;
+        long bytesTotal = 0;
 
         async Task<string> ResolveParentDirIdAsync(string parentRelativeDir)
         {
@@ -93,6 +101,7 @@ public sealed class BackupSyncEngine
                 await session.PutFileAsync(parentId, job.FileName, job.AbsolutePath, ct);
 
                 var key = BackupSyncState.Key(vaultFolderName, job.RelativePath);
+                BackupSyncProgressUpdate? update = null;
                 lock (stateLock)
                 {
                     syncState.Files[key] = new BackupFileFingerprint
@@ -102,11 +111,44 @@ public sealed class BackupSyncEngine
                     };
                     uploaded++;
                     bytes += job.Size;
+                    rateWindowBytes += job.Size;
+                    var elapsed = (DateTime.UtcNow - rateWindowStart).TotalSeconds;
+                    if (elapsed >= 0.5)
+                    {
+                        var instant = rateWindowBytes / Math.Max(elapsed, 0.001);
+                        emaRate = emaRate <= 0 ? instant : (emaRate * 0.7 + instant * 0.3);
+                        rateWindowStart = DateTime.UtcNow;
+                        rateWindowBytes = 0;
+                    }
+                    update = new BackupSyncProgressUpdate
+                    {
+                        Phase = "uploading",
+                        FilesDone = uploaded,
+                        FilesTotal = filesTotal,
+                        BytesDone = bytes,
+                        BytesTotal = bytesTotal,
+                        BytesPerSecond = emaRate,
+                        CurrentPath = job.RelativePath,
+                    };
                 }
+                if (update is not null)
+                    syncProgress?.Report(update);
             }
         }
 
+        syncProgress?.Report(new BackupSyncProgressUpdate { Phase = "scanning", CurrentPath = localRoot });
         var (jobs, skipped) = CollectJobs(localRoot, excludes, syncState, vaultFolderName);
+        filesTotal = jobs.Count;
+        bytesTotal = jobs.Sum(j => j.Size);
+        syncProgress?.Report(new BackupSyncProgressUpdate
+        {
+            Phase = "uploading",
+            FilesDone = 0,
+            FilesTotal = filesTotal,
+            BytesDone = 0,
+            BytesTotal = bytesTotal,
+            CurrentPath = filesTotal == 0 ? "No regular files to upload" : "Starting upload…",
+        });
 
         var workers = new List<Task>();
         for (var i = 0; i < preferences.ClampedSmallPutConcurrency; i++)
