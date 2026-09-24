@@ -71,8 +71,7 @@ internal sealed class ExplorerViewerController : IDisposable
                 _vm.LogLine($"CfAPI placeholders seeded: {n} under {AppPaths.SyncRootPath}");
                 // Re-enable on-demand population on the root so Explorer FETCH_PLACEHOLDERS
                 // still fires after soft seed (and recovers if a prior empty TRANSFER disabled it).
-                if (CloudFilesProvider.TryEnableOnDemandPopulation(AppPaths.SyncRootPath))
-                    _vm.LogLine("CfAPI: root on-demand population enabled");
+                // Do NOT CfUpdatePlaceholder the sync root (0x8007016A / "cloud operation is invalid").
                 if (n == 0)
                 {
                     try
@@ -90,8 +89,6 @@ internal sealed class ExplorerViewerController : IDisposable
             {
                 // Soft: stay connected so Explorer can enumerate / FETCH_PLACEHOLDERS on demand.
                 _vm.LogLine("CfAPI populate (soft): " + ex.Message.Replace("\n", " "));
-                try { CloudFilesProvider.TryEnableOnDemandPopulation(AppPaths.SyncRootPath); }
-                catch { /* ignore */ }
             }
 
             var probe = ProbeSyncRootListing();
@@ -99,9 +96,15 @@ internal sealed class ExplorerViewerController : IDisposable
 
             if (_provider.IsConnected && probe.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
             {
-                // Brief settle for shell after live connect — never before CfConnect.
+                // Re-probe after a short settle — opening Explorer on a still-invalid root
+                // surfaces the OS "Location is not available / cloud operation is invalid" dialog.
                 await Task.Delay(400, ct).ConfigureAwait(false);
-                TryOpenSyncRootInExplorer(requireLiveProbe: true);
+                var probe2 = ProbeSyncRootListing();
+                _vm.LogLine("CfAPI re-probe before Explorer open: " + probe2);
+                if (probe2.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
+                    TryOpenSyncRootInExplorer(requireLiveProbe: true);
+                else
+                    _vm.LogLine("CfAPI: skipping Explorer open — re-probe failed (avoid OS cloud dialog)");
             }
             else
             {
@@ -210,10 +213,15 @@ internal sealed class ExplorerViewerController : IDisposable
         try
         {
             var entries = Directory.EnumerateFileSystemEntries(AppPaths.SyncRootPath).Take(20).ToList();
-            return "CfAPI sync root OK — " + entries.Count + " entries under " + AppPaths.SyncRootPath;
+            // Empty can be a legit empty vault, but with a live provider it must still ENUM
+            // without 0x8007016A. Callers gate Explorer open on the OK prefix.
+            return "CfAPI sync root OK — " + entries.Count + " entries under " + AppPaths.SyncRootPath
+                + (entries.Count == 0 ? " (empty)" : " sample=[" + string.Join(", ", entries.Select(Path.GetFileName).Take(5)) + "]");
         }
         catch (Exception ex)
         {
+            if (IsCloudInvalid(ex))
+                return "CfAPI sync root LIST FAIL (0x8007016A cloud invalid): " + ShortEx(ex);
             return "CfAPI sync root LIST FAIL: " + ShortEx(ex);
         }
     }
