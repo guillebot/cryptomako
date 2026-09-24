@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using CryptoMako.App;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -85,7 +85,7 @@ public sealed partial class MainWindow : Window
         BackupProgressPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         BackupProgressBar.Value = _vm.BackupProgressPercent;
         BackupProgressLabelText.Text = string.IsNullOrEmpty(_vm.BackupProgressLabel)
-            ? (_vm.IsBackupSyncRunning ? "Syncing…" : "")
+            ? (_vm.IsBackupSyncRunning ? "Syncingâ€¦" : "")
             : _vm.BackupProgressLabel;
         BackupSpeedText.Text = string.IsNullOrEmpty(_vm.BackupSpeedLabel) ? "" : ("Speed: " + _vm.BackupSpeedLabel);
         BackupEtaText.Text = _vm.BackupEtaLabel ?? "";
@@ -137,11 +137,21 @@ public sealed partial class MainWindow : Window
         {
             _syncingUi = false;
         }
+        ApplyStorageModeUi();
+        ApplyProxyModeUi();
         RefreshStatusStrip();
     }
 
     private void PushToVm()
     {
+        // Mirror proxy radios into the hidden ProxyModeBox before reading prefs.
+        if (ProxyCustomRadio?.IsChecked == true)
+            ProxyModeBox.Text = "custom";
+        else if (ProxyOffRadio?.IsChecked == true)
+            ProxyModeBox.Text = "direct";
+        else if (ProxySystemRadio?.IsChecked == true)
+            ProxyModeBox.Text = "system";
+
         _vm.Settings.LocalVaultPath = LocalVaultPathBox.Text ?? "";
         _vm.Settings.Endpoint = EndpointBox.Text ?? "";
         _vm.Settings.Region = RegionBox.Text ?? "";
@@ -224,6 +234,8 @@ public sealed partial class MainWindow : Window
         _vm.Settings.StorageMode = "local";
         _vm.SaveSettings();
         StorageModeText.Text = _vm.Settings.StorageMode;
+        ApplyStorageModeUi();
+        UiNote("Storage mode: local");
     }
 
     private void OnModeS3(object sender, RoutedEventArgs e)
@@ -232,6 +244,8 @@ public sealed partial class MainWindow : Window
         _vm.Settings.StorageMode = "s3";
         _vm.SaveSettings();
         StorageModeText.Text = _vm.Settings.StorageMode;
+        ApplyStorageModeUi();
+        UiNote("Storage mode: s3");
     }
 
     private async void OnSaveSettings(object sender, RoutedEventArgs e)
@@ -301,9 +315,17 @@ public sealed partial class MainWindow : Window
         try
         {
             PushToVm();
+            if (!_vm.IsUnlocked)
+                throw new InvalidOperationException("unlock vault first — Sync needs an unlocked vault");
+            if (_vm.BackupSources.Sources.Count == 0
+                && (string.IsNullOrWhiteSpace(_vm.BackupSource) || !Directory.Exists(_vm.BackupSource)))
+                throw new InvalidOperationException("add a backup source (Backup tab) before Sync");
+            UiNote("Backup Sync starting…");
             await _vm.SyncAsync();
+            UiNote(_vm.Status);
+            RefreshStatusStrip();
         }
-        catch (Exception ex) { VmLog(ex); }
+        catch (Exception ex) { VmLog(ex, backupHint: true); }
     }
 
     private async void OnBrowseBackupSource(object sender, RoutedEventArgs e)
@@ -351,8 +373,15 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if (Application.Current is App app)
-                await app.ConnectExplorerManualAsync();
+            if (Application.Current is not App app)
+                throw new InvalidOperationException("Desktop App host not ready");
+            if (!_vm.IsUnlocked)
+                throw new InvalidOperationException("unlock vault first — Connect Explorer needs an unlocked vault");
+            UiNote("Connecting CfAPI Explorer viewer…");
+            await app.ConnectExplorerManualAsync();
+            UiNote(_vm.IsExplorerViewerConnected
+                ? "Explorer viewer connected"
+                : "Explorer connect finished (see log)");
             RefreshStatusStrip();
         }
         catch (Exception ex) { VmLog(ex); }
@@ -362,8 +391,10 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if (Application.Current is App app)
-                app.DisconnectExplorerManual();
+            if (Application.Current is not App app)
+                throw new InvalidOperationException("Desktop App host not ready");
+            app.DisconnectExplorerManual();
+            UiNote("Explorer viewer disconnected");
             RefreshStatusStrip();
         }
         catch (Exception ex) { VmLog(ex); }
@@ -373,16 +404,19 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if (Application.Current is not App app) return;
+            if (Application.Current is not App app)
+                throw new InvalidOperationException("Desktop App host not ready");
             if (!_vm.IsExplorerViewerConnected)
             {
                 if (!_vm.IsUnlocked)
-                    throw new InvalidOperationException("unlock vault first");
+                    throw new InvalidOperationException("unlock vault first — Connect Explorer needs an unlocked vault");
+                UiNote("Connecting CfAPI Explorer viewer…");
                 await app.ConnectExplorerManualAsync();
             }
             else
             {
                 app.OpenExplorerSyncRoot();
+                UiNote("Opened sync root in Explorer");
             }
             RefreshStatusStrip();
         }
@@ -393,17 +427,95 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if (Application.Current is App app)
-                app.OpenExplorerSyncRoot();
+            if (Application.Current is not App app)
+                throw new InvalidOperationException("Desktop App host not ready");
+            if (!_vm.IsExplorerViewerConnected)
+                throw new InvalidOperationException("Explorer viewer not connected — unlock + Connect Explorer first");
+            app.OpenExplorerSyncRoot();
+            UiNote("Opened sync root in Explorer");
         }
         catch (Exception ex) { VmLog(ex); }
     }
 
-    private void VmLog(Exception ex)
+    private void OnProxyModeClick(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (ProxyOffRadio.IsChecked == true)
+                ProxyModeBox.Text = "direct";
+            else if (ProxyCustomRadio.IsChecked == true)
+                ProxyModeBox.Text = "custom";
+            else
+                ProxyModeBox.Text = "system";
+            ApplyProxyModeUi();
+            if (!_syncingUi)
+            {
+                PushToVm();
+                _vm.SaveSettings();
+                UiNote("Proxy mode: " + ProxyModeBox.Text);
+            }
+        }
+        catch (Exception ex) { VmLog(ex); }
+    }
+
+    private void ApplyStorageModeUi()
+    {
+        var local = string.Equals(_vm.Settings.StorageMode, "local", StringComparison.OrdinalIgnoreCase);
+        SetEnabled(LocalPathLabel, LocalVaultPathBox, local);
+        SetEnabled(EndpointLabel, EndpointBox, !local);
+        SetEnabled(RegionBucketLabel, RegionBox, !local);
+        BucketBox.IsEnabled = !local;
+        SetEnabled(PrefixAccessLabel, PrefixBox, !local);
+        AccessKeyBox.IsEnabled = !local;
+        PathStyleCheck.IsEnabled = !local;
+        // Probe is S3-oriented; leave enabled so local users can still click and get a clear error.
+    }
+
+    private void ApplyProxyModeUi()
+    {
+        var mode = (ProxyModeBox.Text ?? _vm.Preferences.ProxyMode ?? "system").Trim().ToLowerInvariant();
+        _syncingUi = true;
+        try
+        {
+            ProxyOffRadio.IsChecked = mode == "direct";
+            ProxySystemRadio.IsChecked = mode is not ("direct" or "custom");
+            ProxyCustomRadio.IsChecked = mode == "custom";
+            ProxyModeBox.Text = mode is "direct" or "custom" ? mode : "system";
+            ProxyCustomPanel.Visibility = mode == "custom" ? Visibility.Visible : Visibility.Collapsed;
+        }
+        finally { _syncingUi = false; }
+    }
+
+    private static void SetEnabled(UIElement label, Control field, bool enabled)
+    {
+        field.IsEnabled = enabled;
+        if (label is FrameworkElement fe)
+            fe.Opacity = enabled ? 1.0 : 0.45;
+    }
+
+    private void UiNote(string message)
+    {
+        var clean = message.Replace('\n', ' ');
+        _vm.LogLine(clean);
+        StatusBarText.Text = clean;
+        BackupRemoteHintText.Text = "";
+        RemoteHintText.Text = "";
+        RefreshStatusStrip();
+        // Keep the note visible in the status strip even if Status is unchanged.
+        StatusBarText.Text = clean;
+    }
+
+    private void VmLog(Exception ex, bool backupHint = false)
     {
         System.Diagnostics.Debug.WriteLine(ex);
-        _vm.LogLine(ex.Message.Replace('\n', ' '));
-        RefreshStatusStrip();
+        var msg = ex.Message.Replace('\n', ' ');
+        _vm.LogLine(msg);
+        try { RefreshStatusStrip(); } catch { /* ignore */ }
+        StatusBarText.Text = msg;
+        if (backupHint)
+            BackupRemoteHintText.Text = msg;
+        else
+            RemoteHintText.Text = msg;
     }
 
 }

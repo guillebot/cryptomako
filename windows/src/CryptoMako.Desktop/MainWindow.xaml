@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Window
     x:Class="CryptoMako.Desktop.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -61,8 +61,8 @@
                        Text="Unlock a Cryptomator format-8 vault (local or S3). Secrets never go in settings.json." />
 
             <StackPanel Orientation="Horizontal" Spacing="8">
-              <Button Content="Mode: Local" Click="OnModeLocal" />
-              <Button Content="Mode: S3" Click="OnModeS3" />
+              <Button x:Name="ModeLocalButton" Content="Mode: Local" Click="OnModeLocal" />
+              <Button x:Name="ModeS3Button" Content="Mode: S3" Click="OnModeS3" />
               <TextBlock x:Name="StorageModeText" VerticalAlignment="Center" />
             </StackPanel>
 
@@ -79,19 +79,19 @@
                 <RowDefinition Height="Auto" />
               </Grid.RowDefinitions>
 
-              <TextBlock Grid.Row="0" Text="Local path" VerticalAlignment="Center" Margin="0,0,0,8" />
+              <TextBlock x:Name="LocalPathLabel" Grid.Row="0" Text="Local path" VerticalAlignment="Center" Margin="0,0,0,8" />
               <TextBox Grid.Row="0" Grid.Column="1" x:Name="LocalVaultPathBox" Margin="0,0,0,8" />
 
-              <TextBlock Grid.Row="1" Text="Endpoint" VerticalAlignment="Center" Margin="0,0,0,8" />
+              <TextBlock x:Name="EndpointLabel" Grid.Row="1" Text="Endpoint" VerticalAlignment="Center" Margin="0,0,0,8" />
               <TextBox Grid.Row="1" Grid.Column="1" x:Name="EndpointBox" PlaceholderText="https://" Margin="0,0,0,8" />
 
-              <TextBlock Grid.Row="2" Text="Region / Bucket" VerticalAlignment="Center" Margin="0,0,0,8" />
+              <TextBlock x:Name="RegionBucketLabel" Grid.Row="2" Text="Region / Bucket" VerticalAlignment="Center" Margin="0,0,0,8" />
               <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
                 <TextBox x:Name="RegionBox" Width="160" />
                 <TextBox x:Name="BucketBox" Width="200" PlaceholderText="bucket" />
               </StackPanel>
 
-              <TextBlock Grid.Row="3" Text="Prefix / Access" VerticalAlignment="Center" Margin="0,0,0,8" />
+              <TextBlock x:Name="PrefixAccessLabel" Grid.Row="3" Text="Prefix / Access" VerticalAlignment="Center" Margin="0,0,0,8" />
               <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
                 <TextBox x:Name="PrefixBox" Width="200" />
                 <TextBox x:Name="AccessKeyBox" Width="200" PlaceholderText="access key" />
@@ -141,7 +141,7 @@
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="Add path" Width="100" VerticalAlignment="Center" />
             <TextBox x:Name="BackupSourceBox" Width="420" PlaceholderText="path to cleartext folder" />
-            <Button Content="Browse…" Click="OnBrowseBackupSource" />
+            <Button Content="Browseâ€¦" Click="OnBrowseBackupSource" />
           </StackPanel>
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="Vault folder" Width="100" VerticalAlignment="Center" />
@@ -167,16 +167,31 @@
           <TextBlock Text="Preferences" FontSize="18" FontWeight="SemiBold" />
           <TextBlock TextWrapping="Wrap" Opacity="0.8"
                      Text="Platforms-locked keys. Proxy password: CRYPTOMAKO_PROXY_PASSWORD." />
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <TextBlock Text="Proxy mode" Width="140" VerticalAlignment="Center" />
-            <TextBox x:Name="ProxyModeBox" Width="120" PlaceholderText="system|direct|custom" />
-            <TextBox x:Name="ProxyHostBox" Width="180" PlaceholderText="host" />
-            <TextBox x:Name="ProxyPortBox" Width="80" />
+          <TextBlock Text="Proxy" FontWeight="SemiBold" Margin="0,8,0,0" />
+          <StackPanel Orientation="Horizontal" Spacing="16">
+            <RadioButton x:Name="ProxyOffRadio" Content="Off" GroupName="ProxyMode" Click="OnProxyModeClick"
+                         ToolTipService.ToolTip="direct — no proxy (proxyMode=direct)" />
+            <RadioButton x:Name="ProxySystemRadio" Content="System" GroupName="ProxyMode" Click="OnProxyModeClick"
+                         ToolTipService.ToolTip="Use OS system proxy (proxyMode=system)" />
+            <RadioButton x:Name="ProxyCustomRadio" Content="Custom" GroupName="ProxyMode" Click="OnProxyModeClick"
+                         ToolTipService.ToolTip="Manual host/port (proxyMode=custom)" />
           </StackPanel>
-          <StackPanel Orientation="Horizontal" Spacing="8">
-            <TextBlock Text="Proxy user" Width="140" VerticalAlignment="Center" />
-            <TextBox x:Name="ProxyUserBox" Width="200" />
+          <StackPanel x:Name="ProxyCustomPanel" Spacing="8" Visibility="Collapsed">
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Host" Width="140" VerticalAlignment="Center" />
+              <TextBox x:Name="ProxyHostBox" Width="220" PlaceholderText="proxy.example.com" />
+              <TextBlock Text="Port" VerticalAlignment="Center" />
+              <TextBox x:Name="ProxyPortBox" Width="80" />
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" Spacing="8">
+              <TextBlock Text="Username" Width="140" VerticalAlignment="Center" />
+              <TextBox x:Name="ProxyUserBox" Width="200" PlaceholderText="optional" />
+            </StackPanel>
+            <TextBlock Opacity="0.75" TextWrapping="Wrap"
+                       Text="Proxy password (if needed): store as CRYPTOMAKO_PROXY_PASSWORD in Credential Manager — not written to settings.json." />
           </StackPanel>
+          <!-- Keep ProxyModeBox for PushToVm compatibility; hidden mirror of radio selection -->
+          <TextBox x:Name="ProxyModeBox" Visibility="Collapsed" Width="1" Height="1" />
           <StackPanel Orientation="Horizontal" Spacing="8">
             <CheckBox x:Name="LimitUploadCheck" Content="Limit upload" />
             <TextBlock Text="Mbps" VerticalAlignment="Center" />
