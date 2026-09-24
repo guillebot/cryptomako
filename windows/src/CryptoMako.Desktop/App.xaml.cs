@@ -226,8 +226,19 @@ public partial class App : Application
 
     internal void DisconnectExplorerManual()
     {
-        _explorer?.Disconnect();
-        _vm?.LogLine("CfAPI Explorer disconnected");
+        // Same as Lock scrub: registered-but-disconnected roots make Explorer show
+        // 0x8007016A ("The cloud operation is invalid") on the sidebar pin.
+        try { _explorer?.Disconnect(); } catch { /* ignore */ }
+        try
+        {
+            _explorer?.Shutdown();
+            _explorer = _vm is null ? null : new ExplorerViewerController(_vm);
+            _vm?.LogLine("CfAPI Explorer disconnected + unregistered (no dead Explorer pin)");
+        }
+        catch (Exception ex)
+        {
+            _vm?.LogLine("CfAPI disconnect scrub: " + ex.Message.Replace('\n', ' '));
+        }
         RefreshTrayLabels();
         _mainWindow?.DispatcherQueue.TryEnqueue(() => _mainWindow?.RefreshStatusStrip());
     }

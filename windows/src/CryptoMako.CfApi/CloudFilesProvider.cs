@@ -1262,6 +1262,21 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             return false;
         if (string.IsNullOrWhiteSpace(absoluteFsPath))
             return false;
+        // Never CfUpdatePlaceholder a CryptoMako sync-root folder itself — Explorer then
+        // surfaces 0x8007016A ("The cloud operation is invalid") for the whole location.
+        try
+        {
+            var full = Path.GetFullPath(absoluteFsPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var leaf = Path.GetFileName(full);
+            var underCm = full.IndexOf(
+                Path.DirectorySeparatorChar + "CryptoMako" + Path.DirectorySeparatorChar,
+                StringComparison.OrdinalIgnoreCase) >= 0
+                || full.EndsWith(Path.DirectorySeparatorChar + "CryptoMako", StringComparison.OrdinalIgnoreCase);
+            if (underCm && leaf.StartsWith("SyncRoot", StringComparison.OrdinalIgnoreCase))
+                return false;
+        }
+        catch { /* continue to CfAPI attempt for non-CryptoMako paths */ }
         try
         {
             var openHr = CfOpenFileWithOplock(
@@ -1308,6 +1323,22 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
     /// <summary>
     /// Maps a vault cleartext directory to an absolute sync-root filesystem path.
     /// </summary>
+    /// <summary>True when absoluteFsPath is the sync root folder (not a child).</summary>
+    public bool IsSyncRootFsPath(string? absoluteFsPath)
+    {
+        if (string.IsNullOrWhiteSpace(absoluteFsPath))
+            return false;
+        try
+        {
+            var a = Path.GetFullPath(absoluteFsPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            var b = Path.GetFullPath(SyncRootPath)
+                .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            return a.Equals(b, StringComparison.OrdinalIgnoreCase);
+        }
+        catch { return false; }
+    }
+
     public string? TryVaultPathToFsPath(string? vaultCleartextPath)
     {
         if (string.IsNullOrWhiteSpace(vaultCleartextPath))
@@ -1340,7 +1371,9 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         var created = CreatePlaceholders(children);
 
         var fsPath = TryVaultPathToFsPath(parent);
-        if (fsPath is not null)
+        // Never CfUpdatePlaceholder the sync-root folder itself — that yields
+        // 0x8007016A ("The cloud operation is invalid") for Explorer/enum.
+        if (fsPath is not null && !IsSyncRootFsPath(fsPath))
             TryEnableOnDemandPopulation(fsPath);
 
         return created;
