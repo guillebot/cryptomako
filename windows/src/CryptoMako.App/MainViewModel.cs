@@ -521,10 +521,39 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     private async Task AttemptAutoUnlockAsync(string reason, CancellationToken ct)
     {
+        // Match macOS: gate on shared VaultSettings.autoReconnect (no new keys).
         if (!Settings.AutoReconnect || !_userWantsUnlocked || IsUnlocked || Busy)
             return;
         if (!Settings.IsLocal && _lastReachable == false)
             return;
+
+        // Soft preflight — stay Locked with a clear status; never wipe CredMan.
+        var hasPassword = !string.IsNullOrEmpty(Password)
+            || !string.IsNullOrEmpty(_secrets.GetSecret(SecretAccounts.Password));
+        if (!hasPassword)
+        {
+            Status = "locked";
+            AppendLog("Automatic unlock skipped — no passphrase in Credential Manager");
+            return;
+        }
+        if (Settings.IsLocal)
+        {
+            if (string.IsNullOrWhiteSpace(Settings.LocalVaultPath))
+            {
+                Status = "locked";
+                AppendLog("Automatic unlock skipped — localVaultPath not set");
+                return;
+            }
+        }
+        else if (string.IsNullOrWhiteSpace(Settings.Endpoint)
+                 || string.IsNullOrWhiteSpace(Settings.Bucket)
+                 || string.IsNullOrEmpty(_secrets.GetSecret(SecretAccounts.SecretKey)))
+        {
+            Status = "locked";
+            AppendLog("Automatic unlock skipped — S3 settings or CRYPTOMAKO_SECRET_KEY incomplete");
+            return;
+        }
+
         AppendLog(reason == "reconnect" ? "Reconnecting to vault…" : "Automatic unlock…");
         try
         {
@@ -532,7 +561,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
         catch
         {
-            // UnlockAsync already logged.
+            // UnlockAsync already set Status=locked and logged; soft-fail stays Locked.
         }
     }
 

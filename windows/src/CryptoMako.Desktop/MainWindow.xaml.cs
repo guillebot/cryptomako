@@ -48,7 +48,6 @@ public sealed partial class MainWindow : Window
     internal void RefreshStatusStrip()
     {
         if (_syncingUi) return;
-        VaultStateText.Text = "Vault: " + _vm.StatusTrayLabel;
         StatusBarText.Text = _vm.Status;
         RemoteHintText.Text = _vm.RemoteChangeHint;
         BackupRemoteHintText.Text = _vm.RemoteChangeHint;
@@ -60,6 +59,9 @@ public sealed partial class MainWindow : Window
         SetLamp(LampTcp, _vm.LastProbe?.Tcp ?? ProbeLamp.Unknown);
         SetLamp(LampHttps, _vm.LastProbe?.Https ?? ProbeLamp.Unknown);
         SetLamp(LampList, _vm.LastProbe?.List ?? ProbeLamp.Unknown);
+
+        // Vault badge is the primary connection signal (top-right, larger than Explorer).
+        RefreshVaultBadge();
 
         if (_vm.IsExplorerViewerConnected)
         {
@@ -74,7 +76,34 @@ public sealed partial class MainWindow : Window
             ExplorerPathLink.Content = "Open sync root";
         }
 
+        // Backup Sync requires an unlocked vault — greyed when locked/disconnected.
+        SyncNowButton.IsEnabled = _vm.IsUnlocked;
+
         RefreshBackupProgressUi();
+    }
+
+    private void RefreshVaultBadge()
+    {
+        if (_vm.Busy)
+        {
+            VaultStateText.Text = "Vault: Busy…";
+            VaultBadge.Background = new SolidColorBrush(Color.FromArgb(255, 180, 120, 20));
+        }
+        else if (_vm.IsUnlocked)
+        {
+            VaultStateText.Text = "Vault: Unlocked";
+            VaultBadge.Background = new SolidColorBrush(Color.FromArgb(255, 16, 140, 70));
+        }
+        else
+        {
+            // Prefer a clear Locked label over raw Status (often "locked" already).
+            var detail = _vm.StatusTrayLabel;
+            VaultStateText.Text = string.Equals(detail, "locked", StringComparison.OrdinalIgnoreCase)
+                || string.IsNullOrWhiteSpace(detail)
+                ? "Vault: Locked"
+                : "Vault: Locked — " + detail;
+            VaultBadge.Background = new SolidColorBrush(Color.FromArgb(255, 107, 114, 128));
+        }
     }
 
     private void RefreshBackupProgressUi()
@@ -314,9 +343,10 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            PushToVm();
+            // Button is disabled when locked; keep a safe no-op if click still fires.
             if (!_vm.IsUnlocked)
-                throw new InvalidOperationException("unlock vault first — Sync needs an unlocked vault");
+                return;
+            PushToVm();
             if (_vm.BackupSources.Sources.Count == 0
                 && (string.IsNullOrWhiteSpace(_vm.BackupSource) || !Directory.Exists(_vm.BackupSource)))
                 throw new InvalidOperationException("add a backup source (Backup tab) before Sync");

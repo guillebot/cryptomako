@@ -27,15 +27,15 @@ pwsh ./scripts/publish-win-x64.ps1
 
 ### Status strip
 
-Top of the main window:
+Top of the main window (left → right):
 
-| Element | Source |
-|---------|--------|
-| Vault state | `StatusTrayLabel` (locked / unlocking busy… / unlocked / error text) |
-| Probe lamps | dns → tcp → https → list (`LastProbe` / `ProbeTrayLabel`) |
-| Explorer badge | `IsExplorerViewerConnected` (soft CfAPI viewer) |
+| Element | Source | Prominence |
+|---------|--------|------------|
+| Probe lamps | dns → tcp → https → list (`LastProbe`) | Secondary |
+| Explorer badge | `IsExplorerViewerConnected` (soft CfAPI) | Secondary |
+| **Vault badge** (top-right) | `IsUnlocked` / Busy → Locked / Unlocked / Busy… | **Primary** (larger/bolder) |
 
-Soft CfAPI connect failure after Unlock does **not** clear vault-unlocked (macOS soft Finder semantics).
+Backup **Sync now** is `IsEnabled` only while `IsUnlocked` (greyed when locked/disconnected). Soft CfAPI connect failure after Unlock does **not** clear vault-unlocked (macOS soft Finder semantics).
 
 ### System tray
 

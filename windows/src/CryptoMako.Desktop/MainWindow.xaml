@@ -18,7 +18,7 @@
       <RowDefinition Height="*" />
     </Grid.RowDefinitions>
 
-    <!-- Status strip: vault + probe lamps + explorer badge -->
+    <!-- Status strip: probe lamps (left); Explorer secondary + Vault primary (top-right) -->
     <Border Grid.Row="0"
             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
             CornerRadius="8" Padding="12,8" Margin="0,0,0,8"
@@ -28,25 +28,31 @@
           <ColumnDefinition Width="*" />
           <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
-        <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
-          <TextBlock x:Name="VaultStateText" FontWeight="SemiBold" VerticalAlignment="Center" Text="Vault: locked" />
-          <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-            <TextBlock Text="dns" Opacity="0.7" VerticalAlignment="Center" />
-            <Ellipse x:Name="LampDns" Width="12" Height="12" Fill="Gray" />
-            <TextBlock Text="tcp" Opacity="0.7" VerticalAlignment="Center" />
-            <Ellipse x:Name="LampTcp" Width="12" Height="12" Fill="Gray" />
-            <TextBlock Text="https" Opacity="0.7" VerticalAlignment="Center" />
-            <Ellipse x:Name="LampHttps" Width="12" Height="12" Fill="Gray" />
-            <TextBlock Text="list" Opacity="0.7" VerticalAlignment="Center" />
-            <Ellipse x:Name="LampList" Width="12" Height="12" Fill="Gray" />
-          </StackPanel>
+        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+          <TextBlock Text="dns" Opacity="0.7" VerticalAlignment="Center" />
+          <Ellipse x:Name="LampDns" Width="12" Height="12" Fill="Gray" />
+          <TextBlock Text="tcp" Opacity="0.7" VerticalAlignment="Center" />
+          <Ellipse x:Name="LampTcp" Width="12" Height="12" Fill="Gray" />
+          <TextBlock Text="https" Opacity="0.7" VerticalAlignment="Center" />
+          <Ellipse x:Name="LampHttps" Width="12" Height="12" Fill="Gray" />
+          <TextBlock Text="list" Opacity="0.7" VerticalAlignment="Center" />
+          <Ellipse x:Name="LampList" Width="12" Height="12" Fill="Gray" />
         </StackPanel>
-        <Button x:Name="ExplorerBadge" Grid.Column="1" Padding="8,4" CornerRadius="6"
-                Click="OnExplorerBadgeClick" VerticalAlignment="Center"
-                Background="{ThemeResource SubtleFillColorSecondaryBrush}"
-                ToolTipService.ToolTip="Open sync root in Explorer (connects if needed)">
-          <TextBlock x:Name="ExplorerBadgeText" Text="Explorer: off" FontSize="12" />
-        </Button>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+          <Button x:Name="ExplorerBadge" Padding="8,4" CornerRadius="6"
+                  Click="OnExplorerBadgeClick" VerticalAlignment="Center"
+                  Background="{ThemeResource SubtleFillColorSecondaryBrush}"
+                  ToolTipService.ToolTip="Soft CfAPI Explorer viewer (secondary to vault lock state)">
+            <TextBlock x:Name="ExplorerBadgeText" Text="Explorer: off" FontSize="12" />
+          </Button>
+          <Border x:Name="VaultBadge" Padding="14,8" CornerRadius="8" MinWidth="168"
+                  Background="#FF6B7280" VerticalAlignment="Center"
+                  ToolTipService.ToolTip="Vault connection — primary lock / unlock status">
+            <TextBlock x:Name="VaultStateText" FontWeight="Bold" FontSize="16"
+                       Foreground="White" VerticalAlignment="Center" HorizontalAlignment="Center"
+                       Text="Vault: Locked" />
+          </Border>
+        </StackPanel>
       </Grid>
     </Border>
 
@@ -149,7 +155,7 @@
             <Button Content="Add source" Click="OnAddBackupSource" />
             <Button Content="Clear sources" Click="OnClearBackupSources" />
           </StackPanel>
-          <Button Content="Sync now" HorizontalAlignment="Left" Click="OnSync" Style="{StaticResource AccentButtonStyle}" />
+          <Button x:Name="SyncNowButton" Content="Sync now" HorizontalAlignment="Left" Click="OnSync" Style="{StaticResource AccentButtonStyle}" IsEnabled="False" ToolTipService.ToolTip="Requires an unlocked vault" />
           <StackPanel x:Name="BackupProgressPanel" Spacing="4" Visibility="Collapsed">
             <TextBlock x:Name="BackupProgressLabelText" FontWeight="SemiBold" />
             <ProgressBar x:Name="BackupProgressBar" Minimum="0" Maximum="100" Height="8" />

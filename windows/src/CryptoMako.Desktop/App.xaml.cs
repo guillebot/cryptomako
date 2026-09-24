@@ -119,10 +119,14 @@ public partial class App : Application
         }
 
         // Soft parity with macOS Finder mount: bind CfAPI viewer after unlock; Lock disconnects via VM.
+        // After Lock, also scrub registration so Explorer never keeps a dead CryptoMako pin
+        // ("The cloud operation is invalid" / 0x8007016A). Unlock re-registers + CfConnects.
         if (e.PropertyName == nameof(MainViewModel.IsUnlocked) && _vm is not null)
         {
             if (_vm.IsUnlocked)
                 _mainWindow?.DispatcherQueue.TryEnqueue(() => _ = ConnectExplorerAfterUnlockAsync());
+            else
+                _mainWindow?.DispatcherQueue.TryEnqueue(ScrubExplorerAfterLock);
         }
     }
 
@@ -162,6 +166,29 @@ public partial class App : Application
         try { if (_vm is not null) await _vm.ProbeAsync(); }
         catch { /* VM logs */ }
         RefreshTrayLabels();
+    }
+
+    /// <summary>
+    /// Lock High already disconnected the provider; unregister so Explorer sidebar has no dead pin.
+    /// Soft CfAPI scrub must not clear vault-unlocked (already locked) or wipe CredMan.
+    /// </summary>
+    internal void ScrubExplorerAfterLock()
+    {
+        try { _explorer?.Disconnect(); } catch { /* ignore */ }
+        try
+        {
+            // Shutdown unregisters + disposes; next Unlock constructs a fresh connect cycle.
+            _explorer?.Shutdown();
+            _explorer = _vm is null ? null : new ExplorerViewerController(_vm);
+            _vm?.LogLine("CfAPI Lock scrub: unregistered sync root (no dead Explorer pin)");
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine(ex);
+            _vm?.LogLine("CfAPI Lock scrub: " + ex.Message.Replace('\n', ' '));
+        }
+        RefreshTrayLabels();
+        _mainWindow?.DispatcherQueue.TryEnqueue(() => _mainWindow?.RefreshStatusStrip());
     }
 
     internal async Task ConnectExplorerAfterUnlockAsync()
