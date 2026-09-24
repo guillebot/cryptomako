@@ -697,9 +697,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             BackupEtaLabel = "";
             throw;
         }
-        catch
+        catch (Exception ex)
         {
             BackupPhase = "error";
+            BackupProgressLabel = "Sync error: " + ex.Message;
+            AppendLog("sync error: " + ex.Message);
             throw;
         }
         finally

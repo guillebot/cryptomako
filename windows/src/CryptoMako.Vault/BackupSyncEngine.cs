@@ -296,7 +296,17 @@ public sealed class BackupSyncEngine
         var sinceUi = 0;
         var lastUi = System.Diagnostics.Stopwatch.StartNew();
         var rootFull = localRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        foreach (var path in Directory.EnumerateFiles(localRoot, "*", SearchOption.AllDirectories))
+        // Default SearchOption.AllDirectories follows dir junctions and aborts the whole
+        // walk on the first UnauthorizedAccessException (e.g. C:\Users\...\Application Data
+        // under a home-folder Backup source) — UI stuck at "Counting... 1 files".
+        var enumOpts = new EnumerationOptions
+        {
+            RecurseSubdirectories = true,
+            IgnoreInaccessible = true,
+            AttributesToSkip = FileAttributes.ReparsePoint,
+            ReturnSpecialDirectories = false,
+        };
+        foreach (var path in Directory.EnumerateFiles(localRoot, "*", enumOpts))
         {
             ct.ThrowIfCancellationRequested();
             var rel = Path.GetRelativePath(rootFull, path).Replace('\\', '/');
@@ -310,12 +320,24 @@ public sealed class BackupSyncEngine
             if (hide) continue;
             if (excludes.ShouldSkipRelativePath(rel)) continue;
 
-            var info = new FileInfo(path);
-            if (!info.Exists || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+            FileInfo info;
+            long length;
+            DateTimeOffset mtime;
+            try
+            {
+                info = new FileInfo(path);
+                if (!info.Exists || info.Attributes.HasFlag(FileAttributes.ReparsePoint))
+                    continue;
+                length = info.Length;
+                mtime = info.LastWriteTimeUtc;
+            }
+            catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
+            {
                 continue;
+            }
 
             scanned++;
-            scannedBytes += info.Length;
+            scannedBytes += length;
             sinceUi++;
             // First file immediately; then ~10Hz or every 25 files (macOS live-name parity).
             // Do not set FilesDone/BytesDone here - Percent would jump to 100% while counting.
@@ -332,18 +354,17 @@ public sealed class BackupSyncEngine
                 });
             }
 
-            var mtime = info.LastWriteTimeUtc;
             var key = BackupSyncState.Key(vaultFolderName, rel);
-            if (syncState.Files.TryGetValue(key, out var fp) && fp.Matches(info.Length, mtime))
+            if (syncState.Files.TryGetValue(key, out var fp) && fp.Matches(length, mtime))
             {
                 skipped++;
-                skippedBytes += info.Length;
+                skippedBytes += length;
                 continue;
             }
 
             var parentRel = Path.GetDirectoryName(rel)?.Replace('\\', '/') ?? "";
             if (parentRel == ".") parentRel = "";
-            jobs.Add(new PendingUpload(path, rel, parentRel, Path.GetFileName(path), info.Length, mtime));
+            jobs.Add(new PendingUpload(path, rel, parentRel, Path.GetFileName(path), length, mtime));
         }
 
         syncProgress?.Report(new BackupSyncProgressUpdate
