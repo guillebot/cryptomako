@@ -140,20 +140,28 @@ final class BackupSyncEngine: ObservableObject {
                 let bandwidthLimiter = UploadBandwidthLimiter.fromPreferences(AppPreferences.load())
                 try Task.checkCancellation()
                 await MainActor.run {
-                    self.phase = .walking
-                    self.currentPath = sources.isEmpty ? "No sources" : "Starting…"
+                    self.phase = .preparing
+                    self.currentPath = sources.isEmpty
+                        ? "No sources"
+                        : "Preparing vault folder Backups…"
                 }
-
+                Self.syncLog.info("ensureDirectoryPath start path=Backups")
                 _ = try await session.ensureDirectoryPath("Backups")
+                Self.syncLog.info("ensureDirectoryPath done path=Backups")
+
                 var files = 0
                 var bytes: Int64 = 0
                 var syncState = BackupSyncState.load()
                 for source in sources {
                     try Task.checkCancellation()
+                    let vaultRoot = "Backups/\(source.vaultFolderName)"
                     await MainActor.run {
                         self.currentSourceName = source.vaultFolderName
                         self.walkFinished = false
-                        self.phase = .walking
+                        // Stay on Preparing until vault dirs resolve — MinIO LIST can
+                        // hang here; do not claim "Walking local tree…" yet.
+                        self.phase = .preparing
+                        self.currentPath = "Preparing vault folder \(vaultRoot)…"
                     }
                     let root = URL(fileURLWithPath: source.path, isDirectory: true)
                     let isSMB = source.isSMB
@@ -161,8 +169,9 @@ final class BackupSyncEngine: ObservableObject {
                         throw SyncError.missingSource(source.path)
                     }
                     try self.assertSourceStillPresent(path: root.path, isSMB: isSMB)
-                    let vaultRoot = "Backups/\(source.vaultFolderName)"
+                    Self.syncLog.info("ensureDirectoryPath start path=\(vaultRoot, privacy: .public)")
                     let leafDirId = try await session.ensureDirectoryPath(vaultRoot)
+                    Self.syncLog.info("ensureDirectoryPath done path=\(vaultRoot, privacy: .public)")
                     let result = try await self.uploadTree(
                         localRoot: root,
                         parentDirId: leafDirId,
@@ -419,6 +428,7 @@ final class BackupSyncEngine: ObservableObject {
             }
         }
 
+        // First moment we claim Walking — vault ensureDirectoryPath already done.
         await MainActor.run {
             self.walkFinished = false
             self.phase = .walking
