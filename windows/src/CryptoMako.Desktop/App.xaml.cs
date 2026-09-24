@@ -1,4 +1,4 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
 using CryptoMako.App;
 using H.NotifyIcon;
 using Microsoft.UI.Xaml;
@@ -66,21 +66,34 @@ public partial class App : Application
             MenuActivation = H.NotifyIcon.Core.PopupActivationMode.LeftOrRightClick,
         };
 
+        // Unpackaged host: never use ms-appx:/// — missing packaged resource maps to
+        // COM 0x80070002 (FILE_NOT_FOUND) and can tear down the process after Activate.
         try
         {
-            var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "tray.ico");
-            if (File.Exists(iconPath))
-                _tray.IconSource = new BitmapImage(new Uri(iconPath));
-            else
-                _tray.IconSource = new BitmapImage(new Uri("ms-appx:///Assets/tray.ico"));
+            var assets = Path.Combine(AppContext.BaseDirectory, "Assets");
+            var ico = Path.Combine(assets, "tray.ico");
+            var png = Path.Combine(assets, "tray-windows.png");
+            if (File.Exists(ico))
+                _tray.IconSource = new BitmapImage(new Uri(ico));
+            else if (File.Exists(png))
+                _tray.IconSource = new BitmapImage(new Uri(png));
         }
-        catch
+        catch (Exception ex)
         {
-            // Icon optional; menu still works.
+            System.Diagnostics.Debug.WriteLine("tray icon: " + ex);
         }
 
         _tray.LeftClickCommand = new RelayCommand(ShowMainWindow);
-        _tray.ForceCreate();
+        try
+        {
+            _tray.ForceCreate();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine("tray ForceCreate: " + ex);
+            try { _tray.Dispose(); } catch { /* ignore */ }
+            _tray = null;
+        }
     }
 
     private static MenuFlyoutItem MakeItem(string text, Action action)
@@ -121,7 +134,7 @@ public partial class App : Application
         if (_trayLampsItem is not null)
             _trayLampsItem.Text = "Probe: " + _vm.ProbeTrayLabel;
         if (_tray is not null)
-            _tray.ToolTipText = "CryptoMako — " + _vm.StatusTrayLabel;
+            _tray.ToolTipText = "CryptoMako â€” " + _vm.StatusTrayLabel;
     }
 
     internal void ShowMainWindow()
@@ -198,7 +211,7 @@ public partial class App : Application
         if (_explorer is null || _vm is null) return;
         if (!_vm.IsExplorerViewerConnected)
         {
-            _vm.LogLine("Explorer viewer not connected — unlock + Connect Explorer first");
+            _vm.LogLine("Explorer viewer not connected â€” unlock + Connect Explorer first");
             return;
         }
         _explorer.TryOpenSyncRootInExplorer();
