@@ -66,7 +66,7 @@ targets:
         SWIFT_OBJC_BRIDGING_HEADER: Support/CryptoMako-Bridging-Header.h
         FRAMEWORK_SEARCH_PATHS: [/Library/Frameworks]
         HEADER_SEARCH_PATHS: [/Library/Frameworks/macFUSE.framework/Headers]
-        OTHER_LDFLAGS: [-framework, macFUSE]
+        OTHER_LDFLAGS: [-framework, macFUSE, -framework, NetFS]
     info:
       path: Support/CryptoMako-Info.plist
       properties:

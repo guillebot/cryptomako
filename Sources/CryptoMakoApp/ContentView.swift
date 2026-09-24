@@ -351,12 +351,18 @@ struct ContentView: View {
 struct BackupView: View {
     @EnvironmentObject private var model: VaultAppModel
     @ObservedObject var syncEngine: BackupSyncEngine
+    @State private var showAddSMB = false
+    @State private var smbURLText = "smb://"
+    @State private var smbUsername = ""
+    @State private var smbPassword = ""
+    @State private var smbBusy = false
+    @State private var smbFormError = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Backup")
                 .font(.title2.weight(.semibold))
-            Text("Pick local folders to sync into the vault under Backups/. Sync uses bounded parallel remote puts (many small files, one large at a time) so it does not fill CloudStorage like rclone-into-Finder did.")
+            Text("Pick local folders or add an explicit SMB share (smb://…). Sync uses bounded parallel remote puts (many small files, one large at a time) so it does not fill CloudStorage like rclone-into-Finder did. SMB uses macOS mounts under /Volumes — remount-on-demand before Sync; fail-closed if the share drops.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -396,13 +402,31 @@ struct BackupView: View {
                         ForEach(model.backupSources) { source in
                             HStack(alignment: .center, spacing: 10) {
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(source.vaultFolderName)
-                                        .font(.body.weight(.medium))
-                                    Text(source.path)
+                                    HStack(spacing: 6) {
+                                        Text(source.vaultFolderName)
+                                            .font(.body.weight(.medium))
+                                        if source.isSMB {
+                                            Text("SMB")
+                                                .font(.caption2.weight(.semibold))
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 1)
+                                                .background(Color.accentColor.opacity(0.15))
+                                                .foregroundStyle(Color.accentColor)
+                                                .clipShape(Capsule())
+                                        }
+                                    }
+                                    Text(source.displayLocation)
                                         .font(.caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(2)
                                         .textSelection(.enabled)
+                                    if source.isSMB, source.path != source.displayLocation {
+                                        Text(source.path)
+                                            .font(.caption2)
+                                            .foregroundStyle(.tertiary)
+                                            .lineLimit(1)
+                                            .textSelection(.enabled)
+                                    }
                                     Text("→ Backups/\(source.vaultFolderName)/")
                                         .font(.caption2)
                                         .foregroundStyle(.tertiary)
@@ -442,6 +466,15 @@ struct BackupView: View {
                     HStack {
                         Button("Add folders…") { model.addBackupFolder() }
                             .disabled(syncEngine.isRunning)
+                        Button("Add SMB share…") {
+                            smbFormError = ""
+                            smbURLText = "smb://"
+                            smbUsername = ""
+                            smbPassword = ""
+                            showAddSMB = true
+                        }
+                        .disabled(syncEngine.isRunning)
+                        .help("Mount smb://server/share via macOS and add it as a Backup source")
                         Spacer()
                         if syncEngine.isRunning {
                             Button("Cancel Sync", role: .destructive) { model.cancelBackupSync() }
@@ -458,6 +491,9 @@ struct BackupView: View {
                     }
                 }
                 .padding(4)
+            }
+            .sheet(isPresented: $showAddSMB) {
+                addSMBSheet
             }
 
             if !model.rcloneLog.isEmpty {
@@ -497,6 +533,58 @@ struct BackupView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private var addSMBSheet: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Add SMB share")
+                .font(.title3.weight(.semibold))
+            Text("CryptoMako uses macOS mounting (/Volumes via NetFS / mount_smbfs). Password is stored in Keychain; the share is remounted on demand before Sync.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("smb://server/share/optional/path", text: $smbURLText)
+                .textFieldStyle(.roundedBorder)
+            TextField("Username (optional)", text: $smbUsername)
+                .textFieldStyle(.roundedBorder)
+            SecureField("Password", text: $smbPassword)
+                .textFieldStyle(.roundedBorder)
+            if !smbFormError.isEmpty {
+                Text(smbFormError)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Button("Cancel") {
+                    smbPassword = ""
+                    showAddSMB = false
+                }
+                .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(smbBusy ? "Mounting…" : "Mount & add") {
+                    smbBusy = true
+                    smbFormError = ""
+                    defer { smbBusy = false }
+                    do {
+                        try model.addSMBShare(
+                            urlString: smbURLText,
+                            username: smbUsername,
+                            password: smbPassword
+                        )
+                        smbPassword = ""
+                        showAddSMB = false
+                    } catch {
+                        smbFormError = error.localizedDescription
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(smbBusy || smbURLText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 420)
     }
 
     @ViewBuilder
