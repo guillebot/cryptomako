@@ -122,4 +122,6 @@ Search indexer: not tuned this pass (AllowPinning + Partial hydrate is enough fo
 
 ## Desktop soft viewer note
 
+Desktop must reference CfApi with `SetTargetFramework=net8.0-windows10.0.19041.0` (same pattern as Cli) -- otherwise a `net8.0-windows10.0.26100` host falls back to `net8.0` CfApi without WinRT `StorageProviderSyncRootManager` and Explorer stays broken. Connect also scrubs orphan WinRT/Cf/registry registrations before Register.
+
 `ExplorerViewerController` must leave `CfConnectSyncRoot` connected while the vault is unlocked and the viewer is bound. **Register without Connect** (or Disconnect without Unregister while Explorer is browsing the root) yields Explorer errors such as *The cloud operation is invalid* / empty listings. Populate-placeholder failures are soft; hard connect failures unregister to avoid orphans.

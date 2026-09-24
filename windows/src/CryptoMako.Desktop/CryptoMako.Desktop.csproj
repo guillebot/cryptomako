@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
@@ -42,6 +42,9 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\CryptoMako.App\CryptoMako.App.csproj" />
-    <ProjectReference Include="..\CryptoMako.CfApi\CryptoMako.CfApi.csproj" />
+    <!-- Force WinRT CfApi TFM — without this, net8.0-windows10.0.26100 Desktop falls back to net8.0 CfApi (no WinRT SyncRootManager). -->
+    <ProjectReference Include="..\CryptoMako.CfApi\CryptoMako.CfApi.csproj"
+                      SetTargetFramework="TargetFramework=net8.0-windows10.0.19041.0"
+                      SkipGetTargetFrameworkProperties="true" />
   </ItemGroup>
 </Project>

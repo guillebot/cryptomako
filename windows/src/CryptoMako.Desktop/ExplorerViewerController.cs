@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using CryptoMako.App;
 using CryptoMako.CfApi;
 
@@ -23,8 +23,8 @@ internal sealed class ExplorerViewerController : IDisposable
     public string SyncRootPath => AppPaths.SyncRootPath;
 
     /// <summary>
-    /// Register (if needed), Connect, attach the unlocked session, seed root placeholders,
-    /// and bind <see cref="MainViewModel.ExplorerViewer"/>.
+    /// Clean orphans, Register, CfConnectSyncRoot, attach session, soft-seed placeholders,
+    /// bind <see cref="MainViewModel.ExplorerViewer"/>, then open Explorer.
     /// Populate failures are soft (log only) so a live CfConnect is not torn down — a
     /// registered-but-disconnected sync root makes Explorer show "cloud operation is invalid".
     /// </summary>
@@ -43,11 +43,27 @@ internal sealed class ExplorerViewerController : IDisposable
         try
         {
             Directory.CreateDirectory(AppPaths.SyncRootPath);
+
+            // Always scrub orphans when we are not live-connected. Stale WinRT/Cf/registry
+            // registrations (or HKCU smoke keys) make Explorer report "cloud operation is invalid".
+            if (!_provider.IsConnected)
+            {
+                var scrub = _provider.CleanupOrphans("default");
+                _vm.LogLine("CfAPI orphan cleanup: " + scrub.Replace('\n', ' '));
+                // Provider instance may still think it is registered after a prior Lock disconnect;
+                // force a fresh Register+Connect cycle after scrub.
+                try { _provider.Dispose(); } catch { /* ignore */ }
+                _provider = new CloudFilesProvider(AppPaths.SyncRootPath);
+            }
+
             EnsureRegistered("default");
             registeredThisCall = true;
 
             if (!_provider.IsConnected)
                 _provider.Connect();
+
+            if (!_provider.IsConnected)
+                throw new InvalidOperationException("CfConnectSyncRoot did not leave the provider connected");
 
             _provider.AttachSession(_vm.Session);
             _vm.BindExplorerViewer(_provider);
@@ -64,19 +80,55 @@ internal sealed class ExplorerViewerController : IDisposable
                 _vm.LogLine("CfAPI populate (soft): " + ex.Message.Replace('\n', ' '));
             }
 
-            TryOpenSyncRootInExplorer();
-            _vm.LogLine("CfAPI Explorer connected — " + AppPaths.SyncRootPath);
+            var probe = ProbeSyncRootListing();
+            _vm.LogLine(probe);
+
+            if (probe.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
+                TryOpenSyncRootInExplorer();
+            else
+                _vm.LogLine("CfAPI: skipping Explorer open — sync root listing still failing");
+
+            var st = _provider.GetStatus();
+            _vm.LogLine(
+                "CfAPI Explorer connected — registered=" + st.Registered +
+                " connected=" + st.Connected +
+                " winrt=" + st.WinRtShell +
+                " shell=" + (st.ShellRegistration ?? "?") +
+                " path=" + AppPaths.SyncRootPath);
         }
-        catch
+        catch (Exception ex)
         {
-            try { _provider.Disconnect(); } catch { /* ignore */ }
+            _vm.LogLine("CfAPI connect failed: " + ex.Message.Replace('\n', ' '));
+            try { _provider?.Disconnect(); } catch { /* ignore */ }
             _vm.BindExplorerViewer(null);
             // Avoid leaving a registered-but-disconnected orphan (Explorer "cloud operation is invalid").
             if (registeredThisCall && _provider is not null && !_provider.IsConnected)
             {
-                try { _provider.UnregisterSyncRoot("default"); } catch { /* ignore */ }
+                try
+                {
+                    var scrub = _provider.CleanupOrphans("default");
+                    _vm.LogLine("CfAPI hard-fail cleanup: " + scrub.Replace('\n', ' '));
+                }
+                catch { /* ignore */ }
             }
             throw;
+        }
+    }
+
+    /// <summary>
+    /// Directory listing probe — surfaces "cloud operation is invalid" in the UI log when the
+    /// sync root is registered without a live CfConnect.
+    /// </summary>
+    private string ProbeSyncRootListing()
+    {
+        try
+        {
+            var entries = Directory.EnumerateFileSystemEntries(AppPaths.SyncRootPath).Take(20).ToList();
+            return "CfAPI sync root OK — " + entries.Count + " entries under " + AppPaths.SyncRootPath;
+        }
+        catch (Exception ex)
+        {
+            return "CfAPI sync root LIST FAIL: " + ex.Message.Replace('\n', ' ');
         }
     }
 
@@ -87,15 +139,25 @@ internal sealed class ExplorerViewerController : IDisposable
         try
         {
             _provider.RegisterSyncRoot(account);
+            var st = _provider.GetStatus();
+            _vm.LogLine(
+                "CfAPI registered shell=" + (st.ShellRegistration ?? "?") +
+                " winrt=" + st.WinRtShell +
+                " id=" + (st.ShellSyncRootId ?? "?"));
         }
         catch (Exception first)
         {
             // Orphan / stale registration: tear down and retry once.
             _vm.LogLine("CfAPI register retry after: " + first.Message.Replace('\n', ' '));
-            try { _provider.UnregisterSyncRoot(account); } catch { /* ignore */ }
+            try { _provider.CleanupOrphans(account); } catch { /* ignore */ }
             try { _provider.Dispose(); } catch { /* ignore */ }
             _provider = new CloudFilesProvider(AppPaths.SyncRootPath);
             _provider.RegisterSyncRoot(account);
+            var st = _provider.GetStatus();
+            _vm.LogLine(
+                "CfAPI registered (retry) shell=" + (st.ShellRegistration ?? "?") +
+                " winrt=" + st.WinRtShell +
+                " id=" + (st.ShellSyncRootId ?? "?"));
         }
     }
 
@@ -134,7 +196,7 @@ internal sealed class ExplorerViewerController : IDisposable
     {
         Disconnect();
         if (_provider is null) return;
-        try { _provider.UnregisterSyncRoot("default"); } catch { /* ignore */ }
+        try { _provider.CleanupOrphans("default"); } catch { /* ignore */ }
         try { _provider.Dispose(); } catch { /* ignore */ }
         _provider = null;
     }

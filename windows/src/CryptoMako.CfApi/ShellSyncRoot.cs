@@ -1,4 +1,4 @@
-﻿using System.Runtime.Versioning;
+using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.Text;
 
@@ -191,6 +191,139 @@ internal static class ShellSyncRoot
         }
         catch { return false; }
     }
+
+    /// <summary>
+    /// Best-effort tear-down of CryptoMako sync-root registrations that would leave Explorer
+    /// with a registered-but-disconnected folder ("The cloud operation is invalid").
+    /// Cleans the account WinRT/Cf/registry id plus any HKCU SyncRootManager entries whose
+    /// UserSyncRootPath matches <paramref name="syncRootPath"/>.
+    /// </summary>
+    public static string TryCleanupOrphans(string syncRootPath, string accountName)
+    {
+        var notes = new List<string>();
+        var full = string.IsNullOrWhiteSpace(syncRootPath)
+            ? ""
+            : Path.GetFullPath(syncRootPath);
+
+        try
+        {
+            if (TryUnregister(accountName, out var detail) && !string.IsNullOrWhiteSpace(detail))
+                notes.Add("account:" + detail);
+        }
+        catch (Exception ex)
+        {
+            notes.Add("account-unreg:" + ex.Message);
+        }
+
+        if (!string.IsNullOrEmpty(full))
+        {
+            try
+            {
+                // CfUnregister is path-based; safe even when WinRT already tore the root down.
+                _ = Vanara.PInvoke.CldApi.CfUnregisterSyncRoot(full);
+                notes.Add("CfUnregister ok");
+            }
+            catch (Exception ex)
+            {
+                notes.Add("CfUnregister:" + ex.Message.Split('\n')[0]);
+            }
+
+            try
+            {
+                var n = TryUnregisterRegistryByPath(full);
+                if (n > 0) notes.Add("registry-path:" + n);
+            }
+            catch (Exception ex)
+            {
+                notes.Add("registry-path:" + ex.Message);
+            }
+        }
+
+        // Stale smoke keys (e.g. CryptoMako!hydrate) that are not the current account id.
+        try
+        {
+            var n = TryUnregisterStaleCryptoMakoRegistryKeys(accountName);
+            if (n > 0) notes.Add("stale-keys:" + n);
+        }
+        catch (Exception ex)
+        {
+            notes.Add("stale-keys:" + ex.Message);
+        }
+
+        return notes.Count == 0 ? "nothing" : string.Join("; ", notes);
+    }
+
+    internal static int TryUnregisterRegistryByPath(string syncRootPathFull)
+    {
+        var removed = 0;
+        using var root = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+            @"Software\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager", writable: true);
+        if (root is null) return 0;
+        foreach (var name in root.GetSubKeyNames())
+        {
+            if (!name.StartsWith(CloudFilesProvider.SyncRootIdPrefix, StringComparison.OrdinalIgnoreCase))
+                continue;
+            try
+            {
+                using var sub = root.OpenSubKey(name);
+                var path = sub?.GetValue("UserSyncRootPath") as string;
+                if (string.IsNullOrWhiteSpace(path)) continue;
+                string full;
+                try { full = Path.GetFullPath(path); }
+                catch { continue; }
+                if (!full.Equals(syncRootPathFull, StringComparison.OrdinalIgnoreCase))
+                    continue;
+            }
+            catch { continue; }
+            try
+            {
+                root.DeleteSubKeyTree(name, throwOnMissingSubKey: false);
+                removed++;
+            }
+            catch { /* ignore */ }
+        }
+        return removed;
+    }
+
+    /// <summary>
+    /// Remove CryptoMako!* registry stubs that are not the live account id (smoke leftovers).
+    /// </summary>
+    internal static int TryUnregisterStaleCryptoMakoRegistryKeys(string accountName)
+    {
+        var keep = BuildSyncRootId(accountName);
+        var removed = 0;
+        using var root = Microsoft.Win32.Registry.CurrentUser.OpenSubKey(
+            @"Software\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager", writable: true);
+        if (root is null) return 0;
+        foreach (var name in root.GetSubKeyNames())
+        {
+            if (!name.StartsWith(CloudFilesProvider.SyncRootIdPrefix, StringComparison.OrdinalIgnoreCase))
+                continue;
+            if (name.Equals(keep, StringComparison.OrdinalIgnoreCase))
+                continue;
+            // Only drop keys that look like short smoke aliases (no SID segment) or point at
+            // CryptoMako LocalAppData trees — never touch other providers.
+            var parts = name.Split('!');
+            var looksSmoke = parts.Length < 3; // CryptoMako!hydrate
+            var underCryptoMako = false;
+            try
+            {
+                using var sub = root.OpenSubKey(name);
+                var path = sub?.GetValue("UserSyncRootPath") as string ?? "";
+                underCryptoMako = path.IndexOf("CryptoMako", StringComparison.OrdinalIgnoreCase) >= 0;
+            }
+            catch { /* ignore */ }
+            if (!looksSmoke && !underCryptoMako) continue;
+            try
+            {
+                root.DeleteSubKeyTree(name, throwOnMissingSubKey: false);
+                removed++;
+            }
+            catch { /* ignore */ }
+        }
+        return removed;
+    }
+
 }
 
 
