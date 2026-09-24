@@ -357,18 +357,58 @@ struct BackupView: View {
     @State private var smbPassword = ""
     @State private var smbBusy = false
     @State private var smbFormError = ""
+    @State private var prefs = AppPreferences.load()
+    @State private var prefsReady = false
+
+    private var transferMode: AppPreferences.BackupTransferMode {
+        prefs.backupTransferMode
+    }
+
+    private var runVerb: String {
+        transferMode == .sync ? "Sync" : "Backup"
+    }
+
+    private var runAllLabel: String {
+        transferMode == .sync ? "Sync all" : "Backup all"
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Backup")
                 .font(.title2.weight(.semibold))
-            Text("Pick local folders or add an explicit SMB share (smb://…). Sync uses bounded parallel remote puts (many small files, one large at a time) so it does not fill CloudStorage like rclone-into-Finder did. SMB uses macOS mounts under /Volumes — remount-on-demand before Sync; fail-closed if the share drops.")
+            Text("Pick local folders or add an explicit SMB share (smb://…). Transfer uses bounded parallel remote puts (many small files, one large at a time) so it does not fill CloudStorage like rclone-into-Finder did. SMB uses macOS mounts under /Volumes — remount-on-demand before a run; fail-closed if the share drops. Never deletes files on the source.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            GroupBox("Transfer mode") {
+                VStack(alignment: .leading, spacing: 8) {
+                    Picker("Transfer mode", selection: $prefs.backupTransferMode) {
+                        Text("Backup").tag(AppPreferences.BackupTransferMode.backup)
+                        Text("Sync").tag(AppPreferences.BackupTransferMode.sync)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .disabled(syncEngine.isRunning)
+                    .help("Backup = put/update only. Sync = put/update plus delete vault-only files under this source’s Backups folder.")
+
+                    if transferMode == .backup {
+                        Text("Backup copies and updates into the vault. It never deletes the local source, and it does not remove vault files that are missing locally.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    } else {
+                        Text("Sync copies and updates, then deletes ciphertext in the vault under each source’s Backups/<folder>/ that is missing from the local tree. It never deletes the local source. Prefer Backup unless you intentionally want vault orphans removed.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
+                .padding(4)
+            }
+
             GroupBox("Sync volume (macFUSE — optional)") {
-                Text("Not required for Sync / Sync all. Use Sync direct when FUSE is blocked by policy; data still lands in vault Backups/ and shows in the Finder CryptoMako mount after refresh.")
+                Text("Not required for Backup / Sync. Use the direct put path when FUSE is blocked by policy; data still lands in vault Backups/ and shows in the Finder CryptoMako mount after refresh.")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -443,11 +483,13 @@ struct BackupView: View {
                                     }
                                     .frame(minWidth: 120, alignment: .trailing)
                                 } else {
-                                    Button("Sync") {
+                                    Button(runVerb) {
                                         model.startBackupSync(sourceID: source.id)
                                     }
                                     .disabled(!model.isUnlocked || syncEngine.isRunning)
-                                    .help("Sync only this folder into Backups/\(source.vaultFolderName)/")
+                                    .help(transferMode == .sync
+                                          ? "Sync this folder into Backups/\(source.vaultFolderName)/ (puts + delete vault-only files under that folder)"
+                                          : "Backup this folder into Backups/\(source.vaultFolderName)/ (put/update only; no vault deletes)")
                                 }
                                 Button(role: .destructive) {
                                     model.removeBackupSource(source.id)
@@ -478,13 +520,15 @@ struct BackupView: View {
                         .help("Mount smb://server/share via macOS and add it as a Backup source")
                         Spacer()
                         if syncEngine.isRunning {
-                            Button("Cancel Sync", role: .destructive) { model.cancelBackupSync() }
+                            Button("Cancel", role: .destructive) { model.cancelBackupSync() }
                                 .keyboardShortcut(.cancelAction)
-                                .help("Stop the in-progress Backup Sync (vault data already uploaded is kept)")
+                                .help("Stop the in-progress transfer (vault data already uploaded is kept; source is never deleted)")
                         }
-                        Button("Sync all") { model.startBackupSync() }
+                        Button(runAllLabel) { model.startBackupSync() }
                             .disabled(!model.isUnlocked || model.backupSources.isEmpty || syncEngine.isRunning)
-                            .help("Sync every listed folder via encrypt+put (no CloudStorage fill)")
+                            .help(transferMode == .sync
+                                  ? "Sync every listed folder: put/update then delete vault-only files under each Backups/<folder>/"
+                                  : "Backup every listed folder: put/update only (no vault deletes, no source deletes)")
                         Button("Sync via rclone+FUSE") { model.startRcloneBackupSync() }
                             .disabled(!model.isUnlocked || model.backupSources.isEmpty || syncEngine.isRunning || !RcloneDriver.isAvailable)
                             .keyboardShortcut(.defaultAction)
@@ -516,6 +560,7 @@ struct BackupView: View {
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 10) {
+                        Button("Transfer mode…") { model.openSettings(section: .transferMode) }
                         Button("Bandwidth…") { model.openSettings(section: .bandwidth) }
                         Button("Sync workers…") { model.openSettings(section: .syncWorkers) }
                         Button("Excludes…") { model.openSettings(section: .excludes) }
@@ -525,7 +570,7 @@ struct BackupView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
 
-            Text("Finder File Provider stays the viewer. Bulk backup uses Sync direct or rclone→\(FuseMountController.preferredMountURL.path).")
+            Text("Finder File Provider stays the viewer. Bulk transfer uses direct puts or rclone→\(FuseMountController.preferredMountURL.path). Source folders are never deleted.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
@@ -534,6 +579,18 @@ struct BackupView: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .onAppear {
+            prefs = AppPreferences.load()
+            prefsReady = true
+        }
+        .onChange(of: prefs.backupTransferMode) { _, _ in
+            guard prefsReady else { return }
+            do {
+                try prefs.save()
+            } catch {
+                model.detail = "Could not save transfer mode: \(error.localizedDescription)"
+            }
+        }
     }
 
     @ViewBuilder
@@ -596,7 +653,7 @@ struct BackupView: View {
     @ViewBuilder
     private var syncStatus: some View {
         let engine = syncEngine
-        GroupBox("Last sync") {
+        GroupBox("Last transfer") {
             VStack(alignment: .leading, spacing: 6) {
                 switch engine.state {
                 case .idle:
@@ -617,6 +674,9 @@ struct BackupView: View {
                         Text("Skipped \(engine.filesSkipped)")
                         Text("Queued \(engine.filesQueued)")
                         Text("Uploaded \(engine.filesUploaded)")
+                        if engine.filesDeleted > 0 || engine.phase == .pruning {
+                            Text("Vault deleted \(engine.filesDeleted)")
+                        }
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -642,12 +702,17 @@ struct BackupView: View {
                             .truncationMode(.middle)
                             .foregroundStyle(.secondary)
                     }
-                    Button("Cancel Sync", role: .destructive) { model.cancelBackupSync() }
+                    Button("Cancel", role: .destructive) { model.cancelBackupSync() }
                         .keyboardShortcut(.cancelAction)
-                        .help("Stop the in-progress Backup Sync (vault data already uploaded is kept)")
+                        .help("Stop the in-progress transfer (vault uploads kept; source never deleted)")
                 case .finished(let files, let bytes):
-                    Text("Finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)) processed (skipped + uploaded).")
-                        .foregroundStyle(.green)
+                    if engine.filesDeleted > 0 {
+                        Text("Finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)) processed; removed \(engine.filesDeleted) vault-only item(s). Source untouched.")
+                            .foregroundStyle(.green)
+                    } else {
+                        Text("Finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)) processed (skipped + uploaded). Source untouched.")
+                            .foregroundStyle(.green)
+                    }
                 case .failed(let message):
                     Text(message)
                         .foregroundStyle(.red)

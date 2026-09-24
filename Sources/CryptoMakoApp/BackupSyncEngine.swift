@@ -10,6 +10,13 @@ import OSLog
 /// Single local walk per source: discover → exclude → skip unchanged / already-in-vault
 /// → enqueue puts. Progress denominator grows with discovery; numerator is
 /// skipped + uploaded (no separate pre-scan enumeration).
+///
+/// Transfer mode (`AppPreferences.backupTransferMode`):
+/// - **backup** (default): put/update only. Never deletes the local source. Never
+///   deletes vault extras missing from source.
+/// - **sync**: same puts, then delete remote ciphertext under `Backups/<folder>/`
+///   that is missing from the local tree (ObjectStore delete, fail-closed). Never
+///   deletes the local source. Scope is that source’s vault folder only.
 @MainActor
 final class BackupSyncEngine: ObservableObject {
     enum State: Equatable {
@@ -27,6 +34,7 @@ final class BackupSyncEngine: ObservableObject {
         case skipping = "Skipping unchanged…"
         case queuing = "Queuing uploads…"
         case uploading = "Uploading to vault…"
+        case pruning = "Removing vault-only files…"
         case finishing = "Finishing…"
     }
 
@@ -50,6 +58,8 @@ final class BackupSyncEngine: ObservableObject {
     /// Completed remote puts (cleartext bytes also in `bytesUploaded`).
     @Published private(set) var filesUploaded: Int = 0
     @Published private(set) var bytesUploaded: Int64 = 0
+    /// Vault ciphertext files removed in Sync mode (orphan prune). Always 0 in Backup mode.
+    @Published private(set) var filesDeleted: Int = 0
     /// True after the local enumerator finishes feeding the put streams for the
     /// current source (totals for that source stop growing; queue drains).
     @Published private(set) var walkFinished: Bool = false
@@ -124,6 +134,7 @@ final class BackupSyncEngine: ObservableObject {
         filesSkipped = 0
         filesUploaded = 0
         bytesUploaded = 0
+        filesDeleted = 0
         walkFinished = false
         uploadBytesPerSecond = 0
         putRateWindowStartedAt = nil
@@ -172,6 +183,7 @@ final class BackupSyncEngine: ObservableObject {
                     Self.syncLog.info("ensureDirectoryPath start path=\(vaultRoot, privacy: .public)")
                     let leafDirId = try await session.ensureDirectoryPath(vaultRoot)
                     Self.syncLog.info("ensureDirectoryPath done path=\(vaultRoot, privacy: .public)")
+                    let transferMode = AppPreferences.load().backupTransferMode
                     let result = try await self.uploadTree(
                         localRoot: root,
                         parentDirId: leafDirId,
@@ -180,7 +192,8 @@ final class BackupSyncEngine: ObservableObject {
                         syncState: &syncState,
                         excludes: excludes,
                         bandwidthLimiter: bandwidthLimiter,
-                        isSMB: isSMB
+                        isSMB: isSMB,
+                        transferMode: transferMode
                     )
                     syncState.save()
                     files += result.files
@@ -335,7 +348,8 @@ final class BackupSyncEngine: ObservableObject {
         syncState: inout BackupSyncState,
         excludes: BackupSyncExcludes,
         bandwidthLimiter: UploadBandwidthLimiter?,
-        isSMB: Bool
+        isSMB: Bool,
+        transferMode: AppPreferences.BackupTransferMode
     ) async throws -> Count {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [
@@ -358,6 +372,8 @@ final class BackupSyncEngine: ObservableObject {
         }
 
         var fileNameCache: [String: Set<String>] = [:]
+        /// Eligible local relative paths (post-exclude). Used by Sync-mode orphan prune.
+        var localFiles = Set<String>()
         var skipped = Count(files: 0, bytes: 0)
         var sinceSave = 0
         var discoveredSinceUI = 0
@@ -640,6 +656,8 @@ final class BackupSyncEngine: ObservableObject {
             let rel = relativePath(fileURL, under: localRoot)
             if excludes.shouldSkipRelativePath(rel) { continue }
 
+            localFiles.insert(rel)
+
             let size = Int64(values.fileSize ?? 0)
             let mtime = values.contentModificationDate ?? Date.distantPast
             let stateKey = BackupSyncState.key(vaultFolder: vaultFolderName, relativePath: rel)
@@ -723,8 +741,106 @@ final class BackupSyncEngine: ObservableObject {
         let uploaded = try await uploadResult
         try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
         syncState = box.snapshot()
-        syncState.save()
+
+        if transferMode == .sync {
+            await MainActor.run {
+                self.phase = .pruning
+                self.currentPath = "Comparing vault Backups/\(vaultFolderName)/ to local tree…"
+            }
+            Self.syncLog.info(
+                "sync orphan prune start vaultFolder=\(vaultFolderName, privacy: .public) localFiles=\(localFiles.count)"
+            )
+            let deleted = try await deleteVaultOrphans(
+                session: session,
+                rootDirId: parentDirId,
+                localFiles: localFiles,
+                vaultFolderName: vaultFolderName,
+                syncState: &syncState
+            )
+            syncState.save()
+            await MainActor.run {
+                self.filesDeleted += deleted
+            }
+            Self.syncLog.info(
+                "sync orphan prune done vaultFolder=\(vaultFolderName, privacy: .public) deleted=\(deleted)"
+            )
+            try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+        } else {
+            syncState.save()
+        }
+
         return Count(files: skipped.files + uploaded.files, bytes: skipped.bytes + uploaded.bytes)
+    }
+
+    /// Sync mode only: delete remote ciphertext under this source’s vault folder that
+    /// has no matching eligible local file. Never touches the local source tree.
+    /// Fail-closed: ObjectStore/`VaultSession` delete errors abort the run.
+    nonisolated private func deleteVaultOrphans(
+        session: VaultSession,
+        rootDirId: String,
+        localFiles: Set<String>,
+        vaultFolderName: String,
+        syncState: inout BackupSyncState
+    ) async throws -> Int {
+        func hasLocalUnder(_ relDir: String) -> Bool {
+            // Source vault root always stays; only prune children.
+            if relDir.isEmpty { return true }
+            let prefix = relDir + "/"
+            for path in localFiles where path == relDir || path.hasPrefix(prefix) {
+                return true
+            }
+            return false
+        }
+
+        func removeStateKeys(underRel rel: String, isDirectory: Bool) {
+            let base = BackupSyncState.key(vaultFolder: vaultFolderName, relativePath: rel)
+            if isDirectory {
+                let prefix = base + "/"
+                let victims = syncState.files.keys.filter { $0 == base || $0.hasPrefix(prefix) }
+                for key in victims {
+                    syncState.files.removeValue(forKey: key)
+                }
+            } else {
+                syncState.files.removeValue(forKey: base)
+            }
+        }
+
+        func prune(dirId: String, relPrefix: String) async throws -> Int {
+            try Task.checkCancellation()
+            let children = try await session.list(dirId: dirId)
+            var deleted = 0
+            for child in children {
+                try Task.checkCancellation()
+                let childRel = relPrefix.isEmpty
+                    ? child.cleartextName
+                    : relPrefix + "/" + child.cleartextName
+                await MainActor.run {
+                    self.currentPath = childRel
+                }
+                switch child.kind {
+                case .file, .symlink:
+                    if !localFiles.contains(childRel) {
+                        // Remote ObjectStore ciphertext delete only — never local source.
+                        try await session.deleteFile(node: child)
+                        removeStateKeys(underRel: childRel, isDirectory: false)
+                        deleted += 1
+                    }
+                case .directory:
+                    guard let childDirId = child.dirId else { continue }
+                    if !hasLocalUnder(childRel) {
+                        // Entire subtree is vault-only under this source folder.
+                        try await session.deleteDirectory(node: child, recursive: true)
+                        removeStateKeys(underRel: childRel, isDirectory: true)
+                        deleted += 1
+                    } else {
+                        deleted += try await prune(dirId: childDirId, relPrefix: childRel)
+                    }
+                }
+            }
+            return deleted
+        }
+
+        return try await prune(dirId: rootDirId, relPrefix: "")
     }
 
     /// Update job BW from cleartext bytes just committed via remote put (not skips).
