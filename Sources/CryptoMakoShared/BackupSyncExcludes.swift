@@ -41,7 +41,7 @@ public struct BackupSyncExcludes: Codable, Equatable, Sendable {
         "swiftinterface",
     ]
 
-    public static let defaultDirectoryNames: Set<String> = [
+    public static let defaultDirectoryNames: Set<String> = Set([
         "node_modules",
         ".git",
         "__pycache__",
@@ -53,7 +53,7 @@ public struct BackupSyncExcludes: Codable, Equatable, Sendable {
         ".idea",
         ".next",
         "Pods",
-    ].union(directoryNamesAddedInGeneration2)
+    ]).union(directoryNamesAddedInGeneration2)
 
     public static let defaultFileNames: Set<String> = [
         ".DS_Store",
@@ -61,10 +61,10 @@ public struct BackupSyncExcludes: Codable, Equatable, Sendable {
         "desktop.ini",
     ]
 
-    public static let defaultFileExtensions: Set<String> = [
+    public static let defaultFileExtensions: Set<String> = Set([
         "pyc",
         "pyo",
-    ].union(fileExtensionsAddedInGeneration2)
+    ]).union(fileExtensionsAddedInGeneration2)
 
     /// True when this directory basename should not be descended into.
     public func shouldSkipDirectory(named name: String) -> Bool {
