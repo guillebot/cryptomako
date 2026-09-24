@@ -435,14 +435,18 @@ struct BackupView: View {
                             Divider()
                         }
                         }
-                        .frame(minHeight: 0, maxHeight: .infinity)
+                        // Cap height so the Add/Cancel/Sync row stays on-screen (was .infinity
+                        // and pushed Cancel below the visible Backup pane).
+                        .frame(minHeight: 0, maxHeight: 220)
                     }
                     HStack {
                         Button("Add folders…") { model.addBackupFolder() }
                             .disabled(syncEngine.isRunning)
                         Spacer()
                         if syncEngine.isRunning {
-                            Button("Cancel") { model.cancelBackupSync() }
+                            Button("Cancel Sync", role: .destructive) { model.cancelBackupSync() }
+                                .keyboardShortcut(.cancelAction)
+                                .help("Stop the in-progress Backup Sync (vault data already uploaded is kept)")
                         }
                         Button("Sync all") { model.startBackupSync() }
                             .disabled(!model.isUnlocked || model.backupSources.isEmpty || syncEngine.isRunning)
@@ -527,6 +531,8 @@ struct BackupView: View {
                     Text("Large trees (like ~/dev) can take a minute before upload starts.")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
+                    Button("Cancel Sync", role: .destructive) { model.cancelBackupSync() }
+                        .keyboardShortcut(.cancelAction)
                 case .running:
                     ProgressView(value: engine.progressFraction) {
                         HStack {
@@ -565,6 +571,9 @@ struct BackupView: View {
                             .truncationMode(.middle)
                             .foregroundStyle(.secondary)
                     }
+                    Button("Cancel Sync", role: .destructive) { model.cancelBackupSync() }
+                        .keyboardShortcut(.cancelAction)
+                        .help("Stop the in-progress Backup Sync (vault data already uploaded is kept)")
                 case .finished(let files, let bytes):
                     Text("Finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)) uploaded to MinIO.")
                         .foregroundStyle(.green)
