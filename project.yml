@@ -67,6 +67,11 @@ targets:
         FRAMEWORK_SEARCH_PATHS: [/Library/Frameworks]
         HEADER_SEARCH_PATHS: [/Library/Frameworks/macFUSE.framework/Headers]
         OTHER_LDFLAGS: [-framework, macFUSE, -framework, NetFS]
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application: GUILLERMO GERMAN EDUARDO SCHIMMEL (H4K6YW7MQM)"
+          PROVISIONING_PROFILE_SPECIFIER: "Mac Team Direct Provisioning Profile: net.gschimmel.cryptomako"
     info:
       path: Support/CryptoMako-Info.plist
       properties:
@@ -100,6 +105,11 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Support/CryptoMakoFileProvider.entitlements
         ENABLE_HARDENED_RUNTIME: YES
         SKIP_INSTALL: YES
+      configs:
+        Release:
+          CODE_SIGN_STYLE: Manual
+          CODE_SIGN_IDENTITY: "Developer ID Application: GUILLERMO GERMAN EDUARDO SCHIMMEL (H4K6YW7MQM)"
+          PROVISIONING_PROFILE_SPECIFIER: "Mac Team Direct Provisioning Profile: net.gschimmel.cryptomako.FileProvider"
     info:
       path: Support/CryptoMakoFileProvider-Info.plist
       properties:

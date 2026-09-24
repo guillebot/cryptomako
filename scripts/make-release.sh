@@ -84,6 +84,7 @@ xcodegen generate
 echo "==> Building ${CONFIGURATION} (signed: ${DEVELOPER_ID_NAME})"
 # Manual Developer ID signing for distribution outside the Mac App Store.
 # CODE_SIGN_STYLE=Manual avoids Automatic trying to use Apple Development.
+# Per-target Mac Team Direct profiles are set in project.yml Release configs.
 xcodebuild \
   -project CryptoMako.xcodeproj \
   -scheme CryptoMako \
