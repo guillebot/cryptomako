@@ -641,6 +641,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             PersistBackupSources();
         }
 
+        // Remount SMB sources on demand before Sync; fail-closed if unavailable.
+        sources = PrepareBackupSourcesForSync(sources);
         BackupPathOverlap.ThrowIfOverlapping(sources);
 
         Busy = true;
@@ -676,6 +678,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                     syncStatePath: AppPaths.SyncStatePath,
                     progress: progress,
                     syncProgress: syncProgress,
+                    isSMB: src.IsSMB,
                     ct: linked.Token);
                 uploaded += result.FilesUploaded;
                 skipped += result.FilesSkipped;
@@ -761,9 +764,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public void RemoveBackupSource(string id)
     {
+        var removed = BackupSources.Sources.FirstOrDefault(s => s.Id == id);
         var n = BackupSources.Sources.RemoveAll(s => s.Id == id);
         if (n > 0)
         {
+            if (removed is not null && removed.IsSMB)
+            {
+                // Clear CredMan secret only — do not force-unmount shares open elsewhere.
+                SMBBackupMount.DeletePassword(removed, _secrets);
+            }
             PersistBackupSources();
             AppendLog($"removed backup source id={id}");
         }
@@ -782,7 +791,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             BackupSourcesSummary = "(none)";
         else
             BackupSourcesSummary = string.Join("\n",
-                BackupSources.Sources.Select(s => $"• {s.VaultFolderName} ← {s.Path}"));
+                BackupSources.Sources.Select(s =>
+                    (s.IsSMB ? "[SMB] " : "") + s.VaultFolderName + " <- " + s.DisplayLocation));
 
         var overlaps = BackupPathOverlap.FindOverlaps(BackupSources.Sources);
         if (overlaps.Count == 0)
@@ -797,6 +807,76 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
 
+
+    /// <summary>
+    /// Mount smb:// (or UNC) via Windows networking, store password in Credential Manager,
+    /// persist SMB metadata (never password) as a Backup source.
+    /// </summary>
+    public string? AddSMBShare(string urlString, string? username, string password, string? vaultFolderName = null)
+    {
+        var normalized = SMBSourceURL.Normalize(urlString);
+        if (BackupSources.Sources.Any(s =>
+                s.IsSMB && string.Equals(s.SmbURL, normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            AppendLog("That SMB share is already in the list: " + normalized);
+            return null;
+        }
+
+        var user = string.IsNullOrWhiteSpace(username) ? null : username.Trim();
+        var mounted = SMBBackupMount.Mount(normalized, user, password ?? "");
+        var src = global::CryptoMako.Vault.BackupSource.CreateSmb(
+            normalized, mounted, user, vaultFolderName);
+        SMBBackupMount.SavePassword(password ?? "", src, _secrets);
+
+        var warn = BackupPathOverlap.SoftWarnOnAdd(BackupSources.Sources, src.Path);
+        BackupSources.Sources.Add(src);
+        PersistBackupSources();
+        if (warn is not null)
+            AppendLog(warn);
+        else
+            AppendLog($"added SMB source {normalized} -> {mounted}");
+        return warn;
+    }
+
+    /// <summary>
+    /// Remount SMB sources and refresh persisted UNC paths before Sync.
+    /// Fail-closed: throws if any SMB share cannot be mounted — never pretend the tree is empty.
+    /// </summary>
+    public List<global::CryptoMako.Vault.BackupSource> PrepareBackupSourcesForSync(
+        IReadOnlyList<global::CryptoMako.Vault.BackupSource> sources)
+    {
+        var prepared = new List<global::CryptoMako.Vault.BackupSource>();
+        var changed = false;
+        foreach (var source in sources)
+        {
+            if (source.IsSMB)
+            {
+                SMBBackupMount.EnsureMounted(source, _secrets);
+                var live = BackupSources.Sources.FirstOrDefault(x => x.Id == source.Id);
+                if (live is not null)
+                {
+                    if (!string.Equals(live.Path, source.Path, StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(live.SmbURL, source.SmbURL, StringComparison.OrdinalIgnoreCase))
+                    {
+                        live.Path = source.Path;
+                        live.SmbURL = source.SmbURL;
+                        live.Kind = global::CryptoMako.Vault.BackupSource.KindSmb;
+                        changed = true;
+                    }
+                }
+            }
+            else
+            {
+                if (!Directory.Exists(source.Path))
+                    throw new InvalidOperationException(
+                        SMBBackupMount.VolumeUnavailableMessage(source.Path));
+            }
+            prepared.Add(source);
+        }
+        if (changed)
+            PersistBackupSources();
+        return prepared;
+    }
 
     private static global::CryptoMako.Vault.BackupSource CreateBackupSourceEntry(string path, string? vaultFolderName = null) =>
         global::CryptoMako.Vault.BackupSource.Create(path, vaultFolderName);

@@ -449,6 +449,77 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) { VmLog(ex); }
     }
 
+    private async void OnAddSmbShare(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var urlBox = new TextBox
+            {
+                PlaceholderText = "smb://server/share/optional/path or \\\\server\\share\\path",
+                Text = "smb://",
+                Margin = new Thickness(0, 0, 0, 8),
+            };
+            var userBox = new TextBox
+            {
+                PlaceholderText = "Username (optional)",
+                Margin = new Thickness(0, 0, 0, 8),
+            };
+            var passBox = new PasswordBox
+            {
+                PlaceholderText = "Password",
+                Margin = new Thickness(0, 0, 0, 8),
+            };
+            var help = new TextBlock
+            {
+                Text = "CryptoMako uses Windows networking (WNetAddConnection2 / durable UNC, no drive letter). Password is stored in Credential Manager only; the share is remounted on demand before Sync.",
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.8,
+                Margin = new Thickness(0, 0, 0, 12),
+            };
+            var panel = new StackPanel { Spacing = 4 };
+            panel.Children.Add(help);
+            panel.Children.Add(urlBox);
+            panel.Children.Add(userBox);
+            panel.Children.Add(passBox);
+
+            var dialog = new ContentDialog
+            {
+                Title = "Add SMB share",
+                Content = panel,
+                PrimaryButtonText = "Mount & add",
+                CloseButtonText = "Cancel",
+                DefaultButton = ContentDialogButton.Primary,
+                XamlRoot = Content.XamlRoot,
+            };
+
+            var result = await dialog.ShowAsync();
+            if (result != ContentDialogResult.Primary)
+                return;
+
+            var url = urlBox.Text ?? "";
+            var user = userBox.Text;
+            var pass = passBox.Password ?? "";
+            passBox.Password = "";
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                UiNote("SMB URL required.");
+                return;
+            }
+
+            PushToVm();
+            var warn = _vm.AddSMBShare(
+                url,
+                user,
+                pass,
+                string.IsNullOrWhiteSpace(_vm.VaultFolder) ? null : _vm.VaultFolder);
+            RefreshStatusStrip();
+            UiNote(string.IsNullOrEmpty(warn)
+                ? "Added SMB share."
+                : warn);
+        }
+        catch (Exception ex) { VmLog(ex, backupHint: true); }
+    }
+
     private void OnRemoveBackupSource(object sender, RoutedEventArgs e)
     {
         try
@@ -491,7 +562,9 @@ public sealed partial class MainWindow : Window
         BackupSourcesList.Items.Clear();
         foreach (var s in _vm.BackupSources.Sources)
         {
-            var item = new BackupSourceListItem(s.Id, $"{s.VaultFolderName} ← {s.Path}");
+            var badge = s.IsSMB ? "[SMB] " : "";
+            var loc = s.IsSMB ? s.DisplayLocation : s.Path;
+            var item = new BackupSourceListItem(s.Id, $"{badge}{s.VaultFolderName} <- {loc}");
             BackupSourcesList.Items.Add(item);
             if (selectedId is not null && selectedId == s.Id)
                 BackupSourcesList.SelectedItem = item;

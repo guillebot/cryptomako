@@ -4,7 +4,7 @@ using System.Threading.Channels;
 namespace CryptoMako.Vault;
 
 /// <summary>
-/// Walk cleartext tree → encrypt → parallel put with size-tiered concurrency.
+/// Walk cleartext tree â†’ encrypt â†’ parallel put with size-tiered concurrency.
 /// Fail-closed: only counts durable after store put succeeds (HTTP 2xx on S3).
 /// </summary>
 public sealed class BackupSyncEngine
@@ -39,6 +39,7 @@ public sealed class BackupSyncEngine
         string? syncStatePath = null,
         IProgress<string>? progress = null,
         IProgress<BackupSyncProgressUpdate>? syncProgress = null,
+        bool isSMB = false,
         CancellationToken ct = default)
     {
         excludes ??= new BackupSyncExcludes();
@@ -47,9 +48,21 @@ public sealed class BackupSyncEngine
             ? new BackupSyncState()
             : BackupSyncState.LoadFromFile(syncStatePath);
 
-        localRoot = Path.GetFullPath(localRoot);
+        // Preserve UNC roots (do not GetFullPath-mangle \\server\share).
+        if (!(localRoot.StartsWith(@"\", StringComparison.Ordinal) || localRoot.StartsWith("//", StringComparison.Ordinal)))
+            localRoot = Path.GetFullPath(localRoot);
+        try
+        {
+            SMBBackupMount.AssertSourceReachable(localRoot, isSMB);
+        }
+        catch (SMBBackupMount.MountException ex)
+        {
+            throw new InvalidOperationException(ex.Message, ex);
+        }
         if (!Directory.Exists(localRoot))
-            throw new DirectoryNotFoundException(localRoot);
+            throw new InvalidOperationException(
+                "Source folder missing: " + localRoot +
+                ". Sync stopped fail-closed (not treated as an empty tree).");
 
         var vaultRoot = "Backups/" + vaultFolderName.Trim().Trim('/');
         progress?.Report("ensure " + vaultRoot);
@@ -80,7 +93,7 @@ public sealed class BackupSyncEngine
         var filesScannedTotal = 0;
         long bytesScannedTotal = 0;
 
-        // Serialize EnsureDirectoryPathAsync — parallel workers otherwise race-create
+        // Serialize EnsureDirectoryPathAsync â€” parallel workers otherwise race-create
         // duplicate Cryptomator dirs for the same cleartext name (and can stall).
         var dirEnsureGate = new SemaphoreSlim(1, 1);
 
@@ -203,7 +216,7 @@ public sealed class BackupSyncEngine
         });
         // Offload the sync walk so Progress<T> callbacks can marshal to the UI thread.
         var (jobs, skipped, skippedBytes) = await Task.Run(
-            () => CollectJobs(localRoot, excludes, syncState, vaultFolderName, syncProgress, ct),
+            () => CollectJobs(localRoot, excludes, syncState, vaultFolderName, syncProgress, isSMB, ct),
             ct).ConfigureAwait(false);
         filesTotal = jobs.Count;
         bytesTotal = jobs.Sum(j => j.Size);
@@ -267,6 +280,15 @@ public sealed class BackupSyncEngine
 
         await Task.WhenAll(workers);
 
+        try
+        {
+            SMBBackupMount.AssertSourceReachable(localRoot, isSMB);
+        }
+        catch (SMBBackupMount.MountException ex)
+        {
+            throw new InvalidOperationException(ex.Message, ex);
+        }
+
         if (!string.IsNullOrEmpty(syncStatePath))
             syncState.SaveToFile(syncStatePath);
 
@@ -286,6 +308,7 @@ public sealed class BackupSyncEngine
         BackupSyncState syncState,
         string vaultFolderName,
         IProgress<BackupSyncProgressUpdate>? syncProgress = null,
+        bool isSMB = false,
         CancellationToken ct = default)
     {
         var jobs = new List<PendingUpload>();
@@ -294,11 +317,20 @@ public sealed class BackupSyncEngine
         var scanned = 0;
         long scannedBytes = 0;
         var sinceUi = 0;
+        var sinceVolumeCheck = 0;
         var lastUi = System.Diagnostics.Stopwatch.StartNew();
         var rootFull = localRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        try
+        {
+            SMBBackupMount.AssertSourceReachable(localRoot, isSMB);
+        }
+        catch (SMBBackupMount.MountException ex)
+        {
+            throw new InvalidOperationException(ex.Message, ex);
+        }
         // Default SearchOption.AllDirectories follows dir junctions and aborts the whole
         // walk on the first UnauthorizedAccessException (e.g. C:\Users\...\Application Data
-        // under a home-folder Backup source) � UI stuck at "Counting... 1 files".
+        // under a home-folder Backup source) — UI stuck at "Counting... 1 files".
         // Keep default Hidden|System skip AND skip ReparsePoint so junctions are not entered.
         var enumOpts = new EnumerationOptions
         {
@@ -307,10 +339,45 @@ public sealed class BackupSyncEngine
             AttributesToSkip = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint,
             ReturnSpecialDirectories = false,
         };
-        foreach (var path in Directory.EnumerateFiles(localRoot, "*", enumOpts))
+        IEnumerable<string> entries;
+        try
+        {
+            entries = Directory.EnumerateFiles(localRoot, "*", enumOpts);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
+        {
+            if (isSMB || SMBBackupMount.LooksLikeNetworkPath(localRoot))
+                throw new InvalidOperationException(SMBBackupMount.VolumeLostMessage(localRoot), ex);
+            throw;
+        }
+
+        foreach (var path in entries)
         {
             ct.ThrowIfCancellationRequested();
-            var rel = Path.GetRelativePath(rootFull, path).Replace('\\', '/');
+            sinceVolumeCheck++;
+            if (sinceVolumeCheck >= 200)
+            {
+                sinceVolumeCheck = 0;
+                try { SMBBackupMount.AssertSourceReachable(localRoot, isSMB); }
+                catch (SMBBackupMount.MountException ex)
+                {
+                    throw new InvalidOperationException(ex.Message, ex);
+                }
+            }
+            string rel;
+            try
+            {
+                rel = Path.GetRelativePath(rootFull, path).Replace('\\', '/');
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                try { SMBBackupMount.AssertSourceReachable(localRoot, isSMB); }
+                catch (SMBBackupMount.MountException mex)
+                {
+                    throw new InvalidOperationException(mex.Message, mex);
+                }
+                throw new InvalidOperationException(SMBBackupMount.VolumeLostMessage(localRoot), ex);
+            }
             var parts = rel.Split('/');
             var hide = false;
             for (var i = 0; i < parts.Length; i++)

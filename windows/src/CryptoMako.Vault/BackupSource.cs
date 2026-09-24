@@ -4,12 +4,16 @@ using System.Text.Json.Serialization;
 namespace CryptoMako.Vault;
 
 /// <summary>
-/// One local cleartext folder synced into <c>Backups/{vaultFolderName}/</c>.
+/// One local cleartext folder (or SMB mount) synced into <c>Backups/{vaultFolderName}/</c>.
 /// Windows-local JSON (<c>backup-sources.json</c>) — mirrors the Mac mental model
-/// (<c>id</c> / <c>path</c> / <c>vaultFolderName</c>); not part of settings.json until Platforms Settings.
+/// (<c>id</c> / <c>path</c> / <c>vaultFolderName</c> / <c>kind</c> / <c>smbURL</c>);
+/// not part of settings.json until Platforms Settings. Password never stored in JSON.
 /// </summary>
 public sealed class BackupSource
 {
+    public const string KindFolder = "folder";
+    public const string KindSmb = "smb";
+
     [JsonPropertyName("id")]
     public string Id { get; set; } = Guid.NewGuid().ToString("D");
 
@@ -23,6 +27,32 @@ public sealed class BackupSource
     [JsonPropertyName("addedAt")]
     public DateTimeOffset AddedAt { get; set; } = DateTimeOffset.UtcNow;
 
+    /// <summary><c>folder</c> (default, legacy) or <c>smb</c>. Missing JSON field migrates to folder.</summary>
+    [JsonPropertyName("kind")]
+    public string Kind { get; set; } = KindFolder;
+
+    /// <summary>Canonical <c>smb://server/share[/path]</c> when Kind is smb. Never includes password.</summary>
+    [JsonPropertyName("smbURL")]
+    public string? SmbURL { get; set; }
+
+    /// <summary>Optional SMB username (password lives in Credential Manager only).</summary>
+    [JsonPropertyName("smbUsername")]
+    public string? SmbUsername { get; set; }
+
+    [JsonIgnore]
+    public bool IsSMB =>
+        string.Equals(Kind, KindSmb, StringComparison.OrdinalIgnoreCase)
+        || (!string.IsNullOrWhiteSpace(SmbURL));
+
+    /// <summary>Secondary line in the Backup list (smb:// URL or local path).</summary>
+    [JsonIgnore]
+    public string DisplayLocation =>
+        IsSMB && !string.IsNullOrWhiteSpace(SmbURL) ? SmbURL! : Path;
+
+    /// <summary>Credential Manager account for this source SMB password (never JSON).</summary>
+    [JsonIgnore]
+    public string SmbPasswordAccount => "smb-password-" + Id;
+
     public static BackupSource Create(string path, string? vaultFolderName = null)
     {
         var full = System.IO.Path.GetFullPath(path);
@@ -33,58 +63,106 @@ public sealed class BackupSource
             Path = full,
             VaultFolderName = name,
             AddedAt = DateTimeOffset.UtcNow,
+            Kind = KindFolder,
+        };
+    }
+
+    /// <summary>Create an SMB source. Password is NOT stored on the object — caller saves to CredMan.</summary>
+    public static BackupSource CreateSmb(
+        string smbUrl,
+        string mountedUncPath,
+        string? username = null,
+        string? vaultFolderName = null)
+    {
+        var normalized = SMBSourceURL.Normalize(smbUrl);
+        var unc = string.IsNullOrWhiteSpace(mountedUncPath)
+            ? SMBSourceURL.ToUnc(normalized)
+            : mountedUncPath;
+        var sharePrefix = SMBSourceURL.SuggestedVaultFolderName(normalized, unc);
+        var name = ComposeVaultFolderName(vaultFolderName, sharePrefix, isSmbShareName: true);
+        return new BackupSource
+        {
+            Id = Guid.NewGuid().ToString("D"),
+            Path = unc,
+            VaultFolderName = name,
+            AddedAt = DateTimeOffset.UtcNow,
+            Kind = KindSmb,
+            SmbURL = normalized,
+            SmbUsername = string.IsNullOrWhiteSpace(username) ? null : username.Trim(),
         };
     }
 
     /// <summary>
     /// Stable cleartext prefix for one source root under <c>Backups/{vaultFolder}/</c>.
     /// When the source root is exactly the user profile (<c>.../Users/{name}</c>), returns
-    /// <c>Users/{name}</c>; otherwise the last path segment (Mac-style leaf). No drive letter.
+    /// <c>Users/{name}</c>; UNC/SMB uses the share name; otherwise the last path segment.
     /// </summary>
     public static string SuggestSourcePrefix(string localRoot)
     {
         if (string.IsNullOrWhiteSpace(localRoot))
             return "Backup";
 
-        var full = System.IO.Path.GetFullPath(localRoot.Trim())
+        var trimmed = localRoot.Trim();
+        // UNC / already-mounted SMB paths: use share name (second segment) so they don't
+        // collide with local profile sources (Users/guill).
+        if (trimmed.StartsWith(@"\\", StringComparison.Ordinal) || trimmed.StartsWith("//", StringComparison.Ordinal))
+        {
+            var unc = trimmed.TrimStart('\\', '/');
+            var parts = unc.Split(new[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length >= 2 && !string.IsNullOrEmpty(parts[1]))
+                return parts[1];
+            if (parts.Length >= 1 && !string.IsNullOrEmpty(parts[0]))
+                return parts[0];
+        }
+
+        var full = System.IO.Path.GetFullPath(trimmed)
             .TrimEnd(System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar);
-        var parts = full.Split(
+        var pathParts = full.Split(
                 new[] { System.IO.Path.DirectorySeparatorChar, System.IO.Path.AltDirectorySeparatorChar },
                 StringSplitOptions.RemoveEmptyEntries)
             .Where(p => p.Length > 0 && !(p.Length == 2 && p[1] == ':')) // drop "C:"
             .ToArray();
 
-        if (parts.Length == 0)
+        if (pathParts.Length == 0)
             return "Backup";
 
         // Unambiguous home root only: .../Users/{name} or .../home/{name} with no deeper
         // segments -> "Users/guill". Deeper paths (Documents, Temp, ...) keep the leaf so
         // Temp under the profile does not become a long Users/guill/AppData/... prefix.
-        for (var i = 0; i < parts.Length - 1; i++)
+        for (var i = 0; i < pathParts.Length - 1; i++)
         {
-            if ((parts[i].Equals("Users", StringComparison.OrdinalIgnoreCase)
-                 || parts[i].Equals("home", StringComparison.OrdinalIgnoreCase))
-                && i + 1 == parts.Length - 1)
+            if ((pathParts[i].Equals("Users", StringComparison.OrdinalIgnoreCase)
+                 || pathParts[i].Equals("home", StringComparison.OrdinalIgnoreCase))
+                && i + 1 == pathParts.Length - 1)
             {
-                return parts[i] + "/" + parts[i + 1];
+                return pathParts[i] + "/" + pathParts[i + 1];
             }
         }
 
-        var leaf = parts[^1];
+        var leaf = pathParts[^1];
         return string.IsNullOrEmpty(leaf) ? "Backup" : leaf;
     }
 
     /// <summary>
     /// Compose <c>Backups/{result}/</c> destination folder. When <paramref name="vaultFolderName"/>
     /// is a host/vault label (e.g. hostname <c>MONSTER</c>), nests the source prefix under it
-    /// (<c>MONSTER/Users/guill</c>) so multiple sources do not mix. Idempotent when the name
-    /// already ends with the source leaf/prefix (Mac-style <c>guill</c> alone stays as-is).
-    /// Soft migration: callers may rewrite stored <see cref="VaultFolderName"/> with this result;
-    /// already-synced objects under the bare host folder are left in place.
+    /// (<c>MONSTER/Users/guill</c> or <c>MONSTER/share</c> for SMB) so multiple sources do not mix.
     /// </summary>
-    public static string ComposeVaultFolderName(string? vaultFolderName, string localRoot)
+    public static string ComposeVaultFolderName(string? vaultFolderName, string localRoot, bool isSmbShareName = false)
     {
-        var prefix = SuggestSourcePrefix(localRoot);
+        string prefix;
+        if (isSmbShareName)
+        {
+            prefix = (localRoot ?? "").Trim().Replace('\\', '/').Trim('/');
+            if (prefix.Contains('/'))
+                prefix = prefix[(prefix.LastIndexOf('/') + 1)..];
+            if (string.IsNullOrEmpty(prefix))
+                prefix = "SMB";
+        }
+        else
+        {
+            prefix = SuggestSourcePrefix(localRoot);
+        }
         var name = (vaultFolderName ?? "").Trim().Replace('\\', '/').Trim('/');
         if (string.IsNullOrEmpty(name))
             return prefix;
@@ -105,16 +183,33 @@ public sealed class BackupSource
     /// Soft-migrate stored sources so vaultFolderName includes the source prefix.
     /// Returns true when any entry changed (caller should persist).
     /// Does not touch vault objects already synced under a bare host folder.
+    /// Missing <c>kind</c> on legacy JSON deserializes as folder (default).
     /// </summary>
     public static bool EnsureSourcePrefixedVaultFolders(IEnumerable<BackupSource> sources)
     {
         var changed = false;
         foreach (var s in sources)
         {
-            if (string.IsNullOrWhiteSpace(s.Path)) continue;
+            if (string.IsNullOrWhiteSpace(s.Path) && string.IsNullOrWhiteSpace(s.SmbURL)) continue;
+            // Soft-normalize kind when smbURL present but kind missing/folder.
+            if (!string.IsNullOrWhiteSpace(s.SmbURL)
+                && !string.Equals(s.Kind, KindSmb, StringComparison.OrdinalIgnoreCase))
+            {
+                s.Kind = KindSmb;
+                changed = true;
+            }
             try
             {
-                var composed = ComposeVaultFolderName(s.VaultFolderName, s.Path);
+                string composed;
+                if (s.IsSMB)
+                {
+                    var share = SMBSourceURL.SuggestedVaultFolderName(s.SmbURL, s.Path);
+                    composed = ComposeVaultFolderName(s.VaultFolderName, share, isSmbShareName: true);
+                }
+                else
+                {
+                    composed = ComposeVaultFolderName(s.VaultFolderName, s.Path);
+                }
                 if (!string.Equals(composed, s.VaultFolderName, StringComparison.Ordinal))
                 {
                     s.VaultFolderName = composed;
@@ -177,7 +272,10 @@ public static class BackupPathOverlap
         if (string.IsNullOrWhiteSpace(path))
             throw new ArgumentException("path required", nameof(path));
 
-        var full = System.IO.Path.GetFullPath(path.Trim());
+        var full = path.Trim();
+        // Keep UNC as-is (GetFullPath can mangle \\server\share on some hosts).
+        if (!(full.StartsWith(@"\\", StringComparison.Ordinal) || full.StartsWith("//", StringComparison.Ordinal)))
+            full = System.IO.Path.GetFullPath(full);
         try
         {
             // Prefer final symlink / junction target when the OS can resolve it.
@@ -196,7 +294,7 @@ public static class BackupPathOverlap
         }
         catch
         {
-            // Best-effort: fall back to GetFullPath.
+            // Best-effort: fall back to GetFullPath / UNC.
         }
 
         return TrimSep(full);
@@ -241,7 +339,19 @@ public static class BackupPathOverlap
     public static string? SoftWarnOnAdd(IEnumerable<BackupSource> existing, string candidatePath)
     {
         BackupSource candidate;
-        try { candidate = BackupSource.Create(candidatePath); }
+        try
+        {
+            if (candidatePath.StartsWith(@"\\", StringComparison.Ordinal)
+                || candidatePath.StartsWith("//", StringComparison.Ordinal)
+                || candidatePath.StartsWith("smb://", StringComparison.OrdinalIgnoreCase))
+            {
+                candidate = new BackupSource { Path = candidatePath.Trim(), Kind = BackupSource.KindSmb };
+            }
+            else
+            {
+                candidate = BackupSource.Create(candidatePath);
+            }
+        }
         catch { return null; }
 
         var overlaps = FindOverlaps(existing.Append(candidate));
