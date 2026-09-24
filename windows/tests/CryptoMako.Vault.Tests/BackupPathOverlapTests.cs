@@ -114,11 +114,14 @@ public class BackupPathOverlapTests
         try
         {
             var store = new BackupSourcesStore();
-            store.Sources.Add(BackupSource.Create(Path.GetTempPath(), "TempHost"));
+            var tempRoot = Path.GetTempPath();
+            store.Sources.Add(BackupSource.Create(tempRoot, "TempHost"));
             store.SaveToFile(path);
             var back = BackupSourcesStore.LoadFromFile(path);
             Assert.Single(back.Sources);
-            Assert.Equal("TempHost", back.Sources[0].VaultFolderName);
+            Assert.Equal(
+                BackupSource.ComposeVaultFolderName("TempHost", tempRoot),
+                back.Sources[0].VaultFolderName);
             Assert.False(string.IsNullOrWhiteSpace(back.Sources[0].Id));
         }
         finally
