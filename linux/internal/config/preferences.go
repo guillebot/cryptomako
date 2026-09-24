@@ -20,6 +20,13 @@ const (
 	ProxyModeCustom = "custom"
 )
 
+// BackupTransferMode values (locked with macOS AppPreferences.BackupTransferMode).
+// Prefs key: backupTransferMode. Default backup (safer: no vault deletes).
+const (
+	BackupTransferModeBackup = "backup"
+	BackupTransferModeSync   = "sync"
+)
+
 // AppPreferences mirrors Sources/CryptoMakoShared/AppPreferences.swift.
 // JSON field names are Platforms-locked — do not invent new keys.
 // Unknown JSON keys are ignored (encoding/json default).
@@ -28,6 +35,11 @@ type AppPreferences struct {
 	ProxyHost     string `json:"proxyHost"`
 	ProxyPort     int    `json:"proxyPort"`
 	ProxyUsername string `json:"proxyUsername"`
+
+	// BackupTransferMode is "backup" | "sync" (macOS AppPreferences.backupTransferMode).
+	// backup = put/update only; sync = backup + delete vault ciphertext orphans under
+	// that source's Backups/<folder>/ only. Never deletes the local source.
+	BackupTransferMode string `json:"backupTransferMode"`
 
 	LimitSyncUploadBandwidth bool    `json:"limitSyncUploadBandwidth"`
 	SyncUploadCapMbps        float64 `json:"syncUploadCapMbps"`
@@ -44,6 +56,7 @@ func DefaultAppPreferences() AppPreferences {
 		ProxyHost:                "",
 		ProxyPort:                8080,
 		ProxyUsername:            "",
+		BackupTransferMode:       BackupTransferModeBackup,
 		LimitSyncUploadBandwidth: false,
 		SyncUploadCapMbps:        50,
 		SyncSmallPutConcurrency:  96,
@@ -128,7 +141,24 @@ func ParseAppPreferences(data []byte) (AppPreferences, error) {
 	if strings.TrimSpace(p.ProxyMode) == "" {
 		p.ProxyMode = ProxyModeSystem
 	}
+	p.BackupTransferMode = NormalizeBackupTransferMode(p.BackupTransferMode)
 	return p, nil
+}
+
+// NormalizeBackupTransferMode returns "sync" only for that exact mode; anything
+// else (empty, unknown) fails closed to "backup" (no vault deletes).
+func NormalizeBackupTransferMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case BackupTransferModeSync:
+		return BackupTransferModeSync
+	default:
+		return BackupTransferModeBackup
+	}
+}
+
+// IsSyncTransferMode reports whether prefs select Sync (orphan vault deletes).
+func (p AppPreferences) IsSyncTransferMode() bool {
+	return NormalizeBackupTransferMode(p.BackupTransferMode) == BackupTransferModeSync
 }
 
 // LoadAppPreferences reads path (default XDG). Missing/unreadable → defaults
@@ -181,6 +211,7 @@ func (p AppPreferences) MarshalJSONPretty() ([]byte, error) {
 		ProxyHost                string  `json:"proxyHost"`
 		ProxyPort                int     `json:"proxyPort"`
 		ProxyUsername            string  `json:"proxyUsername"`
+		BackupTransferMode       string  `json:"backupTransferMode"`
 		LimitSyncUploadBandwidth bool    `json:"limitSyncUploadBandwidth"`
 		SyncUploadCapMbps        float64 `json:"syncUploadCapMbps"`
 		SyncSmallPutConcurrency  int     `json:"syncSmallPutConcurrency"`
@@ -192,6 +223,7 @@ func (p AppPreferences) MarshalJSONPretty() ([]byte, error) {
 		ProxyHost:                p.ProxyHost,
 		ProxyPort:                p.ProxyPort,
 		ProxyUsername:            p.ProxyUsername,
+		BackupTransferMode:       NormalizeBackupTransferMode(p.BackupTransferMode),
 		LimitSyncUploadBandwidth: p.LimitSyncUploadBandwidth,
 		SyncUploadCapMbps:        p.SyncUploadCapMbps,
 		SyncSmallPutConcurrency:  p.SyncSmallPutConcurrency,

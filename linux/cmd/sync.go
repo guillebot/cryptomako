@@ -20,6 +20,7 @@ var (
 	flagSyncPreferences string
 	flagSyncState       string
 	flagSyncSources     string
+	flagSyncMode        string
 )
 
 var syncCmd = &cobra.Command{
@@ -38,6 +39,12 @@ errors with help to add sources or pass --source/--dest.
 Path excludes honor macOS BackupSyncExcludes keys (directoryNames / fileNames /
 fileExtensions) from ~/.config/cryptomako/backup-sync-excludes.json (or
 --excludes). Defaults match the macOS app when the file is absent.
+
+Transfer mode (prefs key backupTransferMode, default backup; override with --mode):
+  - backup: put/update only. Never deletes local source. Never deletes vault extras.
+  - sync: same puts, then delete vault ciphertext orphans under that source's
+    dest folder only (macOS Backups/<folder>/). Never deletes local source.
+    Refuses dest "/". Remote deletes fail closed.
 
 Sync concurrency and optional upload pacing come from app-preferences.json
 (same keys as macOS AppPreferences). Proxy password is env-only
@@ -86,6 +93,13 @@ OS secret store is untouched.`,
 			return err
 		}
 		prefs := config.LoadAppPreferences(flagSyncPreferences)
+		if strings.TrimSpace(flagSyncMode) != "" {
+			m := strings.ToLower(strings.TrimSpace(flagSyncMode))
+			if m != config.BackupTransferModeBackup && m != config.BackupTransferModeSync {
+				return fmt.Errorf("invalid --mode %q (want backup|sync)", flagSyncMode)
+			}
+			prefs.BackupTransferMode = m
+		}
 		session, err := vault.Unlock(cfg)
 		if err != nil {
 			return err
@@ -96,16 +110,34 @@ OS secret store is untouched.`,
 		defer stop()
 
 		total := 0
+		totalDeleted := 0
 		for _, t := range targets {
-			n, err := session.SyncCleartextTree(ctx, t.SourcePath, t.DestPrefix, &excludes, &prefs, flagSyncState, t.VaultFolderName)
+			n, deleted, err := session.SyncCleartextTree(ctx, t.SourcePath, t.DestPrefix, &excludes, &prefs, flagSyncState, t.VaultFolderName)
 			if err != nil {
 				return fmt.Errorf("sync %s → %s: %w", t.SourcePath, t.DestPrefix, err)
 			}
-			fmt.Printf("synced %d file(s) from %s into %s\n", n, t.SourcePath, t.DestPrefix)
+			verb := "backed up"
+			if prefs.IsSyncTransferMode() {
+				verb = "synced"
+			}
+			if deleted > 0 {
+				fmt.Printf("%s %d file(s) from %s into %s (removed %d vault-only)\n", verb, n, t.SourcePath, t.DestPrefix, deleted)
+			} else {
+				fmt.Printf("%s %d file(s) from %s into %s\n", verb, n, t.SourcePath, t.DestPrefix)
+			}
 			total += n
+			totalDeleted += deleted
 		}
 		if len(targets) > 1 {
-			fmt.Printf("synced %d file(s) across %d source(s)\n", total, len(targets))
+			verb := "backed up"
+			if prefs.IsSyncTransferMode() {
+				verb = "synced"
+			}
+			if totalDeleted > 0 {
+				fmt.Printf("%s %d file(s) across %d source(s) (removed %d vault-only)\n", verb, total, len(targets), totalDeleted)
+			} else {
+				fmt.Printf("%s %d file(s) across %d source(s)\n", verb, total, len(targets))
+			}
 		}
 		return nil
 	},
@@ -118,5 +150,6 @@ func init() {
 	syncCmd.Flags().StringVar(&flagSyncPreferences, "preferences", "", "app-preferences.json path (default XDG)")
 	syncCmd.Flags().StringVar(&flagSyncState, "sync-state", "", "backup-sync-state.json path (default XDG)")
 	syncCmd.Flags().StringVar(&flagSyncSources, "sources", "", "backup-sources.json path (default XDG)")
+	syncCmd.Flags().StringVar(&flagSyncMode, "mode", "", "transfer mode backup|sync (default: prefs backupTransferMode, else backup)")
 	Root.AddCommand(syncCmd)
 }
