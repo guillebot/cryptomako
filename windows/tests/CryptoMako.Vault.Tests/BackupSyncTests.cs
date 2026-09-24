@@ -217,6 +217,80 @@ public class BackupSyncTests
     }
 
 
+    
+    [Fact]
+    public async Task CollectJobs_continues_past_inaccessible_directory()
+    {
+        // Regression: home-folder Sync hit UnauthorizedAccessException on
+        // "Application Data" (junction) after ~2 files and left UI at Counting 1.
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var vaultDir = Path.Combine(Path.GetTempPath(), "cm-vault-acl-" + Guid.NewGuid().ToString("N"));
+        var sourceDir = Path.Combine(Path.GetTempPath(), "cm-src-acl-" + Guid.NewGuid().ToString("N"));
+        var deniedDir = Path.Combine(sourceDir, "denied_acl");
+        Directory.CreateDirectory(deniedDir);
+        await File.WriteAllTextAsync(Path.Combine(sourceDir, "before.txt"), "before");
+        await File.WriteAllTextAsync(Path.Combine(deniedDir, "secret.txt"), "secret");
+        await File.WriteAllTextAsync(Path.Combine(sourceDir, "after.txt"), "after");
+
+        try
+        {
+            var dirInfo = new DirectoryInfo(deniedDir);
+            var acl = dirInfo.GetAccessControl();
+            var rule = new System.Security.AccessControl.FileSystemAccessRule(
+                System.Security.Principal.WindowsIdentity.GetCurrent().Name,
+                System.Security.AccessControl.FileSystemRights.FullControl,
+                System.Security.AccessControl.InheritanceFlags.ContainerInherit | System.Security.AccessControl.InheritanceFlags.ObjectInherit,
+                System.Security.AccessControl.PropagationFlags.None,
+                System.Security.AccessControl.AccessControlType.Deny);
+            acl.AddAccessRule(rule);
+            dirInfo.SetAccessControl(acl);
+
+            var fixture = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "fixtures", "vault"));
+            Assert.True(Directory.Exists(fixture));
+            var pass = File.ReadAllText(Path.GetFullPath(Path.Combine(fixture, "..", "PASSWORD"))).TrimEnd('\n', '\r');
+            CopyDir(fixture, vaultDir);
+            await using var session = VaultSession.UnlockLocal(vaultDir, pass);
+
+            var scanning = new List<BackupSyncProgressUpdate>();
+            var engine = new BackupSyncEngine();
+            var result = await engine.SyncAsync(
+                session,
+                sourceDir,
+                "AclSkipTest",
+                new AppPreferences { SyncSmallPutConcurrency = 2, SyncMediumPutConcurrency = 1, SyncLargePutConcurrency = 1 },
+                syncProgress: new SyncProgressCollector(scanning));
+
+            Assert.True(result.FilesScanned >= 2, $"expected to keep walking past denied dir, scanned={result.FilesScanned}");
+            Assert.DoesNotContain(scanning, u => (u.CurrentPath ?? "").Contains("secret", StringComparison.OrdinalIgnoreCase));
+            var listing = await session.ListAsync("/Backups/AclSkipTest", recursive: true);
+            Assert.Contains("/Backups/AclSkipTest/before.txt", listing);
+            Assert.Contains("/Backups/AclSkipTest/after.txt", listing);
+        }
+        finally
+        {
+            try
+            {
+                var dirInfo = new DirectoryInfo(deniedDir);
+                if (dirInfo.Exists)
+                {
+                    var acl = dirInfo.GetAccessControl();
+                    var rules = acl.GetAccessRules(true, true, typeof(System.Security.Principal.NTAccount));
+                    foreach (System.Security.AccessControl.FileSystemAccessRule r in rules)
+                    {
+                        if (r.AccessControlType == System.Security.AccessControl.AccessControlType.Deny)
+                            acl.RemoveAccessRule(r);
+                    }
+                    dirInfo.SetAccessControl(acl);
+                }
+            }
+            catch { /* best-effort ACL restore */ }
+            try { Directory.Delete(sourceDir, true); } catch { /* ignore */ }
+            try { Directory.Delete(vaultDir, true); } catch { /* ignore */ }
+        }
+    }
+
     private sealed class SyncProgressCollector : IProgress<BackupSyncProgressUpdate>
     {
         private readonly List<BackupSyncProgressUpdate> _scanning;
