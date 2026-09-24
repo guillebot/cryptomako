@@ -55,6 +55,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         BackupSources = File.Exists(AppPaths.BackupSourcesPath)
             ? BackupSourcesStore.LoadFromFile(AppPaths.BackupSourcesPath)
             : new BackupSourcesStore();
+        // Soft-migrate vaultFolderName so host-only folders (e.g. MONSTER) gain a
+        // source prefix (MONSTER/Users/guill). Old vault objects under the bare host
+        // folder are left in place; new syncs write under the prefixed path.
+        if (global::CryptoMako.Vault.BackupSource.EnsureSourcePrefixedVaultFolders(BackupSources.Sources))
+            BackupSources.SaveToFile(AppPaths.BackupSourcesPath);
         RefreshBackupSourcesSummary();
         // Do not preload passphrase into the bindable Password field (crash-dump / UI lifetime).
         // UnlockAsync / auto-reconnect read CRYPTOMAKO_PASSWORD from the secret store when empty.
@@ -623,6 +628,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (string.IsNullOrWhiteSpace(VaultFolder))
                 throw new InvalidOperationException("vault folder name required");
             sources.Add(CreateBackupSourceEntry(BackupSource, VaultFolder.Trim()));
+        }
+        else if (global::CryptoMako.Vault.BackupSource.EnsureSourcePrefixedVaultFolders(sources))
+        {
+            // Listed sources still on bare host folder (pre-prefix layout): rewrite + persist.
+            foreach (var s in sources)
+            {
+                var live = BackupSources.Sources.FirstOrDefault(x => x.Id == s.Id);
+                if (live is not null)
+                    live.VaultFolderName = s.VaultFolderName;
+            }
+            PersistBackupSources();
         }
 
         BackupPathOverlap.ThrowIfOverlapping(sources);
