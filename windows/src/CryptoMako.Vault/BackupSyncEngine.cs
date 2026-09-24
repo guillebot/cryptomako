@@ -71,6 +71,10 @@ public sealed class BackupSyncEngine
         var filesTotal = 0;
         long bytesTotal = 0;
 
+        // Serialize EnsureDirectoryPathAsync — parallel workers otherwise race-create
+        // duplicate Cryptomator dirs for the same cleartext name (and can stall).
+        var dirEnsureGate = new SemaphoreSlim(1, 1);
+
         async Task<string> ResolveParentDirIdAsync(string parentRelativeDir)
         {
             lock (dirCacheLock)
@@ -79,13 +83,27 @@ public sealed class BackupSyncEngine
                     return hit;
             }
 
-            var full = string.IsNullOrEmpty(parentRelativeDir)
-                ? vaultRoot
-                : vaultRoot + "/" + parentRelativeDir.Replace('\\', '/');
-            var id = await session.EnsureDirectoryPathAsync(full, ct);
-            lock (dirCacheLock)
-                dirCache[parentRelativeDir] = id;
-            return id;
+            await dirEnsureGate.WaitAsync(ct).ConfigureAwait(false);
+            try
+            {
+                lock (dirCacheLock)
+                {
+                    if (dirCache.TryGetValue(parentRelativeDir, out var hit))
+                        return hit;
+                }
+
+                var full = string.IsNullOrEmpty(parentRelativeDir)
+                    ? vaultRoot
+                    : vaultRoot + "/" + parentRelativeDir.Replace('\\', '/');
+                var id = await session.EnsureDirectoryPathAsync(full, ct).ConfigureAwait(false);
+                lock (dirCacheLock)
+                    dirCache[parentRelativeDir] = id;
+                return id;
+            }
+            finally
+            {
+                dirEnsureGate.Release();
+            }
         }
 
         async Task WorkerAsync(ChannelReader<PendingUpload> reader)
@@ -96,9 +114,36 @@ public sealed class BackupSyncEngine
                 if (limiter is not null)
                     await limiter.AcquireAsync(job.Size, ct);
 
-                var parentId = await ResolveParentDirIdAsync(job.ParentRelativeDir);
+                // Surface the in-flight file BEFORE put so UI never looks stuck on N-1/N
+                // while the last PutFileAsync is still running (or hung).
+                syncProgress?.Report(new BackupSyncProgressUpdate
+                {
+                    Phase = "uploading",
+                    FilesDone = uploaded,
+                    FilesTotal = filesTotal,
+                    BytesDone = bytes,
+                    BytesTotal = bytesTotal,
+                    BytesPerSecond = emaRate,
+                    CurrentPath = job.RelativePath,
+                });
                 progress?.Report(job.RelativePath);
-                await session.PutFileAsync(parentId, job.FileName, job.AbsolutePath, ct);
+
+                var parentId = await ResolveParentDirIdAsync(job.ParentRelativeDir);
+
+                // Per-file timeout: fail closed with a clear error instead of hanging forever.
+                const int putTimeoutSeconds = 120;
+                using var putCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                putCts.CancelAfter(TimeSpan.FromSeconds(putTimeoutSeconds));
+                try
+                {
+                    await session.PutFileAsync(parentId, job.FileName, job.AbsolutePath, putCts.Token)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                {
+                    throw new TimeoutException(
+                        $"Backup Sync timed out after {putTimeoutSeconds}s on: {job.RelativePath}");
+                }
 
                 var key = BackupSyncState.Key(vaultFolderName, job.RelativePath);
                 BackupSyncProgressUpdate? update = null;
