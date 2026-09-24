@@ -18,11 +18,13 @@ public sealed class BackupSyncExcludes
     public static readonly string[] DefaultDirectoryNames =
     [
         "node_modules", ".git", "__pycache__", ".svn", ".hg", ".tox", ".venv", "venv", ".idea", ".next", "Pods",
+        // Generation 2 — Xcode / SPM / Android build-artifact storms
+        "DerivedData", "DerivedData-sim", "Index.noindex", "ModuleCache.noindex", ".build", "build",
     ];
 
     public static readonly string[] DefaultFileNames = [".DS_Store", "Thumbs.db", "desktop.ini"];
 
-    public static readonly string[] DefaultFileExtensions = ["pyc", "pyo"];
+    public static readonly string[] DefaultFileExtensions = ["pyc", "pyo", "swiftinterface"];
 
     public bool ShouldSkipDirectory(string name) => DirectoryNames.Contains(name);
 

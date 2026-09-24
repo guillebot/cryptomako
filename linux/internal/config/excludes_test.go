@@ -82,3 +82,41 @@ func TestDefaultExcludesPathUsesXDG(t *testing.T) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
+
+func TestDefaultExcludesSkipBuildArtifacts(t *testing.T) {
+	e := DefaultBackupSyncExcludes()
+	for _, name := range []string{"DerivedData", "DerivedData-sim", "Index.noindex", "ModuleCache.noindex", ".build", "build"} {
+		if !e.ShouldSkipDirectory(name) {
+			t.Fatalf("expected skip %s", name)
+		}
+	}
+	if !e.ShouldSkipFile("Foo.swiftinterface") {
+		t.Fatal("expected skip .swiftinterface")
+	}
+	if !e.ShouldSkipRelativePath("cryptomako-ios/build/DerivedData-sim/Index.noindex/x") {
+		t.Fatal("expected skip via build/DerivedData-sim/Index.noindex")
+	}
+}
+
+func TestLoadExcludesMigratesGeneration2ForPriorDefaults(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "backup-sync-excludes.json")
+	// Prior macOS default snapshot (no defaultsGeneration) — should gain gen-2 names.
+	body := `{"excludes":{"directoryNames":["Pods",".tox",".git",".venv",".next",".svn",".idea","venv",".hg","__pycache__","node_modules"],"fileNames":[".DS_Store","Thumbs.db","desktop.ini"],"fileExtensions":["pyo","pyc"]}}`
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := LoadBackupSyncExcludes(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.ShouldSkipDirectory("DerivedData") {
+		t.Fatal("expected DerivedData after migration")
+	}
+	if !got.ShouldSkipDirectory("build") {
+		t.Fatal("expected build after migration")
+	}
+	if !got.ShouldSkipFile("Bar.swiftinterface") {
+		t.Fatal("expected swiftinterface after migration")
+	}
+}
