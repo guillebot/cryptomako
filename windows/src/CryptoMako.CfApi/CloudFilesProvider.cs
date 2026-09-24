@@ -293,43 +293,56 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         if (placeholders.Count == 0) return 0;
 
         // Create by depth so parent dir placeholders exist before children.
+        // Within a depth, batch siblings that share the same parent into one CfCreatePlaceholders
+        // call (Explorer FETCH used to seed N children with N serial kernel round-trips).
         var ordered = placeholders
-            .OrderBy(p => p.CleartextRelativePath.Count(c => c is '/' or '\\'))
+            .OrderBy(p => p.CleartextRelativePath.Count(ch => ch is '/' or '\\'))
             .ThenBy(p => p.IsDirectory ? 0 : 1)
             .ThenBy(p => p.CleartextRelativePath, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var total = 0;
-        foreach (var depthGroup in ordered.GroupBy(p => p.CleartextRelativePath.Count(c => c is '/' or '\\')))
+        foreach (var depthGroup in ordered.GroupBy(p => p.CleartextRelativePath.Count(ch => ch is '/' or '\\')))
         {
-            foreach (var item in depthGroup)
+            foreach (var parentGroup in depthGroup.GroupBy(ParentRelativeOf, StringComparer.OrdinalIgnoreCase))
             {
+                var batch = parentGroup.ToList();
                 try
                 {
-                    total += CreatePlaceholderBatch(new[] { item });
+                    total += CreatePlaceholderBatch(batch);
                 }
                 catch (Exception ex)
                 {
-                    // Skip invalid names / oversized paths rather than aborting the whole populate.
+                    // Fall back one-by-one so one bad name does not abort the sibling batch.
                     System.Diagnostics.Debug.WriteLine(
-                        "CreatePlaceholder skipped " + item.CleartextRelativePath + ": " + ex.Message);
+                        "CreatePlaceholder batch soft-fail (" + batch.Count + "): " + ex.Message);
+                    foreach (var item in batch)
+                    {
+                        try { total += CreatePlaceholderBatch(new[] { item }); }
+                        catch (Exception ex2)
+                        {
+                            System.Diagnostics.Debug.WriteLine(
+                                "CreatePlaceholder skipped " + item.CleartextRelativePath + ": " + ex2.Message);
+                        }
+                    }
                 }
             }
         }
         return total;
     }
 
-    private int CreatePlaceholderBatch(IReadOnlyList<CloudFilesPlaceholder> placeholders)
+    private static string ParentRelativeOf(CloudFilesPlaceholder p)
     {
-        // One item at a time from CreatePlaceholders; BaseDirectoryPath = parent folder.
-        if (placeholders.Count != 1)
-            throw new ArgumentException("CreatePlaceholderBatch expects a single item.");
-
-        var p = placeholders[0];
         var rel = p.CleartextRelativePath.Replace('\\', '/').TrimStart('/');
         var slash = rel.LastIndexOf('/');
-        var parentRel = slash >= 0 ? rel[..slash] : "";
-        var leaf = slash >= 0 ? rel[(slash + 1)..] : rel;
+        return slash >= 0 ? rel[..slash] : "";
+    }
+
+    private int CreatePlaceholderBatch(IReadOnlyList<CloudFilesPlaceholder> placeholders)
+    {
+        if (placeholders.Count == 0) return 0;
+
+        var parentRel = ParentRelativeOf(placeholders[0]);
         var baseDir = string.IsNullOrEmpty(parentRel)
             ? SyncRootPath
             : Path.Combine(SyncRootPath, parentRel.Replace('/', Path.DirectorySeparatorChar));
@@ -337,21 +350,29 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         var pins = new List<IntPtr>();
         try
         {
-            var identityBytes = Encoding.UTF8.GetBytes("/" + rel);
-            var idPtr = Marshal.AllocHGlobal(identityBytes.Length);
-            pins.Add(idPtr);
-            Marshal.Copy(identityBytes, 0, idPtr, identityBytes.Length);
-
-            var basic = new FILE_BASIC_INFO
+            var infos = new CF_PLACEHOLDER_CREATE_INFO[placeholders.Count];
+            for (var i = 0; i < placeholders.Count; i++)
             {
-                FileAttributes = p.IsDirectory
-                    ? FileFlagsAndAttributes.FILE_ATTRIBUTE_DIRECTORY
-                    : FileFlagsAndAttributes.FILE_ATTRIBUTE_NORMAL,
-            };
+                var p = placeholders[i];
+                var rel = p.CleartextRelativePath.Replace('\\', '/').TrimStart('/');
+                if (!string.Equals(ParentRelativeOf(p), parentRel, StringComparison.OrdinalIgnoreCase))
+                    throw new ArgumentException("CreatePlaceholderBatch requires a single parent directory.");
+                var slash = rel.LastIndexOf('/');
+                var leaf = slash >= 0 ? rel[(slash + 1)..] : rel;
 
-            var infos = new[]
-            {
-                new CF_PLACEHOLDER_CREATE_INFO
+                var identityBytes = Encoding.UTF8.GetBytes("/" + rel);
+                var idPtr = Marshal.AllocHGlobal(identityBytes.Length);
+                pins.Add(idPtr);
+                Marshal.Copy(identityBytes, 0, idPtr, identityBytes.Length);
+
+                var basic = new FILE_BASIC_INFO
+                {
+                    FileAttributes = p.IsDirectory
+                        ? FileFlagsAndAttributes.FILE_ATTRIBUTE_DIRECTORY
+                        : FileFlagsAndAttributes.FILE_ATTRIBUTE_NORMAL,
+                };
+
+                infos[i] = new CF_PLACEHOLDER_CREATE_INFO
                 {
                     RelativeFileName = leaf.Replace('/', '\\'),
                     FsMetadata = new CF_FS_METADATA
@@ -362,13 +383,13 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
                     FileIdentity = idPtr,
                     FileIdentityLength = (uint)identityBytes.Length,
                     Flags = CF_PLACEHOLDER_CREATE_FLAGS.CF_PLACEHOLDER_CREATE_FLAG_MARK_IN_SYNC,
-                },
-            };
+                };
+            }
 
             CfCreatePlaceholders(
                 baseDir,
                 infos,
-                1,
+                (uint)infos.Length,
                 CF_CREATE_FLAGS.CF_CREATE_FLAG_NONE,
                 out var processed).ThrowIfFailed();
             return (int)processed;
@@ -389,7 +410,14 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         if (Session is null)
             throw new InvalidOperationException("AttachSession first.");
 
-        var entries = await Session.ListAsync("/", recursive: recursive, ct).ConfigureAwait(false);
+        if (!recursive)
+        {
+            var nodes = await Session.ListNodesAsync("/", ct).ConfigureAwait(false);
+            var children = BuildImmediateChildPlaceholdersFromNodes("/", nodes);
+            return CreatePlaceholders(children);
+        }
+
+        var entries = await Session.ListAsync("/", recursive: true, ct).ConfigureAwait(false);
         var list = new List<CloudFilesPlaceholder>();
         var seenDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
@@ -434,15 +462,15 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
                 continue;
             }
 
-            // Do NOT CatAsync here — downloading every root file for size stalls Connect,
-            // contends with Backup Sync / FETCH_DATA, and can leave Explorer on an empty root.
-            // Placeholder size 0 is fine; FETCH_DATA supplies real bytes on hydrate.
+            // Do NOT CatAsync here — downloading every root file for size stalls Connect.
+            // Size must be non-zero so CfAPI treats the placeholder as dehydrated (size 0 +
+            // MARK_IN_SYNC looks like an empty hydrated file and skips FETCH_DATA).
             list.Add(new CloudFilesPlaceholder
             {
                 CleartextRelativePath = full,
                 CiphertextKey = "",
                 IsDirectory = false,
-                FileSize = 0,
+                FileSize = 1,
             });
         }
 
@@ -562,14 +590,19 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         {
             var path = ReadFileIdentityPath(info)
                 ?? throw new InvalidOperationException("missing FileIdentity");
+            path = path.TrimEnd('\0').Trim();
+            if (string.IsNullOrEmpty(path))
+                throw new InvalidOperationException("empty FileIdentity");
             if (provider?.Session is null)
                 throw new InvalidOperationException("no vault session");
 
             // Offload vault I/O so CfAPI filter threads are not pinned on S3 awaits
             // (deadlocks / starvation with Backup Sync workers on the same HttpClient).
             var session = provider.Session;
+            using var fetchCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
             var clear = Task.Run(
-                    () => session.CatAsync(path).ConfigureAwait(false).GetAwaiter().GetResult())
+                    () => session.CatAsync(path, fetchCts.Token).ConfigureAwait(false).GetAwaiter().GetResult(),
+                    fetchCts.Token)
                 .GetAwaiter().GetResult();
             try
             {
@@ -623,8 +656,16 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
                 CryptographicOperations.ZeroMemory(clear);
             }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
+            try
+            {
+                AppendFetchDiag("FETCH_DATA fail path=" + (ReadFileIdentityPath(info) ?? "?") +
+                    " off=" + parameters.FetchData.RequiredFileOffset +
+                    " len=" + parameters.FetchData.RequiredLength +
+                    " ex=" + ex.GetType().Name + ": " + ex.Message.Replace('\n', ' '));
+            }
+            catch { /* ignore diag */ }
             try
             {
                 var opInfo = new CF_OPERATION_INFO
@@ -647,6 +688,20 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             }
             catch { /* fail closed */ }
         }
+    }
+
+    private static void AppendFetchDiag(string line)
+    {
+        try
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CryptoMako");
+            Directory.CreateDirectory(dir);
+            var path = Path.Combine(dir, "fetch-diag.log");
+            File.AppendAllText(path, DateTime.Now.ToString("s") + " " + line + Environment.NewLine);
+        }
+        catch { /* never throw from diag */ }
     }
 
     private static void OnCancelFetchData(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
@@ -689,7 +744,55 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
                 CleartextRelativePath = full,
                 CiphertextKey = "",
                 IsDirectory = isDir,
+                // Unknown size: leave null so CreatePlaceholders can still set 0 — prefer BuildFromNodes.
                 FileSize = isDir ? 0 : null,
+            });
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Builds placeholders from <see cref="VaultNode"/> list so file placeholders carry a
+    /// non-zero logical <see cref="CloudFilesPlaceholder.FileSize"/> (estimated cleartext).
+    /// Size-0 + MARK_IN_SYNC placeholders look like empty hydrated files and skip FETCH_DATA.
+    /// </summary>
+    public static IReadOnlyList<CloudFilesPlaceholder> BuildImmediateChildPlaceholdersFromNodes(
+        string parentVaultPath,
+        IEnumerable<VaultNode> nodes,
+        string? pattern = null)
+    {
+        var parent = NormalizeVaultCleartextPath(parentVaultPath);
+        var parentRel = parent == "/" ? "" : parent.TrimStart('/');
+        var list = new List<CloudFilesPlaceholder>();
+        foreach (var n in nodes)
+        {
+            if (n.Kind == NodeKind.Symlink) continue;
+            var isDir = n.Kind == NodeKind.Directory;
+            var name = n.CleartextName?.Trim() ?? "";
+            if (string.IsNullOrEmpty(name) || name.Contains('/') || name.Contains('\\'))
+                continue;
+            if (!MatchesFetchPattern(name, pattern))
+                continue;
+            var full = string.IsNullOrEmpty(parentRel) ? name : parentRel + "/" + name;
+            long? fileSize = null;
+            if (!isDir)
+            {
+                var cipherLen = n.Size ?? 0;
+                var estimated = Cryptor.EstimateCleartextSize(cipherLen);
+                // Prefer estimated cleartext; if ciphertext length unknown, use 1 so CfAPI
+                // still treats the placeholder as dehydrated (size 0 => empty in-sync file).
+                fileSize = estimated > 0 ? estimated : (cipherLen > 0 ? cipherLen : 1);
+            }
+            else
+            {
+                fileSize = 0;
+            }
+            list.Add(new CloudFilesPlaceholder
+            {
+                CleartextRelativePath = full,
+                CiphertextKey = n.CiphertextKey ?? "",
+                IsDirectory = isDir,
+                FileSize = fileSize,
             });
         }
         return list;
@@ -728,10 +831,10 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         {
             var parent = NormalizeVaultCleartextPath(directoryCleartextPath);
             // Offload await continuations off the CfAPI callback thread when callers use GetResult.
-            var entries = Task.Run(
-                    () => session.ListAsync(parent, recursive: false).ConfigureAwait(false).GetAwaiter().GetResult())
+            var nodes = Task.Run(
+                    () => session.ListNodesAsync(parent).ConfigureAwait(false).GetAwaiter().GetResult())
                 .GetAwaiter().GetResult();
-            placeholders = BuildImmediateChildPlaceholders(parent, entries, pattern);
+            placeholders = BuildImmediateChildPlaceholdersFromNodes(parent, nodes, pattern);
             return true;
         }
         catch
@@ -1391,8 +1494,8 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
 
         ct.ThrowIfCancellationRequested();
         var parent = NormalizeVaultCleartextPath(vaultCleartextPath);
-        var entries = await Session.ListAsync(parent, recursive: false, ct).ConfigureAwait(false);
-        var children = BuildImmediateChildPlaceholders(parent, entries);
+        var nodes = await Session.ListNodesAsync(parent, ct).ConfigureAwait(false);
+        var children = BuildImmediateChildPlaceholdersFromNodes(parent, nodes);
         // Best-effort create (existing placeholders may already be present).
         var created = CreatePlaceholders(children);
 

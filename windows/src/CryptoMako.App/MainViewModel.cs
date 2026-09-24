@@ -245,15 +245,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         get
         {
-            if (LastProbe is null) return "not probed";
             static char L(ProbeLamp lamp) => lamp switch
             {
-                ProbeLamp.Ok => '●',
-                ProbeLamp.Fail => '✖',
-                ProbeLamp.Skip => '–',
-                _ => '○',
+                ProbeLamp.Ok => 'o',
+                ProbeLamp.Fail => 'x',
+                ProbeLamp.Skip => '-',
+                _ => '?',
             };
-            return $"dns{L(LastProbe.Dns)} tcp{L(LastProbe.Tcp)} https{L(LastProbe.Https)} list{L(LastProbe.List)}";
+            var probe = LastProbe is null
+                ? "dns? tcp? https? s3list?"
+                : $"dns{L(LastProbe.Dns)} tcp{L(LastProbe.Tcp)} https{L(LastProbe.Https)} s3list{L(LastProbe.List)}";
+            var unlocked = IsUnlocked ? "unlocked=o" : "unlocked=?";
+            return $"{probe} {unlocked}";
         }
     }
 
@@ -319,6 +322,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             Password = ""; // passphrase only needed for unlock; store keeps it if saved
             Status = $"unlocked format={_session.Metadata.Format} {_session.RootPath}";
             OnPropertyChanged(nameof(IsUnlocked));
+            OnPropertyChanged(nameof(ProbeTrayLabel));
             OnPropertyChanged(nameof(StatusTrayLabel));
             AppendLog(Status);
             await CaptureVaultMetadataFingerprintAsync(ct);
@@ -351,6 +355,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             _userWantsUnlocked = false;
         Status = "locked";
         OnPropertyChanged(nameof(IsUnlocked));
+            OnPropertyChanged(nameof(ProbeTrayLabel));
         OnPropertyChanged(nameof(StatusTrayLabel));
         OnPropertyChanged(nameof(IsBackupSyncRunning));
         return Task.CompletedTask;
@@ -656,11 +661,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (scanned == 0)
                 BackupProgressLabel = "Finished - no files found under backup sources";
             else if (uploaded == 0)
-                BackupProgressLabel = $"Finished - all {skipped} files up-to-date - {FormatBytes(bytesScanned)}";
+                BackupProgressLabel = $"Finished - all {scanned} files up-to-date - {FormatBytes(bytesScanned)}";
             else if (skipped > 0)
-                BackupProgressLabel = $"Finished - {uploaded} uploaded, {skipped} up-to-date - {FormatBytes(bytes)}";
+                BackupProgressLabel = $"Finished - {uploaded} uploaded, {skipped} up-to-date ({scanned} files total) - {FormatBytes(Math.Max(bytes, bytesScanned))}";
             else
-                BackupProgressLabel = $"Finished - {uploaded} files - {FormatBytes(bytes)}";
+                BackupProgressLabel = $"Finished - {uploaded} files uploaded ({scanned} scanned) - {FormatBytes(bytes)}";
             BackupSpeedLabel = "";
             BackupEtaLabel = "";
             BackupCurrentPath = "";
@@ -824,22 +829,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         BackupBytesPerSecond = u.BytesPerSecond;
         BackupCurrentPath = u.CurrentPath ?? "";
         BackupProgressPercent = u.Percent;
-        if (u.FilesTotal > 0 || u.BytesTotal > 0)
+        var totalFiles = Math.Max(u.FilesScanned, Math.Max(u.FilesTotal, u.FilesDone));
+        if (totalFiles > 0 || u.BytesTotal > 0 || u.BytesScanned > 0)
         {
+            var bytesTot = Math.Max(u.BytesScanned, u.BytesTotal);
             BackupProgressLabel = string.Format(
                 CultureInfo.InvariantCulture,
                 "{0:0}% - {1}/{2} files - {3}/{4}",
                 u.Percent,
                 u.FilesDone,
-                Math.Max(u.FilesTotal, u.FilesDone),
+                totalFiles,
                 FormatBytes(u.BytesDone),
-                FormatBytes(u.BytesTotal));
+                FormatBytes(bytesTot > 0 ? bytesTot : u.BytesTotal));
         }
         else if (u.FilesScanned > 0)
         {
             BackupProgressLabel = u.FilesSkipped >= u.FilesScanned
                 ? $"All {u.FilesSkipped} files up-to-date - {FormatBytes(u.BytesScanned)}"
-                : $"Scanned {u.FilesScanned} files?";
+                : $"Scanned {u.FilesScanned} files...";
         }
         else if (u.Phase == "scanning")
             BackupProgressLabel = "Counting local files...";

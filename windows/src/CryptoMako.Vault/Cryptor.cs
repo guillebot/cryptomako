@@ -121,6 +121,30 @@ public sealed class Cryptor : IDisposable
         }
     }
 
+    /// <summary>
+    /// Cleartext payload length implied by Cryptomator format-8 ciphertext length
+    /// (header + per-chunk nonce/tag overhead). Used for CfAPI placeholder FileSize
+    /// so Explorer triggers FETCH_DATA with a non-zero logical size.
+    /// </summary>
+    public static long EstimateCleartextSize(long ciphertextLength)
+    {
+        if (ciphertextLength < FileHeaderSize)
+            return 0;
+        long remaining = ciphertextLength - FileHeaderSize;
+        long clear = 0;
+        const int maxCipherChunk = NonceLen + CleartextChunkSize + TagLen;
+        const int overhead = NonceLen + TagLen;
+        while (remaining > 0)
+        {
+            var thisLen = Math.Min(remaining, maxCipherChunk);
+            if (thisLen <= overhead)
+                break;
+            clear += thisLen - overhead;
+            remaining -= thisLen;
+        }
+        return clear;
+    }
+
     public byte[] DecryptContent(ReadOnlySpan<byte> ciphertext)
     {
         if (ciphertext.Length < FileHeaderSize)

@@ -1,4 +1,4 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Window
     x:Class="CryptoMako.Desktop.MainWindow"
     xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
@@ -18,7 +18,6 @@
       <RowDefinition Height="*" />
     </Grid.RowDefinitions>
 
-    <!-- Status strip: probe lamps (left); Explorer secondary + Vault primary (top-right) -->
     <Border Grid.Row="0"
             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
             CornerRadius="8" Padding="12,8" Margin="0,0,0,8"
@@ -29,14 +28,21 @@
           <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
         <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <TextBlock Text="dns" Opacity="0.7" VerticalAlignment="Center" />
+          <TextBlock Text="DNS" Opacity="0.7" VerticalAlignment="Center"
+                     ToolTipService.ToolTip="DNS resolve of S3 endpoint host" />
           <Ellipse x:Name="LampDns" Width="12" Height="12" Fill="Gray" />
-          <TextBlock Text="tcp" Opacity="0.7" VerticalAlignment="Center" />
+          <TextBlock Text="TCP" Opacity="0.7" VerticalAlignment="Center"
+                     ToolTipService.ToolTip="TCP connect to S3 endpoint port" />
           <Ellipse x:Name="LampTcp" Width="12" Height="12" Fill="Gray" />
-          <TextBlock Text="https" Opacity="0.7" VerticalAlignment="Center" />
+          <TextBlock Text="HTTPS" Opacity="0.7" VerticalAlignment="Center"
+                     ToolTipService.ToolTip="HTTPS / TLS to S3 endpoint" />
           <Ellipse x:Name="LampHttps" Width="12" Height="12" Fill="Gray" />
-          <TextBlock Text="list" Opacity="0.7" VerticalAlignment="Center" />
+          <TextBlock Text="S3 list" Opacity="0.7" VerticalAlignment="Center"
+                     ToolTipService.ToolTip="ListObjects on vault prefix (encrypted Cryptomator names)" />
           <Ellipse x:Name="LampList" Width="12" Height="12" Fill="Gray" />
+          <TextBlock Text="Unlocked" Opacity="0.7" VerticalAlignment="Center"
+                     ToolTipService.ToolTip="Vault unlocked - can list cleartext / plaintext names" />
+          <Ellipse x:Name="LampUnlocked" Width="12" Height="12" Fill="Gray" />
         </StackPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
           <Button x:Name="ExplorerBadge" Padding="8,4" CornerRadius="6"
@@ -47,7 +53,7 @@
           </Button>
           <Border x:Name="VaultBadge" Padding="14,8" CornerRadius="8" MinWidth="168"
                   Background="#FF6B7280" VerticalAlignment="Center"
-                  ToolTipService.ToolTip="Vault connection — primary lock / unlock status">
+                  ToolTipService.ToolTip="Vault connection - primary lock / unlock status">
             <TextBlock x:Name="VaultStateText" FontWeight="Bold" FontSize="16"
                        Foreground="White" VerticalAlignment="Center" HorizontalAlignment="Center"
                        Text="Vault: Locked" />
@@ -60,79 +66,100 @@
 
     <Pivot Grid.Row="2">
       <PivotItem Header="Vault">
-        <ScrollViewer Padding="0,8,0,0">
-          <StackPanel Spacing="8">
-            <TextBlock Text="Vault" FontSize="18" FontWeight="SemiBold" />
-            <TextBlock TextWrapping="Wrap" Opacity="0.8"
-                       Text="Unlock a Cryptomator format-8 vault (local or S3). Secrets never go in settings.json." />
+        <Grid Margin="0,8,0,0">
+          <Grid.RowDefinitions>
+            <RowDefinition Height="Auto" MaxHeight="420" />
+            <RowDefinition Height="*" />
+          </Grid.RowDefinitions>
 
-            <StackPanel Orientation="Horizontal" Spacing="8">
-              <Button x:Name="ModeLocalButton" Content="Mode: Local" Click="OnModeLocal" />
-              <Button x:Name="ModeS3Button" Content="Mode: S3" Click="OnModeS3" />
-              <TextBlock x:Name="StorageModeText" VerticalAlignment="Center" />
-            </StackPanel>
+          <ScrollViewer Grid.Row="0" VerticalScrollBarVisibility="Auto" Padding="0,0,0,8">
+            <StackPanel Spacing="8">
+              <TextBlock Text="Vault" FontSize="18" FontWeight="SemiBold" />
+              <TextBlock TextWrapping="Wrap" Opacity="0.8"
+                         Text="Unlock a Cryptomator format-8 vault (local or S3). Secrets never go in settings.json." />
 
-            <Grid>
-              <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="110" />
-                <ColumnDefinition Width="*" />
-              </Grid.ColumnDefinitions>
-              <Grid.RowDefinitions>
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-              </Grid.RowDefinitions>
+              <TextBlock Text="Storage mode" FontWeight="SemiBold" Margin="0,4,0,0" />
+              <StackPanel Orientation="Horizontal" Spacing="20">
+                <RadioButton x:Name="ModeLocalRadio" Content="Local folder" GroupName="VaultStorageMode"
+                             Click="OnModeLocal" VerticalAlignment="Center"
+                             ToolTipService.ToolTip="Use a vault directory on this PC (storageMode=local)" />
+                <RadioButton x:Name="ModeS3Radio" Content="S3 / remote object store" GroupName="VaultStorageMode"
+                             Click="OnModeS3" VerticalAlignment="Center"
+                             ToolTipService.ToolTip="Cryptomator vault on S3-compatible storage (storageMode=s3)" />
+              </StackPanel>
+              <TextBlock x:Name="StorageModeText" Opacity="0.75" FontFamily="Consolas" />
 
-              <TextBlock x:Name="LocalPathLabel" Grid.Row="0" Text="Local path" VerticalAlignment="Center" Margin="0,0,0,8" />
-              <TextBox Grid.Row="0" Grid.Column="1" x:Name="LocalVaultPathBox" Margin="0,0,0,8" />
+              <Grid>
+                <Grid.ColumnDefinitions>
+                  <ColumnDefinition Width="110" />
+                  <ColumnDefinition Width="*" />
+                </Grid.ColumnDefinitions>
+                <Grid.RowDefinitions>
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                  <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-              <TextBlock x:Name="EndpointLabel" Grid.Row="1" Text="Endpoint" VerticalAlignment="Center" Margin="0,0,0,8" />
-              <TextBox Grid.Row="1" Grid.Column="1" x:Name="EndpointBox" PlaceholderText="https://" Margin="0,0,0,8" />
+                <TextBlock x:Name="LocalPathLabel" Grid.Row="0" Text="Local path" VerticalAlignment="Center" Margin="0,0,0,8" />
+                <TextBox Grid.Row="0" Grid.Column="1" x:Name="LocalVaultPathBox" Margin="0,0,0,8" />
 
-              <TextBlock x:Name="RegionBucketLabel" Grid.Row="2" Text="Region / Bucket" VerticalAlignment="Center" Margin="0,0,0,8" />
-              <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
-                <TextBox x:Name="RegionBox" Width="160" />
-                <TextBox x:Name="BucketBox" Width="200" PlaceholderText="bucket" />
+                <TextBlock x:Name="EndpointLabel" Grid.Row="1" Text="Endpoint" VerticalAlignment="Center" Margin="0,0,0,8" />
+                <TextBox Grid.Row="1" Grid.Column="1" x:Name="EndpointBox" PlaceholderText="https://" Margin="0,0,0,8" />
+
+                <TextBlock x:Name="RegionBucketLabel" Grid.Row="2" Text="Region / Bucket" VerticalAlignment="Center" Margin="0,0,0,8" />
+                <StackPanel Grid.Row="2" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
+                  <TextBox x:Name="RegionBox" Width="160" />
+                  <TextBox x:Name="BucketBox" Width="200" PlaceholderText="bucket" />
+                </StackPanel>
+
+                <TextBlock x:Name="PrefixAccessLabel" Grid.Row="3" Text="Prefix / Access" VerticalAlignment="Center" Margin="0,0,0,8" />
+                <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
+                  <TextBox x:Name="PrefixBox" Width="200" />
+                  <TextBox x:Name="AccessKeyBox" Width="200" PlaceholderText="access key" />
+                </StackPanel>
+
+                <TextBlock Grid.Row="4" Text="Password" VerticalAlignment="Center" />
+                <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                  <PasswordBox x:Name="PasswordBox" Width="240" PasswordChanged="OnPasswordChanged" />
+                  <CheckBox x:Name="PathStyleCheck" Content="path-style" />
+                  <CheckBox x:Name="AutoReconnectCheck" Content="auto-reconnect" Click="OnAutoReconnectClick" />
+                </StackPanel>
+              </Grid>
+
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Save settings" Click="OnSaveSettings" />
+                <Button Content="Save password" Click="OnSavePassword" />
+                <Button Content="Unlock" Click="OnUnlock" Style="{StaticResource AccentButtonStyle}" />
+                <Button Content="Lock" Click="OnLock" />
+                <Button Content="Probe S3" Click="OnProbe" />
+              </StackPanel>
+              <StackPanel Orientation="Horizontal" Spacing="8">
+                <Button Content="Connect Explorer" Click="OnConnectExplorer" />
+                <Button Content="Disconnect Explorer" Click="OnDisconnectExplorer" />
+                <HyperlinkButton x:Name="ExplorerPathLink" Content="Open sync root"
+                                 Click="OnOpenExplorerPath" VerticalAlignment="Center" />
+                <TextBlock VerticalAlignment="Center" Opacity="0.75"
+                           Text="Soft CfAPI viewer. Lock disconnects automatically (no CredMan wipe)." />
               </StackPanel>
 
-              <TextBlock x:Name="PrefixAccessLabel" Grid.Row="3" Text="Prefix / Access" VerticalAlignment="Center" Margin="0,0,0,8" />
-              <StackPanel Grid.Row="3" Grid.Column="1" Orientation="Horizontal" Spacing="8" Margin="0,0,0,8">
-                <TextBox x:Name="PrefixBox" Width="200" />
-                <TextBox x:Name="AccessKeyBox" Width="200" PlaceholderText="access key" />
-              </StackPanel>
-
-              <TextBlock Grid.Row="4" Text="Password" VerticalAlignment="Center" />
-              <StackPanel Grid.Row="4" Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                <PasswordBox x:Name="PasswordBox" Width="240" PasswordChanged="OnPasswordChanged" />
-                <CheckBox x:Name="PathStyleCheck" Content="path-style" />
-                <CheckBox x:Name="AutoReconnectCheck" Content="auto-reconnect" Click="OnAutoReconnectClick" />
-              </StackPanel>
-            </Grid>
-
-            <StackPanel Orientation="Horizontal" Spacing="8">
-              <Button Content="Save settings" Click="OnSaveSettings" />
-              <Button Content="Save password" Click="OnSavePassword" />
-              <Button Content="Unlock" Click="OnUnlock" Style="{StaticResource AccentButtonStyle}" />
-              <Button Content="Lock" Click="OnLock" />
-              <Button Content="Probe S3" Click="OnProbe" />
+              <TextBlock x:Name="RemoteHintText" Foreground="OrangeRed" FontWeight="SemiBold" />
             </StackPanel>
-            <StackPanel Orientation="Horizontal" Spacing="8">
-              <Button Content="Connect Explorer" Click="OnConnectExplorer" />
-              <Button Content="Disconnect Explorer" Click="OnDisconnectExplorer" />
-              <HyperlinkButton x:Name="ExplorerPathLink" Content="Open sync root"
-                               Click="OnOpenExplorerPath" VerticalAlignment="Center" />
-              <TextBlock VerticalAlignment="Center" Opacity="0.75"
-                         Text="Soft CfAPI viewer. Lock disconnects automatically (no CredMan wipe)." />
-            </StackPanel>
+          </ScrollViewer>
 
-            <TextBlock x:Name="RemoteHintText" Foreground="OrangeRed" FontWeight="SemiBold" />
-            <TextBlock Text="Log" FontWeight="SemiBold" Margin="0,12,0,0" />
-            <TextBox x:Name="LogBox" AcceptsReturn="True" Height="200" IsReadOnly="True"
-                     TextWrapping="Wrap" FontFamily="Consolas" />
-          </StackPanel>
-        </ScrollViewer>
+          <Grid Grid.Row="1" MinHeight="120">
+            <Grid.RowDefinitions>
+              <RowDefinition Height="Auto" />
+              <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+            <TextBlock Grid.Row="0" Text="Log" FontWeight="SemiBold" Margin="0,0,0,4" />
+            <TextBox Grid.Row="1" x:Name="LogBox" AcceptsReturn="True" IsReadOnly="True"
+                     TextWrapping="Wrap" FontFamily="Consolas" VerticalAlignment="Stretch"
+                     HorizontalAlignment="Stretch" MinHeight="80"
+                     ScrollViewer.VerticalScrollBarVisibility="Auto" />
+          </Grid>
+        </Grid>
       </PivotItem>
 
       <PivotItem Header="Backup">
@@ -147,7 +174,7 @@
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="Add path" Width="100" VerticalAlignment="Center" />
             <TextBox x:Name="BackupSourceBox" Width="420" PlaceholderText="path to cleartext folder" />
-            <Button Content="Browseâ€¦" Click="OnBrowseBackupSource" />
+            <Button Content="Browse..." Click="OnBrowseBackupSource" />
           </StackPanel>
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="Vault folder" Width="100" VerticalAlignment="Center" />
@@ -176,7 +203,7 @@
           <TextBlock Text="Proxy" FontWeight="SemiBold" Margin="0,8,0,0" />
           <StackPanel Orientation="Horizontal" Spacing="16">
             <RadioButton x:Name="ProxyOffRadio" Content="Off" GroupName="ProxyMode" Click="OnProxyModeClick"
-                         ToolTipService.ToolTip="direct — no proxy (proxyMode=direct)" />
+                         ToolTipService.ToolTip="direct - no proxy (proxyMode=direct)" />
             <RadioButton x:Name="ProxySystemRadio" Content="System" GroupName="ProxyMode" Click="OnProxyModeClick"
                          ToolTipService.ToolTip="Use OS system proxy (proxyMode=system)" />
             <RadioButton x:Name="ProxyCustomRadio" Content="Custom" GroupName="ProxyMode" Click="OnProxyModeClick"
@@ -194,9 +221,8 @@
               <TextBox x:Name="ProxyUserBox" Width="200" PlaceholderText="optional" />
             </StackPanel>
             <TextBlock Opacity="0.75" TextWrapping="Wrap"
-                       Text="Proxy password (if needed): store as CRYPTOMAKO_PROXY_PASSWORD in Credential Manager — not written to settings.json." />
+                       Text="Proxy password (if needed): store as CRYPTOMAKO_PROXY_PASSWORD in Credential Manager - not written to settings.json." />
           </StackPanel>
-          <!-- Keep ProxyModeBox for PushToVm compatibility; hidden mirror of radio selection -->
           <TextBox x:Name="ProxyModeBox" Visibility="Collapsed" Width="1" Height="1" />
           <StackPanel Orientation="Horizontal" Spacing="8">
             <CheckBox x:Name="LimitUploadCheck" Content="Limit upload" />

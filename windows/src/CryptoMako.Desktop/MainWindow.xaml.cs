@@ -59,6 +59,8 @@ public sealed partial class MainWindow : Window
         SetLamp(LampTcp, _vm.LastProbe?.Tcp ?? ProbeLamp.Unknown);
         SetLamp(LampHttps, _vm.LastProbe?.Https ?? ProbeLamp.Unknown);
         SetLamp(LampList, _vm.LastProbe?.List ?? ProbeLamp.Unknown);
+        // Cleartext list capability: green when vault session is unlocked (plaintext names).
+        SetLamp(LampUnlocked, _vm.IsUnlocked ? ProbeLamp.Ok : ProbeLamp.Unknown);
 
         // Vault badge is the primary connection signal (top-right, larger than Explorer).
         RefreshVaultBadge();
@@ -86,7 +88,7 @@ public sealed partial class MainWindow : Window
     {
         if (_vm.Busy)
         {
-            VaultStateText.Text = "Vault: Busy…";
+            VaultStateText.Text = "Vault: Busy...";
             VaultBadge.Background = new SolidColorBrush(Color.FromArgb(255, 180, 120, 20));
         }
         else if (_vm.IsUnlocked)
@@ -101,7 +103,7 @@ public sealed partial class MainWindow : Window
             VaultStateText.Text = string.Equals(detail, "locked", StringComparison.OrdinalIgnoreCase)
                 || string.IsNullOrWhiteSpace(detail)
                 ? "Vault: Locked"
-                : "Vault: Locked — " + detail;
+                : "Vault: Locked - " + detail;
             VaultBadge.Background = new SolidColorBrush(Color.FromArgb(255, 107, 114, 128));
         }
     }
@@ -114,7 +116,7 @@ public sealed partial class MainWindow : Window
         BackupProgressPanel.Visibility = visible ? Visibility.Visible : Visibility.Collapsed;
         BackupProgressBar.Value = _vm.BackupProgressPercent;
         BackupProgressLabelText.Text = string.IsNullOrEmpty(_vm.BackupProgressLabel)
-            ? (_vm.IsBackupSyncRunning ? "Syncingâ€¦" : "")
+            ? (_vm.IsBackupSyncRunning ? "Syncing..." : "")
             : _vm.BackupProgressLabel;
         BackupSpeedText.Text = string.IsNullOrEmpty(_vm.BackupSpeedLabel) ? "" : ("Speed: " + _vm.BackupSpeedLabel);
         BackupEtaText.Text = _vm.BackupEtaLabel ?? "";
@@ -491,6 +493,11 @@ public sealed partial class MainWindow : Window
     private void ApplyStorageModeUi()
     {
         var local = string.Equals(_vm.Settings.StorageMode, "local", StringComparison.OrdinalIgnoreCase);
+        ModeLocalRadio.IsChecked = local;
+        ModeS3Radio.IsChecked = !local;
+        StorageModeText.Text = local
+            ? "Active: Local folder (storageMode=local)"
+            : "Active: S3 / remote (storageMode=s3)";
         SetEnabled(LocalPathLabel, LocalVaultPathBox, local);
         SetEnabled(EndpointLabel, EndpointBox, !local);
         SetEnabled(RegionBucketLabel, RegionBox, !local);
