@@ -73,9 +73,10 @@ internal sealed class ExplorerViewerController : IDisposable
 
             try
             {
-                var n = await _provider.PopulateRootPlaceholdersAsync(recursive: true, ct: ct)
+                 // Root level only — nested dirs seed on FETCH_PLACEHOLDERS (avoids full-tree S3 walk + serial CfCreate).
+                var n = await _provider.PopulateRootPlaceholdersAsync(recursive: false, ct: ct)
                     .ConfigureAwait(false);
-                _vm.LogLine($"CfAPI placeholders seeded: {n} under {AppPaths.SyncRootPath}");
+                _vm.LogLine($"CfAPI placeholders seeded (root-only): {n} under {AppPaths.SyncRootPath}");
                 // Re-enable on-demand population on the root so Explorer FETCH_PLACEHOLDERS
                 // still fires after soft seed (and recovers if a prior empty TRANSFER disabled it).
                 // Do NOT CfUpdatePlaceholder the sync root (0x8007016A / "cloud operation is invalid").

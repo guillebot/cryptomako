@@ -72,6 +72,11 @@ public sealed class BackupSyncEngine
         double emaRate = 0;
         var filesTotal = 0;
         long bytesTotal = 0;
+        // Filled after CollectJobs; WorkerAsync captures these for honest scanned totals.
+        var skippedBaseline = 0;
+        long skippedBytesBaseline = 0;
+        var filesScannedTotal = 0;
+        long bytesScannedTotal = 0;
 
         // Serialize EnsureDirectoryPathAsync — parallel workers otherwise race-create
         // duplicate Cryptomator dirs for the same cleartext name (and can stall).
@@ -121,10 +126,13 @@ public sealed class BackupSyncEngine
                 syncProgress?.Report(new BackupSyncProgressUpdate
                 {
                     Phase = "uploading",
-                    FilesDone = uploaded,
-                    FilesTotal = filesTotal,
-                    BytesDone = bytes,
-                    BytesTotal = bytesTotal,
+                    FilesDone = skippedBaseline + uploaded,
+                    FilesTotal = filesScannedTotal,
+                    FilesSkipped = skippedBaseline,
+                    FilesScanned = filesScannedTotal,
+                    BytesDone = skippedBytesBaseline + bytes,
+                    BytesTotal = bytesScannedTotal,
+                    BytesScanned = bytesScannedTotal,
                     BytesPerSecond = emaRate,
                     CurrentPath = job.RelativePath,
                 });
@@ -170,10 +178,13 @@ public sealed class BackupSyncEngine
                     update = new BackupSyncProgressUpdate
                     {
                         Phase = "uploading",
-                        FilesDone = uploaded,
-                        FilesTotal = filesTotal,
-                        BytesDone = bytes,
-                        BytesTotal = bytesTotal,
+                        FilesDone = skippedBaseline + uploaded,
+                        FilesTotal = filesScannedTotal,
+                        FilesSkipped = skippedBaseline,
+                        FilesScanned = filesScannedTotal,
+                        BytesDone = skippedBytesBaseline + bytes,
+                        BytesTotal = bytesScannedTotal,
+                        BytesScanned = bytesScannedTotal,
                         BytesPerSecond = emaRate,
                         CurrentPath = job.RelativePath,
                     };
@@ -189,6 +200,11 @@ public sealed class BackupSyncEngine
         bytesTotal = jobs.Sum(j => j.Size);
         var filesScanned = jobs.Count + skipped;
         var bytesScanned = bytesTotal + skippedBytes;
+        // Baselines for worker closures: progress denominator = all scanned regular files.
+        skippedBaseline = skipped;
+        skippedBytesBaseline = skippedBytes;
+        filesScannedTotal = filesScanned;
+        bytesScannedTotal = bytesScanned;
         if (filesScanned == 0)
             throw new InvalidOperationException(
                 "No regular files found under backup source: " + localRoot);
@@ -196,18 +212,18 @@ public sealed class BackupSyncEngine
         if (filesTotal == 0)
             startMsg = $"All {skipped} files up-to-date";
         else if (skipped > 0)
-            startMsg = $"Starting upload? ({skipped} already up-to-date)";
+            startMsg = $"Starting upload... ({skipped} already up-to-date)";
         else
-            startMsg = "Starting upload?";
+            startMsg = "Starting upload...";
         syncProgress?.Report(new BackupSyncProgressUpdate
         {
             Phase = filesTotal == 0 ? "done" : "uploading",
-            FilesDone = filesTotal == 0 ? skipped : 0,
-            FilesTotal = filesTotal == 0 ? skipped : filesTotal,
+            FilesDone = skipped,
+            FilesTotal = filesScanned,
             FilesSkipped = skipped,
             FilesScanned = filesScanned,
-            BytesDone = filesTotal == 0 ? bytesScanned : 0,
-            BytesTotal = filesTotal == 0 ? bytesScanned : bytesTotal,
+            BytesDone = filesTotal == 0 ? bytesScanned : skippedBytes,
+            BytesTotal = bytesScanned,
             BytesScanned = bytesScanned,
             CurrentPath = startMsg,
         });

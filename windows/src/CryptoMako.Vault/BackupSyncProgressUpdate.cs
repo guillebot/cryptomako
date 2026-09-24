@@ -17,7 +17,7 @@ public sealed class BackupSyncProgressUpdate
     public double BytesPerSecond { get; init; }
     public string? CurrentPath { get; init; }
 
-    /// <summary>0?100 based on bytes when known, else files. 100 when all skipped.</summary>
+    /// <summary>0-100 based on bytes when known, else files. 100 when all skipped.</summary>
     public double Percent
     {
         get

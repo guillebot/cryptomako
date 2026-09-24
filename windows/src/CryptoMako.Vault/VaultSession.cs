@@ -179,6 +179,16 @@ public sealed partial class VaultSession : IAsyncDisposable, IDisposable
         return results;
     }
 
+    /// <summary>One-level listing with node metadata (includes ciphertext Size for placeholder FileSize).</summary>
+    public async Task<IReadOnlyList<VaultNode>> ListNodesAsync(
+        string cleartextPath = "/",
+        CancellationToken ct = default)
+    {
+        var startPath = Normalize(cleartextPath);
+        var startDirId = await ResolveDirIdAsync(startPath, ct).ConfigureAwait(false);
+        return await ListDirAsync(startDirId, ct).ConfigureAwait(false);
+    }
+
     public async Task<byte[]> CatAsync(string cleartextPath, CancellationToken ct = default)
     {
         var node = await ResolveAsync(cleartextPath, ct).ConfigureAwait(false);

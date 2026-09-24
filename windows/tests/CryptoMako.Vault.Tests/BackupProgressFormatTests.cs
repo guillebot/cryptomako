@@ -49,4 +49,21 @@ public class BackupProgressFormatTests
         var u = new BackupSyncProgressUpdate { FilesDone = 2, FilesTotal = 8 };
         Assert.Equal(25, u.Percent);
     }
+
+    [Fact]
+    public void Progress_percent_with_skipped_bytes_already_done()
+    {
+        var u = new BackupSyncProgressUpdate
+        {
+            FilesDone = 14,
+            FilesTotal = 16,
+            FilesSkipped = 14,
+            FilesScanned = 16,
+            BytesDone = 1000,
+            BytesTotal = 2000,
+            BytesScanned = 2000,
+        };
+        Assert.Equal(50, u.Percent);
+        Assert.Equal(16, Math.Max(u.FilesScanned, u.FilesTotal));
+    }
 }
