@@ -52,7 +52,8 @@ public sealed partial class MainWindow : Window
         RemoteHintText.Text = _vm.RemoteChangeHint;
         BackupRemoteHintText.Text = _vm.RemoteChangeHint;
         LogBox.Text = _vm.Log;
-        BackupSourcesBox.Text = _vm.BackupSourcesSummary;
+        RefreshBackupSourcesListUi();
+        RefreshBackupOverlapBanner();
         StorageModeText.Text = _vm.Settings.StorageMode;
 
         SetLamp(LampDns, _vm.LastProbe?.Dns ?? ProbeLamp.Unknown);
@@ -62,21 +63,13 @@ public sealed partial class MainWindow : Window
         // Cleartext list capability: green when vault session is unlocked (plaintext names).
         SetLamp(LampUnlocked, _vm.IsUnlocked ? ProbeLamp.Ok : ProbeLamp.Unknown);
 
-        // Vault badge is the primary connection signal (top-right, larger than Explorer).
-        RefreshVaultBadge();
+        // Compact vault state lives in the top-bar StatusBarText (no large badges).
+        RefreshVaultStatusText();
 
-        if (_vm.IsExplorerViewerConnected)
-        {
-            ExplorerBadgeText.Text = "Explorer: connected";
-            ExplorerBadge.Background = new SolidColorBrush(Color.FromArgb(255, 20, 140, 80));
-            ExplorerPathLink.Content = "Open " + AppPaths.SyncRootPath;
-        }
-        else
-        {
-            ExplorerBadgeText.Text = "Explorer: off";
-            ExplorerBadge.Background = (Brush)Application.Current.Resources["SubtleFillColorSecondaryBrush"];
-            ExplorerPathLink.Content = "Open sync root";
-        }
+        SetLamp(LampExplorer, _vm.IsExplorerViewerConnected ? ProbeLamp.Ok : ProbeLamp.Unknown);
+        ExplorerPathLink.Content = _vm.IsExplorerViewerConnected
+            ? ("Open " + AppPaths.SyncRootPath)
+            : "Open sync root";
 
         // Backup Sync requires an unlocked vault — greyed when locked/disconnected.
         SyncNowButton.IsEnabled = _vm.IsUnlocked;
@@ -84,28 +77,14 @@ public sealed partial class MainWindow : Window
         RefreshBackupProgressUi();
     }
 
-    private void RefreshVaultBadge()
+    private void RefreshVaultStatusText()
     {
-        if (_vm.Busy)
-        {
-            VaultStateText.Text = "Vault: Busy...";
-            VaultBadge.Background = new SolidColorBrush(Color.FromArgb(255, 180, 120, 20));
-        }
-        else if (_vm.IsUnlocked)
-        {
-            VaultStateText.Text = "Vault: Unlocked";
-            VaultBadge.Background = new SolidColorBrush(Color.FromArgb(255, 16, 140, 70));
-        }
+        // StatusBarText already shows _vm.Status; prefix a short vault/explorer cue when helpful.
+        var core = _vm.Status ?? "";
+        if (_vm.Busy && !core.Contains("busy", StringComparison.OrdinalIgnoreCase))
+            StatusBarText.Text = "busy — " + core;
         else
-        {
-            // Prefer a clear Locked label over raw Status (often "locked" already).
-            var detail = _vm.StatusTrayLabel;
-            VaultStateText.Text = string.Equals(detail, "locked", StringComparison.OrdinalIgnoreCase)
-                || string.IsNullOrWhiteSpace(detail)
-                ? "Vault: Locked"
-                : "Vault: Locked - " + detail;
-            VaultBadge.Background = new SolidColorBrush(Color.FromArgb(255, 107, 114, 128));
-        }
+            StatusBarText.Text = core;
     }
 
     private void RefreshBackupProgressUi()
@@ -384,8 +363,26 @@ public sealed partial class MainWindow : Window
             PushToVm();
             if (string.IsNullOrWhiteSpace(_vm.BackupSource))
                 throw new InvalidOperationException("source path required");
-            _vm.AddBackupSource(_vm.BackupSource, string.IsNullOrWhiteSpace(_vm.VaultFolder) ? null : _vm.VaultFolder);
+            var warn = _vm.AddBackupSource(_vm.BackupSource, string.IsNullOrWhiteSpace(_vm.VaultFolder) ? null : _vm.VaultFolder);
             RefreshStatusStrip();
+            if (!string.IsNullOrEmpty(warn))
+                UiNote(warn);
+        }
+        catch (Exception ex) { VmLog(ex); }
+    }
+
+    private void OnRemoveBackupSource(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (BackupSourcesList.SelectedItem is not BackupSourceListItem item)
+            {
+                UiNote("Select a backup source to remove.");
+                return;
+            }
+            _vm.RemoveBackupSource(item.Id);
+            RefreshStatusStrip();
+            UiNote("Removed backup source.");
         }
         catch (Exception ex) { VmLog(ex); }
     }
@@ -399,6 +396,40 @@ public sealed partial class MainWindow : Window
             RefreshStatusStrip();
         }
         catch (Exception ex) { VmLog(ex); }
+    }
+
+    private void RefreshBackupOverlapBanner()
+    {
+        var warn = _vm.BackupOverlapWarning ?? "";
+        BackupOverlapBannerText.Text = warn;
+        BackupOverlapBannerText.Visibility = string.IsNullOrEmpty(warn)
+            ? Visibility.Collapsed
+            : Visibility.Visible;
+    }
+
+    private void RefreshBackupSourcesListUi()
+    {
+        var selectedId = (BackupSourcesList.SelectedItem as BackupSourceListItem)?.Id;
+        BackupSourcesList.Items.Clear();
+        foreach (var s in _vm.BackupSources.Sources)
+        {
+            var item = new BackupSourceListItem(s.Id, $"{s.VaultFolderName} ← {s.Path}");
+            BackupSourcesList.Items.Add(item);
+            if (selectedId is not null && selectedId == s.Id)
+                BackupSourcesList.SelectedItem = item;
+        }
+    }
+
+    private sealed class BackupSourceListItem
+    {
+        public BackupSourceListItem(string id, string label)
+        {
+            Id = id;
+            Label = label;
+        }
+        public string Id { get; }
+        public string Label { get; }
+        public override string ToString() => Label;
     }
 
     private async void OnConnectExplorer(object sender, RoutedEventArgs e)
@@ -432,28 +463,6 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) { VmLog(ex); }
     }
 
-    private async void OnExplorerBadgeClick(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            if (Application.Current is not App app)
-                throw new InvalidOperationException("Desktop App host not ready");
-            if (!_vm.IsExplorerViewerConnected)
-            {
-                if (!_vm.IsUnlocked)
-                    throw new InvalidOperationException("unlock vault first — Connect Explorer needs an unlocked vault");
-                UiNote("Connecting CfAPI Explorer viewer…");
-                await app.ConnectExplorerManualAsync();
-            }
-            else
-            {
-                app.OpenExplorerSyncRoot();
-                UiNote("Opened sync root in Explorer");
-            }
-            RefreshStatusStrip();
-        }
-        catch (Exception ex) { VmLog(ex); }
-    }
 
     private void OnOpenExplorerPath(object sender, RoutedEventArgs e)
     {

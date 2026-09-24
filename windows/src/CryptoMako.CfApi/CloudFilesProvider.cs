@@ -44,6 +44,14 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
     private CF_CALLBACK? _notifyDelete;
     private CF_CALLBACK? _notifyRename;
     private CF_CALLBACK_REGISTRATION[]? _callbackTable;
+    // Short-lived ListNodes cache so concurrent/rapid FETCH_PLACEHOLDERS do not stampede S3.
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Utc, IReadOnlyList<CloudFilesPlaceholder> Items)> _placeholderListCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan PlaceholderListCacheTtl = TimeSpan.FromSeconds(5);
+    // Decrypted cleartext cache for FETCH_DATA ranges (PDF readers issue many small reads).
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, (DateTime Utc, byte[] Clear)> _hydrateCache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly TimeSpan HydrateCacheTtl = TimeSpan.FromMinutes(2);
+    private static readonly long HydrateCacheMaxBytes = 64L * 1024 * 1024;
+    private static long _hydrateCacheBytes;
     private IntPtr _syncRootIdentityPtr;
     private int _syncRootIdentityLen;
 
@@ -598,27 +606,53 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
 
             // Offload vault I/O so CfAPI filter threads are not pinned on S3 awaits
             // (deadlocks / starvation with Backup Sync workers on the same HttpClient).
+            // Cache decrypted cleartext: Explorer / PDF readers issue many FETCH_DATA ranges;
+            // without a cache each range re-Cats the entire object and times out on binaries.
             var session = provider.Session;
-            using var fetchCts = new CancellationTokenSource(TimeSpan.FromSeconds(90));
-            var clear = Task.Run(
-                    () => session.CatAsync(path, fetchCts.Token).ConfigureAwait(false).GetAwaiter().GetResult(),
-                    fetchCts.Token)
-                .GetAwaiter().GetResult();
-            try
+            var cacheKey = NormalizeVaultCleartextPath(path);
+            byte[] clear;
+            if (_hydrateCache.TryGetValue(cacheKey, out var hit)
+                && DateTime.UtcNow - hit.Utc < HydrateCacheTtl
+                && hit.Clear is not null)
             {
-                var offset = parameters.FetchData.RequiredFileOffset;
-                var length = parameters.FetchData.RequiredLength;
-                if (offset < 0 || offset > clear.LongLength)
-                    throw new InvalidOperationException("bad fetch offset");
-                var available = clear.LongLength - offset;
-                var toSend = (long)Math.Min((ulong)available, length > 0 ? (ulong)length : (ulong)available);
-                if (toSend < 0) toSend = 0;
+                clear = hit.Clear;
+            }
+            else
+            {
+                using var fetchCts = new CancellationTokenSource(TimeSpan.FromSeconds(180));
+                clear = Task.Run(
+                        () => session.CatAsync(path, fetchCts.Token).ConfigureAwait(false).GetAwaiter().GetResult(),
+                        fetchCts.Token)
+                    .GetAwaiter().GetResult();
+                TryPutHydrateCache(cacheKey, clear);
+            }
 
-                var slice = new byte[toSend];
+            var offset = parameters.FetchData.RequiredFileOffset;
+            var length = parameters.FetchData.RequiredLength;
+            if (offset < 0)
+                throw new InvalidOperationException("bad fetch offset " + offset + " len=" + clear.LongLength);
+            // Soft EOF: placeholder FileSize (EstimateCleartextSize) can be slightly high, or
+            // readers probe at/past end. Never fail-closed on overshoot — return empty success.
+            if (offset >= clear.LongLength)
+            {
+                TransferDataEmptySuccess(info, offset);
+                return;
+            }
+            var available = clear.LongLength - offset;
+            var toSend = (long)Math.Min((ulong)available, length > 0 ? (ulong)length : (ulong)available);
+            if (toSend < 0) toSend = 0;
+
+            // Transfer in chunks so large PDFs report progress and stay under pinned-buffer limits.
+            const int maxChunk = 4 * 1024 * 1024;
+            long sent = 0;
+            while (sent < toSend)
+            {
+                var chunk = (int)Math.Min(maxChunk, toSend - sent);
+                var slice = new byte[chunk];
                 try
                 {
-                    if (toSend > 0)
-                        Buffer.BlockCopy(clear, (int)offset, slice, 0, (int)toSend);
+                    if (chunk > 0)
+                        Buffer.BlockCopy(clear, (int)(offset + sent), slice, 0, chunk);
 
                     var handle = GCHandle.Alloc(slice, GCHandleType.Pinned);
                     try
@@ -636,8 +670,8 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
                                 Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
                                 CompletionStatus = NTStatus.STATUS_SUCCESS,
                                 Buffer = handle.AddrOfPinnedObject(),
-                                Offset = offset,
-                                Length = toSend,
+                                Offset = offset + sent,
+                                Length = chunk,
                             });
                         CfExecute(opInfo, ref opParams).ThrowIfFailed();
                     }
@@ -650,11 +684,12 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
                 {
                     CryptographicOperations.ZeroMemory(slice);
                 }
+                sent += chunk;
             }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(clear);
-            }
+
+            // Empty success transfer when toSend==0 (EOF).
+            if (toSend == 0)
+                TransferDataEmptySuccess(info, offset);
         }
         catch (Exception ex)
         {
@@ -688,6 +723,57 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             }
             catch { /* fail closed */ }
         }
+    }
+
+    private static void TransferDataEmptySuccess(in CF_CALLBACK_INFO info, long offset)
+    {
+        var opInfo = new CF_OPERATION_INFO
+        {
+            StructSize = (uint)Marshal.SizeOf<CF_OPERATION_INFO>(),
+            Type = CF_OPERATION_TYPE.CF_OPERATION_TYPE_TRANSFER_DATA,
+            ConnectionKey = info.ConnectionKey,
+            TransferKey = info.TransferKey,
+        };
+        var opParams = CF_OPERATION_PARAMETERS.Create(
+            new CF_OPERATION_PARAMETERS.TRANSFERDATA
+            {
+                Flags = CF_OPERATION_TRANSFER_DATA_FLAGS.CF_OPERATION_TRANSFER_DATA_FLAG_NONE,
+                CompletionStatus = NTStatus.STATUS_SUCCESS,
+                Buffer = IntPtr.Zero,
+                Offset = offset,
+                Length = 0,
+            });
+        CfExecute(opInfo, ref opParams).ThrowIfFailed();
+    }
+
+    private static void TryPutHydrateCache(string cacheKey, byte[] clear)
+    {
+        try
+        {
+            // Bound memory: drop oldest-ish entries when over cap (best-effort).
+            while (_hydrateCacheBytes + clear.LongLength > HydrateCacheMaxBytes && !_hydrateCache.IsEmpty)
+            {
+                var victim = _hydrateCache.Keys.FirstOrDefault();
+                if (victim is null) break;
+                if (_hydrateCache.TryRemove(victim, out var old) && old.Clear is not null)
+                    Interlocked.Add(ref _hydrateCacheBytes, -old.Clear.LongLength);
+            }
+            _hydrateCache[cacheKey] = (DateTime.UtcNow, clear);
+            Interlocked.Add(ref _hydrateCacheBytes, clear.LongLength);
+        }
+        catch { /* cache is best-effort */ }
+    }
+
+    private static void InvalidateHydrateCache(string? vaultPath)
+    {
+        if (string.IsNullOrWhiteSpace(vaultPath)) return;
+        try
+        {
+            var key = NormalizeVaultCleartextPath(vaultPath);
+            if (_hydrateCache.TryRemove(key, out var old) && old.Clear is not null)
+                Interlocked.Add(ref _hydrateCacheBytes, -old.Clear.LongLength);
+        }
+        catch { /* ignore */ }
     }
 
     private static void AppendFetchDiag(string line)
@@ -830,11 +916,20 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         try
         {
             var parent = NormalizeVaultCleartextPath(directoryCleartextPath);
+            var cacheKey = parent + "\0" + (pattern ?? "*");
+            if (_placeholderListCache.TryGetValue(cacheKey, out var hit)
+                && DateTime.UtcNow - hit.Utc < PlaceholderListCacheTtl)
+            {
+                placeholders = hit.Items;
+                return true;
+            }
+
             // Offload await continuations off the CfAPI callback thread when callers use GetResult.
             var nodes = Task.Run(
                     () => session.ListNodesAsync(parent).ConfigureAwait(false).GetAwaiter().GetResult())
                 .GetAwaiter().GetResult();
             placeholders = BuildImmediateChildPlaceholdersFromNodes(parent, nodes, pattern);
+            _placeholderListCache[cacheKey] = (DateTime.UtcNow, placeholders);
             return true;
         }
         catch
@@ -868,9 +963,15 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         // not a vault path. ResolveVaultPathFromCallback must reject that or we would seed wrongly.
         var dirPath = provider?.ResolveVaultPathFromCallback(info) ?? "/";
 
+        // Fast path: when the directory already has children on disk, ACK immediately without an
+        // S3 ListNodes round-trip. Explorer right-click / property / verb queries re-enter FETCH
+        // and used to block the shell for seconds waiting on network I/O before TRANSFER ACK.
+        var alreadyPopulated = provider is not null && DirectoryHasLocalChildren(provider, dirPath);
+
         try
         {
-            if (provider?.Session is not null
+            if (!alreadyPopulated
+                && provider?.Session is not null
                 && provider.GetStatus().Registered
                 && TryListImmediatePlaceholders(provider.Session, dirPath, out var children, pattern)
                 && children.Count > 0)
@@ -884,7 +985,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         }
         catch
         {
-            /* soft ? still ACK empty keep-on-demand below */
+            /* soft — still ACK empty keep-on-demand below */
         }
 
         TransferPlaceholders(
@@ -892,6 +993,41 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             Array.Empty<CloudFilesPlaceholder>(),
             success: true,
             disableOnDemand: false);
+    }
+
+    /// <summary>
+    /// True when the sync-root directory for <paramref name="vaultDirPath"/> already has any
+    /// filesystem entries (placeholders or hydrated). Used to skip S3 on re-FETCH.
+    /// </summary>
+    private static bool DirectoryHasLocalChildren(CloudFilesProvider provider, string vaultDirPath)
+    {
+        try
+        {
+            var fs = TryMapVaultCleartextToFsPath(provider.SyncRootPath, vaultDirPath);
+            if (fs is null || !Directory.Exists(fs))
+                return false;
+            using var e = Directory.EnumerateFileSystemEntries(fs).GetEnumerator();
+            return e.MoveNext();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Maps vault cleartext ("/" or "/Backups/MONSTER") to an absolute sync-root path.</summary>
+    public static string? TryMapVaultCleartextToFsPath(string syncRootPath, string? vaultCleartextPath)
+    {
+        if (string.IsNullOrWhiteSpace(syncRootPath))
+            return null;
+        var root = Path.GetFullPath(syncRootPath)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (string.IsNullOrWhiteSpace(vaultCleartextPath) || vaultCleartextPath == "/")
+            return root;
+        var rel = vaultCleartextPath.Replace('\\', '/').Trim().TrimStart('/');
+        if (string.IsNullOrEmpty(rel) || rel.Contains("..", StringComparison.Ordinal))
+            return null;
+        return Path.GetFullPath(Path.Combine(root, rel.Replace('/', Path.DirectorySeparatorChar)));
     }
 
     private static void TransferPlaceholders(
@@ -1026,7 +1162,10 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             clear = File.ReadAllBytes(fsPath);
             var ok = TryWriteBackCleartext(provider.Session, vaultPath, clear);
             if (ok)
+            {
+                InvalidateHydrateCache(vaultPath);
                 TryMarkPlaceholderInSync(fsPath);
+            }
             // No CfExecute ACK for CLOSE completion â€” fail-closed means do not mark durable/in-sync.
         }
         catch
@@ -1193,6 +1332,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         var provider = FromContext(info);
         var path = provider?.ResolveVaultPathFromCallback(info);
         var ok = TryDeleteFromVault(provider?.Session, path);
+        if (ok) InvalidateHydrateCache(path);
         AckDelete(info, ok);
     }
 

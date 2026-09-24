@@ -1,4 +1,4 @@
-﻿using CryptoMako.CfApi;
+using CryptoMako.CfApi;
 using Xunit;
 
 namespace CryptoMako.Vault.Tests;
@@ -73,4 +73,17 @@ public sealed class CfApiFetchPlaceholdersTests
     [InlineData(null, false)]
     public void LooksLikeVaultCleartextIdentity_SyncRootIdRejected(string? id, bool expected) =>
         Assert.Equal(expected, CloudFilesProvider.LooksLikeVaultCleartextIdentity(id));
+
+    [Theory]
+    [InlineData("C:\\sr", "/", "C:\\sr")]
+    [InlineData("C:\\sr", "/Backups/MONSTER", "C:\\sr\\Backups\\MONSTER")]
+    [InlineData("C:\\sr", "../x", null)]
+    public void TryMapVaultCleartextToFsPath_MapsOrRejects(string root, string vault, string? expected)
+    {
+        var got = CloudFilesProvider.TryMapVaultCleartextToFsPath(root, vault);
+        if (expected is null)
+            Assert.Null(got);
+        else
+            Assert.Equal(Path.GetFullPath(expected), got);
+    }
 }
