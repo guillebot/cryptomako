@@ -1,0 +1,5 @@
+# Ignore module-level openpgp advisory; we only use x/crypto/scrypt.
+# Verified with govulncheck (symbol/call-graph): not affected.
+ignore:
+  - vulnerability: GO-2026-5932
+    reason: "CryptoMako uses only golang.org/x/crypto/scrypt; openpgp symbols unreachable (govulncheck clean)"
