@@ -764,6 +764,22 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         // not a vault path. ResolveVaultPathFromCallback must reject that or we TRANSFER 0 children
         // with DISABLE_ON_DEMAND and Explorer stays empty forever.
         var dirPath = provider?.ResolveVaultPathFromCallback(info) ?? "/";
+        var isSyncRoot = dirPath == "/";
+
+        // SyncRoot FETCH must NOT CfExecute(TRANSFER_PLACEHOLDERS). Empirically any TRANSFER on the
+        // sync-root folder (with or without DISABLE_ON_DEMAND) flips cross-process ENUM to
+        // 0x8007016A while in-proc listing of CfCreatePlaceholders children still works.
+        // Seed the root via PopulateRootPlaceholdersAsync / CreatePlaceholders instead; nested
+        // directories still use TRANSFER normally.
+        if (isSyncRoot)
+        {
+            TransferPlaceholders(
+                info,
+                Array.Empty<CloudFilesPlaceholder>(),
+                success: true,
+                disableOnDemand: false);
+            return;
+        }
 
         IReadOnlyList<CloudFilesPlaceholder> children = Array.Empty<CloudFilesPlaceholder>();
         var ok = false;
@@ -772,9 +788,6 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         {
             if (provider?.Session is null)
             {
-                // Not ready yet (Register→Connect race). ACK success with 0 children but KEEP
-                // on-demand population so Explorer retries after AttachSession — ACCESS_DENIED
-                // here permanently poisons the sync root (0x8007016A).
                 ok = true;
                 disableOnDemand = false;
                 children = Array.Empty<CloudFilesPlaceholder>();
@@ -782,11 +795,14 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             else
             {
                 ok = TryListImmediatePlaceholders(provider.Session, dirPath, out children, pattern);
+                if (!ok)
+                    disableOnDemand = false;
             }
         }
         catch
         {
             ok = false;
+            disableOnDemand = false;
             children = Array.Empty<CloudFilesPlaceholder>();
         }
 
