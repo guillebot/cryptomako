@@ -99,7 +99,7 @@ CryptoMako does **not** ship a merge engine. Concurrent remote vs local edits ar
 Evidence collected while `cfapi populate` / `connect` registered a LocalAppData sync root:
 
 1. **HKCU SyncRootManager** entry present: `CryptoMako!{SID}!{account}` with
-   `DisplayNameResource=CryptoMako`, `IconResource=%SystemRoot%\system32\shell32.dll,50`,
+   `DisplayNameResource=CryptoMako`, `IconResource=%LOCALAPPDATA%\CryptoMako\Assets\AppIcon.ico,0 (brand mark; was shell32.dll,50 dark/generic tile)`,
    `UserSyncRootPath` under `%LOCALAPPDATA%\CryptoMako\…`.
 2. Opening the sync root in Explorer **after** the provider process exits shows
    **"The cloud file provider is not running"** — Explorer treats the folder as a

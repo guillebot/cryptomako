@@ -72,6 +72,8 @@ Backup tab shows a ProgressBar plus percent / files / bytes / speed / ETA / curr
 
 ### Brand icons
 
+- Explorer SyncRoot: %LOCALAPPDATA%\CryptoMako\Assets\AppIcon.ico,0 (copied from Desktop Assets/AppIcon.ico on Register; replaces shell32.dll,50 dark tile)
+
 - Window / app: `Assets/AppIcon.ico` from `docs/assets/brand/icon-{16,32,48,256}.png`
 - Tray: `Assets/tray.ico` from `docs/assets/brand/tray-windows.png`
 

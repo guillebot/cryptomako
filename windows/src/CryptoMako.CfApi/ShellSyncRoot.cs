@@ -128,7 +128,7 @@ internal static class ShellSyncRoot
         {
             Id = syncRootId,
             DisplayNameResource = "CryptoMako",
-            IconResource = @"%SystemRoot%\system32\shell32.dll,50",
+            IconResource = ResolveShellIconResource(),
             Version = CloudFilesProvider.ProviderVersion,
             Path = folder,
             AllowPinning = true,
@@ -165,6 +165,81 @@ internal static class ShellSyncRoot
     }
 #endif
 
+
+    /// <summary>
+    /// Explorer SyncRoot IconResource: branded AppIcon.ico (visible cyan mark on dark tile),
+    /// not shell32.dll,50 (generic / often reads as a solid dark tile in the nav pane).
+    /// Copies into %LOCALAPPDATA%\CryptoMako\Assets so the path stays stable across publish folds.
+    /// Format: absolute .ico path + ",0". Falls back to shell32 only if no brand asset is found.
+    /// </summary>
+    internal static string ResolveShellIconResource()
+    {
+        const string fallback = @"%SystemRoot%\system32\shell32.dll,50";
+        try
+        {
+            var localAssets = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "CryptoMako", "Assets");
+            Directory.CreateDirectory(localAssets);
+            var dest = Path.Combine(localAssets, "AppIcon.ico");
+
+            // Prefer a fresh copy from the running host (Desktop publish ships Assets\AppIcon.ico).
+            foreach (var src in EnumerateBrandIconCandidates())
+            {
+                try
+                {
+                    if (!File.Exists(src)) continue;
+                    var copy = !File.Exists(dest)
+                               || new FileInfo(src).Length != new FileInfo(dest).Length
+                               || File.GetLastWriteTimeUtc(src) > File.GetLastWriteTimeUtc(dest);
+                    if (copy)
+                        File.Copy(src, dest, overwrite: true);
+                    if (File.Exists(dest))
+                        return dest + ",0";
+                }
+                catch
+                {
+                    // try next candidate
+                }
+            }
+
+            if (File.Exists(dest))
+                return dest + ",0";
+        }
+        catch
+        {
+            // fall through
+        }
+        return fallback;
+    }
+
+    private static IEnumerable<string> EnumerateBrandIconCandidates()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        string?[] bases =
+        {
+            AppContext.BaseDirectory,
+            Path.GetDirectoryName(Environment.ProcessPath),
+            Path.GetDirectoryName(typeof(ShellSyncRoot).Assembly.Location),
+        };
+        foreach (var b in bases)
+        {
+            if (string.IsNullOrWhiteSpace(b)) continue;
+            foreach (var rel in new[]
+                     {
+                         Path.Combine("Assets", "AppIcon.ico"),
+                         "AppIcon.ico",
+                     })
+            {
+                string full;
+                try { full = Path.GetFullPath(Path.Combine(b, rel)); }
+                catch { continue; }
+                if (seen.Add(full))
+                    yield return full;
+            }
+        }
+    }
+
     internal static bool TryRegisterViaRegistry(string syncRootPath, string syncRootId)
     {
         try
@@ -173,7 +248,7 @@ internal static class ShellSyncRoot
                 @"Software\Microsoft\Windows\CurrentVersion\Explorer\SyncRootManager\" + syncRootId);
             if (key is null) return false;
             key.SetValue("DisplayNameResource", "CryptoMako", Microsoft.Win32.RegistryValueKind.String);
-            key.SetValue("IconResource", @"%SystemRoot%\system32\shell32.dll,50", Microsoft.Win32.RegistryValueKind.String);
+            key.SetValue("IconResource", ResolveShellIconResource(), Microsoft.Win32.RegistryValueKind.String);
             key.SetValue("UserSyncRootPath", syncRootPath, Microsoft.Win32.RegistryValueKind.String);
             key.SetValue("Version", CloudFilesProvider.ProviderVersion, Microsoft.Win32.RegistryValueKind.String);
             key.SetValue("Flags", 0, Microsoft.Win32.RegistryValueKind.DWord);
