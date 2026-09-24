@@ -752,61 +752,43 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
     }
 
     /// <summary>
-    /// FETCH_PLACEHOLDERS: transfer one directory level from the vault session, then disable
-    /// on-demand population for that folder (avoids repeated Explorer callbacks). Child directories
-    /// keep on-demand population so expanding them triggers another FETCH_PLACEHOLDERS.
+    /// FETCH_PLACEHOLDERS: never CfExecute(TRANSFER_PLACEHOLDERS) for any directory.
+    /// Empirically TRANSFER on SyncRoot or child dirs (e.g. Backups) flips cross-process
+    /// ENUM to 0x8007016A while in-proc listing still works. Seed missing children via
+    /// <see cref="CreatePlaceholders"/> then ACK empty success without DISABLE_ON_DEMAND.
     /// </summary>
     private static void OnFetchPlaceholders(in CF_CALLBACK_INFO info, in CF_CALLBACK_PARAMETERS parameters)
     {
         var provider = FromContext(info);
         var pattern = parameters.FetchPlaceholders.Pattern;
         // Sync-root FileIdentity is often the provider Context / SyncRootId ("CryptoMako!SID!account"),
-        // not a vault path. ResolveVaultPathFromCallback must reject that or we TRANSFER 0 children
-        // with DISABLE_ON_DEMAND and Explorer stays empty forever.
+        // not a vault path. ResolveVaultPathFromCallback must reject that or we would seed wrongly.
         var dirPath = provider?.ResolveVaultPathFromCallback(info) ?? "/";
-        var isSyncRoot = dirPath == "/";
 
-        // SyncRoot FETCH must NOT CfExecute(TRANSFER_PLACEHOLDERS). Empirically any TRANSFER on the
-        // sync-root folder (with or without DISABLE_ON_DEMAND) flips cross-process ENUM to
-        // 0x8007016A while in-proc listing of CfCreatePlaceholders children still works.
-        // Seed the root via PopulateRootPlaceholdersAsync / CreatePlaceholders instead; nested
-        // directories still use TRANSFER normally.
-        if (isSyncRoot)
-        {
-            TransferPlaceholders(
-                info,
-                Array.Empty<CloudFilesPlaceholder>(),
-                success: true,
-                disableOnDemand: false);
-            return;
-        }
-
-        IReadOnlyList<CloudFilesPlaceholder> children = Array.Empty<CloudFilesPlaceholder>();
-        var ok = false;
-        var disableOnDemand = true;
         try
         {
-            if (provider?.Session is null)
+            if (provider?.Session is not null
+                && provider.GetStatus().Registered
+                && TryListImmediatePlaceholders(provider.Session, dirPath, out var children, pattern)
+                && children.Count > 0)
             {
-                ok = true;
-                disableOnDemand = false;
-                children = Array.Empty<CloudFilesPlaceholder>();
-            }
-            else
-            {
-                ok = TryListImmediatePlaceholders(provider.Session, dirPath, out children, pattern);
-                if (!ok)
-                    disableOnDemand = false;
+                try { _ = provider.CreatePlaceholders(children); }
+                catch
+                {
+                    // Soft: ACK still succeeds so Explorer retries; ACCESS_DENIED poisons the dir.
+                }
             }
         }
         catch
         {
-            ok = false;
-            disableOnDemand = false;
-            children = Array.Empty<CloudFilesPlaceholder>();
+            /* soft ? still ACK empty keep-on-demand below */
         }
 
-        TransferPlaceholders(info, children, success: ok, disableOnDemand: disableOnDemand);
+        TransferPlaceholders(
+            info,
+            Array.Empty<CloudFilesPlaceholder>(),
+            success: true,
+            disableOnDemand: false);
     }
 
     private static void TransferPlaceholders(
