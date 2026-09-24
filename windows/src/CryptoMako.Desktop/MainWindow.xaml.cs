@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using CryptoMako.App;
+using CryptoMako.Vault;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
 using Microsoft.UI.Xaml.Controls;
@@ -112,6 +113,7 @@ public sealed partial class MainWindow : Window
         DisconnectExplorerButton.IsEnabled = explorer;
 
         SyncNowButton.IsEnabled = unlocked;
+        RefreshTransferModeUi();
 
         ExplorerPathLink.IsEnabled = explorer;
     }
@@ -181,6 +183,7 @@ public sealed partial class MainWindow : Window
             WorkersSBox.Text = _vm.Preferences.SyncSmallPutConcurrency.ToString();
             WorkersMBox.Text = _vm.Preferences.SyncMediumPutConcurrency.ToString();
             WorkersLBox.Text = _vm.Preferences.SyncLargePutConcurrency.ToString();
+            ApplyTransferModeRadios(_vm.BackupTransferMode);
         }
         finally
         {
@@ -217,6 +220,10 @@ public sealed partial class MainWindow : Window
         if (int.TryParse(ProxyPortBox.Text, out var port))
             _vm.Preferences.ProxyPort = port;
         _vm.Preferences.ProxyUsername = ProxyUserBox.Text ?? "";
+        if (TransferModeSyncRadio?.IsChecked == true || SettingsTransferModeSyncRadio?.IsChecked == true)
+            _vm.BackupTransferMode = AppPreferences.BackupTransferModeSync;
+        else
+            _vm.BackupTransferMode = AppPreferences.BackupTransferModeBackup;
         _vm.Preferences.LimitSyncUploadBandwidth = LimitUploadCheck.IsChecked == true;
         if (double.TryParse(UploadCapBox.Text, out var mbps))
             _vm.Preferences.SyncUploadCapMbps = mbps;
@@ -408,13 +415,58 @@ public sealed partial class MainWindow : Window
             PushToVm();
             if (_vm.BackupSources.Sources.Count == 0
                 && (string.IsNullOrWhiteSpace(_vm.BackupSource) || !Directory.Exists(_vm.BackupSource)))
-                throw new InvalidOperationException("add a backup source (Backup tab) before Sync");
-            UiNote("Backup Sync starting…");
+                throw new InvalidOperationException("add a backup source (Backup tab) before " + _vm.TransferRunAllLabel);
+            UiNote(_vm.TransferRunAllLabel + " starting (" + _vm.BackupTransferMode + ").");
             await _vm.SyncAsync();
             UiNote(_vm.Status);
             RefreshStatusStrip();
         }
         catch (Exception ex) { VmLog(ex, backupHint: true); }
+    }
+
+    private void OnTransferModeClick(object sender, RoutedEventArgs e)
+    {
+        if (_syncingUi) return;
+        var sync = ReferenceEquals(sender, TransferModeSyncRadio)
+            || ReferenceEquals(sender, SettingsTransferModeSyncRadio)
+            || (sender is RadioButton rb && string.Equals(rb.Content?.ToString(), "Sync", StringComparison.Ordinal));
+        var mode = sync
+            ? AppPreferences.BackupTransferModeSync
+            : AppPreferences.BackupTransferModeBackup;
+        _vm.BackupTransferMode = mode;
+        ApplyTransferModeRadios(mode);
+        try { _vm.SaveSettings(); }
+        catch (Exception ex) { VmLog(ex); }
+        RefreshTransferModeUi();
+    }
+
+    private void ApplyTransferModeRadios(string mode)
+    {
+        var sync = AppPreferences.NormalizeBackupTransferMode(mode) == AppPreferences.BackupTransferModeSync;
+        var prev = _syncingUi;
+        _syncingUi = true;
+        try
+        {
+            if (TransferModeBackupRadio is not null) TransferModeBackupRadio.IsChecked = !sync;
+            if (TransferModeSyncRadio is not null) TransferModeSyncRadio.IsChecked = sync;
+            if (SettingsTransferModeBackupRadio is not null) SettingsTransferModeBackupRadio.IsChecked = !sync;
+            if (SettingsTransferModeSyncRadio is not null) SettingsTransferModeSyncRadio.IsChecked = sync;
+        }
+        finally { _syncingUi = prev; }
+    }
+
+    private void RefreshTransferModeUi()
+    {
+        if (SyncNowButton is not null)
+            SyncNowButton.Content = _vm.TransferRunAllLabel;
+        if (TransferModeHelpText is not null)
+            TransferModeHelpText.Text = _vm.TransferModeHelp;
+        if (SettingsTransferModeHelpText is not null)
+        {
+            SettingsTransferModeHelpText.Text = _vm.IsSyncTransferMode
+                ? "Sync: copy/update, then delete vault ciphertext under Backups/<folder>/ missing from the local source. Never deletes the local source. Prefs key backupTransferMode."
+                : "Backup (default): copy/update source to vault. Never deletes the local source. Does not remove vault files missing from source. Prefs key backupTransferMode.";
+        }
     }
 
     private async void OnBrowseBackupSource(object sender, RoutedEventArgs e)

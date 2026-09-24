@@ -1,4 +1,4 @@
-using System.Linq;
+﻿using System.Linq;
 using System.Threading.Channels;
 
 namespace CryptoMako.Vault;
@@ -6,6 +6,14 @@ namespace CryptoMako.Vault;
 /// <summary>
 /// Walk cleartext tree → encrypt → parallel put with size-tiered concurrency.
 /// Fail-closed: only counts durable after store put succeeds (HTTP 2xx on S3).
+/// <para>
+/// Transfer mode (<see cref="AppPreferences.BackupTransferMode"/>):
+/// <list type="bullet">
+/// <item><c>backup</c> (default): put/update only. Never deletes the local source. Never deletes vault extras.</item>
+/// <item><c>sync</c>: same puts, then delete remote ciphertext under <c>Backups/&lt;folder&gt;/</c>
+/// that is missing from the local tree (fail-closed). Never deletes the local source.</item>
+/// </list>
+/// </para>
 /// </summary>
 public sealed class BackupSyncEngine
 {
@@ -19,6 +27,8 @@ public sealed class BackupSyncEngine
         public int FilesScanned { get; init; }
         public long BytesUploaded { get; init; }
         public long BytesScanned { get; init; }
+        /// <summary>Vault ciphertext items removed in Sync mode. Always 0 in Backup mode.</summary>
+        public int FilesDeleted { get; init; }
     }
 
     private readonly record struct PendingUpload(
@@ -43,6 +53,8 @@ public sealed class BackupSyncEngine
     {
         excludes ??= new BackupSyncExcludes();
         preferences.ClampSyncWorkers();
+        preferences.BackupTransferMode = AppPreferences.NormalizeBackupTransferMode(preferences.BackupTransferMode);
+        var isSyncMode = preferences.IsSyncTransferMode;
         syncState ??= string.IsNullOrEmpty(syncStatePath)
             ? new BackupSyncState()
             : BackupSyncState.LoadFromFile(syncStatePath);
@@ -51,7 +63,11 @@ public sealed class BackupSyncEngine
         if (!Directory.Exists(localRoot))
             throw new DirectoryNotFoundException(localRoot);
 
-        var vaultRoot = "Backups/" + vaultFolderName.Trim().Trim('/');
+        vaultFolderName = vaultFolderName.Trim().Trim('/');
+        if (string.IsNullOrEmpty(vaultFolderName))
+            throw new ArgumentException("vaultFolderName is required (scoped Backups/<folder>/ destination).", nameof(vaultFolderName));
+
+        var vaultRoot = "Backups/" + vaultFolderName;
         progress?.Report("ensure " + vaultRoot);
         syncProgress?.Report(new BackupSyncProgressUpdate { Phase = "preparing", CurrentPath = vaultRoot });
         // ConfigureAwait(false): CollectJobs must not run on the WinUI dispatcher
@@ -202,7 +218,7 @@ public sealed class BackupSyncEngine
             CurrentPath = localRoot,
         });
         // Offload the sync walk so Progress<T> callbacks can marshal to the UI thread.
-        var (jobs, skipped, skippedBytes) = await Task.Run(
+        var (jobs, skipped, skippedBytes, localFiles) = await Task.Run(
             () => CollectJobs(localRoot, excludes, syncState, vaultFolderName, syncProgress, ct),
             ct).ConfigureAwait(false);
         filesTotal = jobs.Count;
@@ -267,6 +283,46 @@ public sealed class BackupSyncEngine
 
         await Task.WhenAll(workers);
 
+        var filesDeleted = 0;
+        if (isSyncMode)
+        {
+            syncProgress?.Report(new BackupSyncProgressUpdate
+            {
+                Phase = "pruning",
+                FilesDone = skipped + uploaded,
+                FilesTotal = filesScanned,
+                FilesSkipped = skipped,
+                FilesScanned = filesScanned,
+                BytesDone = skippedBytes + bytes,
+                BytesTotal = bytesScanned,
+                BytesScanned = bytesScanned,
+                CurrentPath = $"Comparing vault {vaultRoot}/ to local tree…",
+            });
+            filesDeleted = await DeleteVaultOrphansAsync(
+                session,
+                leafDirId,
+                localFiles,
+                vaultFolderName,
+                syncState,
+                syncProgress,
+                ct).ConfigureAwait(false);
+            syncProgress?.Report(new BackupSyncProgressUpdate
+            {
+                Phase = "pruning",
+                FilesDone = skipped + uploaded,
+                FilesTotal = filesScanned,
+                FilesSkipped = skipped,
+                FilesScanned = filesScanned,
+                BytesDone = skippedBytes + bytes,
+                BytesTotal = bytesScanned,
+                BytesScanned = bytesScanned,
+                FilesDeleted = filesDeleted,
+                CurrentPath = filesDeleted == 0
+                    ? "No vault-only files to remove"
+                    : $"Removed {filesDeleted} vault-only item(s)",
+            });
+        }
+
         if (!string.IsNullOrEmpty(syncStatePath))
             syncState.SaveToFile(syncStatePath);
 
@@ -277,10 +333,94 @@ public sealed class BackupSyncEngine
             FilesScanned = filesScanned,
             BytesUploaded = bytes,
             BytesScanned = bytesScanned,
+            FilesDeleted = filesDeleted,
         };
     }
 
-    private static (List<PendingUpload> Jobs, int Skipped, long SkippedBytes) CollectJobs(
+    /// <summary>
+    /// Sync mode only: delete remote ciphertext under this source's vault folder that
+    /// has no matching eligible local file. Never touches the local source tree.
+    /// Fail-closed: ObjectStore/<see cref="VaultSession"/> delete errors abort the run.
+    /// Scope is <c>Backups/&lt;folder&gt;/</c> only (leafDirId); never vault root.
+    /// </summary>
+    private static async Task<int> DeleteVaultOrphansAsync(
+        VaultSession session,
+        string rootDirId,
+        HashSet<string> localFiles,
+        string vaultFolderName,
+        BackupSyncState syncState,
+        IProgress<BackupSyncProgressUpdate>? syncProgress,
+        CancellationToken ct)
+    {
+        static bool HasLocalUnder(HashSet<string> locals, string relDir)
+        {
+            // Source vault root always stays; only prune children.
+            if (string.IsNullOrEmpty(relDir)) return true;
+            if (locals.Contains(relDir)) return true;
+            var prefix = relDir + "/";
+            foreach (var path in locals)
+            {
+                if (path.StartsWith(prefix, StringComparison.Ordinal))
+                    return true;
+            }
+            return false;
+        }
+
+        async Task<int> PruneAsync(string dirId, string relPrefix)
+        {
+            ct.ThrowIfCancellationRequested();
+            var children = await session.ListNodesByDirIdAsync(dirId, ct).ConfigureAwait(false);
+            var deleted = 0;
+            foreach (var child in children)
+            {
+                ct.ThrowIfCancellationRequested();
+                var childRel = string.IsNullOrEmpty(relPrefix)
+                    ? child.CleartextName
+                    : relPrefix + "/" + child.CleartextName;
+                syncProgress?.Report(new BackupSyncProgressUpdate
+                {
+                    Phase = "pruning",
+                    CurrentPath = childRel,
+                    FilesDeleted = deleted,
+                });
+
+                switch (child.Kind)
+                {
+                    case NodeKind.File:
+                    case NodeKind.Symlink:
+                        if (!localFiles.Contains(childRel))
+                        {
+                            // Remote ObjectStore ciphertext delete only — never local source.
+                            await session.DeleteFileAsync(child, ct).ConfigureAwait(false);
+                            syncState.RemoveUnder(vaultFolderName, childRel, isDirectory: false);
+                            deleted++;
+                        }
+                        break;
+                    case NodeKind.Directory:
+                        if (string.IsNullOrEmpty(child.DirId))
+                            continue;
+                        if (!HasLocalUnder(localFiles, childRel))
+                        {
+                            // Entire subtree is vault-only under this source folder.
+                            await session.DeleteDirectoryAsync(child, recursive: true, ct)
+                                .ConfigureAwait(false);
+                            syncState.RemoveUnder(vaultFolderName, childRel, isDirectory: true);
+                            deleted++;
+                        }
+                        else
+                        {
+                            deleted += await PruneAsync(child.DirId, childRel).ConfigureAwait(false);
+                        }
+                        break;
+                }
+            }
+            return deleted;
+        }
+
+        return await PruneAsync(rootDirId, "").ConfigureAwait(false);
+    }
+
+    private static (List<PendingUpload> Jobs, int Skipped, long SkippedBytes, HashSet<string> LocalFiles) CollectJobs(
         string localRoot,
         BackupSyncExcludes excludes,
         BackupSyncState syncState,
@@ -289,6 +429,7 @@ public sealed class BackupSyncEngine
         CancellationToken ct = default)
     {
         var jobs = new List<PendingUpload>();
+        var localFiles = new HashSet<string>(StringComparer.Ordinal);
         var skipped = 0;
         long skippedBytes = 0;
         var scanned = 0;
@@ -298,7 +439,7 @@ public sealed class BackupSyncEngine
         var rootFull = localRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         // Default SearchOption.AllDirectories follows dir junctions and aborts the whole
         // walk on the first UnauthorizedAccessException (e.g. C:\Users\...\Application Data
-        // under a home-folder Backup source) � UI stuck at "Counting... 1 files".
+        // under a home-folder Backup source) - UI stuck at "Counting... 1 files".
         // Keep default Hidden|System skip AND skip ReparsePoint so junctions are not entered.
         var enumOpts = new EnumerationOptions
         {
@@ -336,6 +477,9 @@ public sealed class BackupSyncEngine
             {
                 continue;
             }
+
+            // Eligible local file (post-exclude). Used by Sync-mode orphan prune.
+            localFiles.Add(rel);
 
             scanned++;
             scannedBytes += length;
@@ -377,6 +521,6 @@ public sealed class BackupSyncEngine
                 ? localRoot
                 : $"Scan complete - {scanned} files",
         });
-        return (jobs, skipped, skippedBytes);
+        return (jobs, skipped, skippedBytes, localFiles);
     }
 }

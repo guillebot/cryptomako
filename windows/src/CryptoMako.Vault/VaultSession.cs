@@ -189,6 +189,14 @@ public sealed partial class VaultSession : IAsyncDisposable, IDisposable
         return await ListDirAsync(startDirId, ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// One-level listing by Cryptomator dirId (Sync-mode orphan prune under Backups/&lt;folder&gt;/).
+    /// </summary>
+    public async Task<IReadOnlyList<VaultNode>> ListNodesByDirIdAsync(
+        string dirId,
+        CancellationToken ct = default)
+        => await ListDirAsync(dirId ?? "", ct).ConfigureAwait(false);
+
     public async Task<byte[]> CatAsync(string cleartextPath, CancellationToken ct = default)
     {
         var node = await ResolveAsync(cleartextPath, ct).ConfigureAwait(false);

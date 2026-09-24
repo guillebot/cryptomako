@@ -70,6 +70,30 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     /// <summary>Windows-local list (backup-sources.json); not settings.json.</summary>
     public BackupSourcesStore BackupSources { get; private set; }
 
+    /// <summary>Platforms-locked <c>backupTransferMode</c> (<c>backup</c>|<c>sync</c>). Default backup.</summary>
+    public string BackupTransferMode
+    {
+        get => AppPreferences.NormalizeBackupTransferMode(Preferences.BackupTransferMode);
+        set
+        {
+            var n = AppPreferences.NormalizeBackupTransferMode(value);
+            if (BackupTransferMode == n) return;
+            Preferences.BackupTransferMode = n;
+            OnPropertyChanged();
+            OnPropertyChanged(nameof(IsSyncTransferMode));
+            OnPropertyChanged(nameof(TransferRunAllLabel));
+            OnPropertyChanged(nameof(TransferModeHelp));
+        }
+    }
+
+    public bool IsSyncTransferMode => Preferences.IsSyncTransferMode;
+
+    public string TransferRunAllLabel => IsSyncTransferMode ? "Sync all" : "Backup all";
+
+    public string TransferModeHelp => IsSyncTransferMode
+        ? "Sync copies and updates, then deletes ciphertext in the vault under each source's Backups/<folder>/ that is missing from the local tree. It never deletes the local source. Prefer Backup unless you intentionally want vault orphans removed."
+        : "Backup copies and updates into the vault. It never deletes the local source, and it does not remove vault files that are missing locally.";
+
     public string BackupSourcesSummary
     {
         get => _backupSourcesSummary;
@@ -656,15 +680,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             var engine = new BackupSyncEngine();
             var progress = new Progress<string>(p => AppendLog(p));
             var syncProgress = new Progress<BackupSyncProgressUpdate>(ApplyBackupProgress);
+            var mode = AppPreferences.NormalizeBackupTransferMode(Preferences.BackupTransferMode);
+            var modeVerb = mode == AppPreferences.BackupTransferModeSync ? "Sync" : "Backup";
+            AppendLog($"{modeVerb.ToLowerInvariant()} mode ({mode}) starting for {sources.Count} source(s)");
             var uploaded = 0;
             var skipped = 0;
             var scanned = 0;
+            var deleted = 0;
             long bytes = 0;
             long bytesScanned = 0;
             foreach (var src in sources)
             {
                 linked.Token.ThrowIfCancellationRequested();
-                AppendLog($"sync source {src.VaultFolderName} -> {src.Path}");
+                AppendLog($"{modeVerb.ToLowerInvariant()} source {src.VaultFolderName} -> {src.Path}");
                 BackupPhase = "scanning";
                 BackupCurrentPath = src.Path;
                 BackupProgressLabel = "Counting local files...";
@@ -680,28 +708,32 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 uploaded += result.FilesUploaded;
                 skipped += result.FilesSkipped;
                 scanned += result.FilesScanned;
+                deleted += result.FilesDeleted;
                 bytes += result.BytesUploaded;
                 bytesScanned += result.BytesScanned;
             }
-            AppendLog($"sync done uploaded={uploaded} skipped={skipped} scanned={scanned} bytes={bytes}");
+            AppendLog($"{modeVerb.ToLowerInvariant()} done uploaded={uploaded} skipped={skipped} scanned={scanned} deleted={deleted} bytes={bytes}");
             Status = uploaded > 0
-                ? $"synced {uploaded} files"
-                : (scanned > 0 ? $"up-to-date ({scanned} files)" : "sync: no files");
+                ? $"{modeVerb.ToLowerInvariant()}ed {uploaded} files"
+                : (scanned > 0 ? $"up-to-date ({scanned} files)" : $"{modeVerb.ToLowerInvariant()}: no files");
             BackupPhase = "done";
             BackupProgressPercent = 100;
             BackupFilesDone = uploaded + skipped;
             BackupFilesTotal = Math.Max(scanned, uploaded + skipped);
             BackupBytesDone = Math.Max(bytes, bytesScanned);
             BackupBytesTotal = Math.Max(bytesScanned, bytes);
+            var deletedBit = deleted > 0
+                ? $"; removed {deleted} vault-only item(s). Source untouched."
+                : ". Source untouched.";
             if (scanned == 0)
-                BackupProgressLabel = "Finished - no files found under backup sources";
+                BackupProgressLabel = "Finished - no files found under backup sources" + deletedBit;
             else if (uploaded == 0)
-                BackupProgressLabel = $"Finished - all {scanned} files up-to-date - {FormatBytes(bytesScanned)}";
+                BackupProgressLabel = $"Finished - all {scanned} files up-to-date - {FormatBytes(bytesScanned)}" + deletedBit;
             else if (skipped > 0)
-                BackupProgressLabel = $"Finished - {uploaded} uploaded, {skipped} up-to-date ({scanned} files total) - {FormatBytes(Math.Max(bytes, bytesScanned))}";
+                BackupProgressLabel = $"Finished - {uploaded} uploaded, {skipped} up-to-date ({scanned} files total) - {FormatBytes(Math.Max(bytes, bytesScanned))}" + deletedBit;
             else
-                BackupProgressLabel = $"Finished - {uploaded} files uploaded ({scanned} scanned) - {FormatBytes(bytes)}";
-            BackupSpeedLabel = "";
+                BackupProgressLabel = $"Finished - {uploaded} files uploaded ({scanned} scanned) - {FormatBytes(bytes)}" + deletedBit;
+                        BackupSpeedLabel = "";
             BackupEtaLabel = "";
             BackupCurrentPath = "";
         }
@@ -848,6 +880,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             Preferences = AppPreferences.Deserialize(File.ReadAllText(AppPaths.PreferencesPath));
         OnPropertyChanged(nameof(Settings));
         OnPropertyChanged(nameof(Preferences));
+            OnPropertyChanged(nameof(BackupTransferMode));
+            OnPropertyChanged(nameof(IsSyncTransferMode));
+            OnPropertyChanged(nameof(TransferRunAllLabel));
+            OnPropertyChanged(nameof(TransferModeHelp));
         AppendLog("reloaded settings from disk");
     }
 
@@ -902,6 +938,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 u.FilesScanned,
                 FormatBytes(u.BytesScanned),
                 pathBit);
+        }
+
+        if (u.Phase == "pruning")
+        {
+            var pathBit = string.IsNullOrWhiteSpace(u.CurrentPath) ? "" : " - " + u.CurrentPath;
+            return u.FilesDeleted > 0
+                ? $"Removing vault-only files... ({u.FilesDeleted} removed){pathBit}"
+                : $"Removing vault-only files...{pathBit}";
         }
 
         var totalFiles = Math.Max(u.FilesScanned, Math.Max(u.FilesTotal, u.FilesDone));

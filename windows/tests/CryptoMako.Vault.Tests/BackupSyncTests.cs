@@ -293,6 +293,109 @@ public class BackupSyncTests
         }
     }
 
+
+    [Fact]
+    public async Task BackupMode_keeps_vault_orphans_and_never_deletes_source()
+    {
+        var vaultDir = Path.Combine(Path.GetTempPath(), "cm-vault-bak-" + Guid.NewGuid().ToString("N"));
+        var sourceDir = Path.Combine(Path.GetTempPath(), "cm-src-bak-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(sourceDir);
+        await File.WriteAllTextAsync(Path.Combine(sourceDir, "keep.txt"), "keep\n");
+
+        try
+        {
+            var fixture = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "fixtures", "vault"));
+            Assert.True(Directory.Exists(fixture));
+            var pass = File.ReadAllText(Path.GetFullPath(Path.Combine(fixture, "..", "PASSWORD"))).TrimEnd('\n', '\r');
+            CopyDir(fixture, vaultDir);
+            await using var session = VaultSession.UnlockLocal(vaultDir, pass);
+
+            // Seed vault orphan under this source's Backups folder.
+            var leaf = await session.EnsureDirectoryPathAsync("Backups/OrphanBackup");
+            await session.PutFileAsync(leaf, "keep.txt", Encoding.UTF8.GetBytes("keep\n"));
+            await session.PutFileAsync(leaf, "orphan.txt", Encoding.UTF8.GetBytes("orphan\n"));
+
+            var prefs = new AppPreferences
+            {
+                BackupTransferMode = AppPreferences.BackupTransferModeBackup,
+                SyncSmallPutConcurrency = 2,
+                SyncMediumPutConcurrency = 1,
+                SyncLargePutConcurrency = 1,
+            };
+            var engine = new BackupSyncEngine();
+            var statePath = Path.Combine(Path.GetTempPath(), "cm-state-bak-" + Guid.NewGuid().ToString("N") + ".json");
+            var result = await engine.SyncAsync(session, sourceDir, "OrphanBackup", prefs, syncStatePath: statePath);
+
+            Assert.Equal(0, result.FilesDeleted);
+            var listing = await session.ListAsync("/Backups/OrphanBackup", recursive: true);
+            Assert.Contains(listing, x => x.Contains("orphan.txt", StringComparison.Ordinal));
+            Assert.Contains(listing, x => x.Contains("keep.txt", StringComparison.Ordinal));
+
+            // Source never deleted / mutated by engine.
+            Assert.True(File.Exists(Path.Combine(sourceDir, "keep.txt")));
+            Assert.Equal("keep\n", await File.ReadAllTextAsync(Path.Combine(sourceDir, "keep.txt")));
+            Assert.False(File.Exists(Path.Combine(sourceDir, "orphan.txt")));
+        }
+        finally
+        {
+            try { Directory.Delete(sourceDir, true); } catch { /* ignore */ }
+            try { Directory.Delete(vaultDir, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
+    public async Task SyncMode_deletes_vault_orphans_under_dest_only_never_source()
+    {
+        var vaultDir = Path.Combine(Path.GetTempPath(), "cm-vault-syn-" + Guid.NewGuid().ToString("N"));
+        var sourceDir = Path.Combine(Path.GetTempPath(), "cm-src-syn-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(sourceDir);
+        await File.WriteAllTextAsync(Path.Combine(sourceDir, "keep.txt"), "keep\n");
+
+        try
+        {
+            var fixture = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "fixtures", "vault"));
+            Assert.True(Directory.Exists(fixture));
+            var pass = File.ReadAllText(Path.GetFullPath(Path.Combine(fixture, "..", "PASSWORD"))).TrimEnd('\n', '\r');
+            CopyDir(fixture, vaultDir);
+            await using var session = VaultSession.UnlockLocal(vaultDir, pass);
+
+            var leafA = await session.EnsureDirectoryPathAsync("Backups/OrphanSync");
+            await session.PutFileAsync(leafA, "keep.txt", Encoding.UTF8.GetBytes("keep\n"));
+            await session.PutFileAsync(leafA, "orphan.txt", Encoding.UTF8.GetBytes("orphan\n"));
+            // Sibling source folder must stay untouched.
+            var leafB = await session.EnsureDirectoryPathAsync("Backups/OtherSource");
+            await session.PutFileAsync(leafB, "sibling.txt", Encoding.UTF8.GetBytes("sib\n"));
+
+            var prefs = new AppPreferences
+            {
+                BackupTransferMode = AppPreferences.BackupTransferModeSync,
+                SyncSmallPutConcurrency = 2,
+                SyncMediumPutConcurrency = 1,
+                SyncLargePutConcurrency = 1,
+            };
+            var engine = new BackupSyncEngine();
+            var statePath = Path.Combine(Path.GetTempPath(), "cm-state-syn-" + Guid.NewGuid().ToString("N") + ".json");
+            var result = await engine.SyncAsync(session, sourceDir, "OrphanSync", prefs, syncStatePath: statePath);
+
+            Assert.True(result.FilesDeleted >= 1, $"expected orphan delete, deleted={result.FilesDeleted}");
+            var listing = await session.ListAsync("/Backups/OrphanSync", recursive: true);
+            Assert.Contains(listing, x => x.Contains("keep.txt", StringComparison.Ordinal));
+            Assert.DoesNotContain(listing, x => x.Contains("orphan.txt", StringComparison.Ordinal));
+
+            var sibling = await session.ListAsync("/Backups/OtherSource", recursive: true);
+            Assert.Contains(sibling, x => x.Contains("sibling.txt", StringComparison.Ordinal));
+
+            // Source never deleted.
+            Assert.True(File.Exists(Path.Combine(sourceDir, "keep.txt")));
+            Assert.Equal("keep\n", await File.ReadAllTextAsync(Path.Combine(sourceDir, "keep.txt")));
+        }
+        finally
+        {
+            try { Directory.Delete(sourceDir, true); } catch { /* ignore */ }
+            try { Directory.Delete(vaultDir, true); } catch { /* ignore */ }
+        }
+    }
+
     private sealed class SyncProgressCollector : IProgress<BackupSyncProgressUpdate>
     {
         private readonly List<BackupSyncProgressUpdate> _scanning;
