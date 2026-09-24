@@ -93,7 +93,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             ProviderId = ProviderId,
         };
 
-        // Align with WinRT path: partial hydrate, auto-dehydrate, partial population (on-demand).
+        // Align with WinRT path: partial hydrate, auto-dehydrate, Full population.
         var policies = BuildCfSyncPolicies();
 
         CfRegisterSyncRoot(
@@ -236,13 +236,25 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         if (_selfHandle.IsAllocated) _selfHandle.Free();
         _selfHandle = GCHandle.Alloc(this);
 
+        // Keep _callbackTable + CF_CALLBACK fields rooted for the connection lifetime.
+        // (Cannot GCHandle.Pinned ? the array holds managed delegates.)
         CfConnectSyncRoot(
             SyncRootPath,
             _callbackTable,
             GCHandle.ToIntPtr(_selfHandle),
-            CF_CONNECT_FLAGS.CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH,
+            CF_CONNECT_FLAGS.CF_CONNECT_FLAG_REQUIRE_FULL_FILE_PATH
+                | CF_CONNECT_FLAGS.CF_CONNECT_FLAG_REQUIRE_PROCESS_INFO,
             out _connectionKey).ThrowIfFailed();
         _connected = true;
+
+        // Advertise idle/connected so shell/query paths see a live provider.
+        try
+        {
+            CfUpdateSyncProviderStatus(
+                _connectionKey,
+                CF_SYNC_PROVIDER_STATUS.CF_PROVIDER_STATUS_IDLE).ThrowIfFailed();
+        }
+        catch { /* best-effort; status is advisory */ }
     }
 
     /// <inheritdoc />
@@ -438,12 +450,15 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
     }
 
     /// <summary>
-    /// Sync-root policy summary (WinRT + CfRegister). Partial hydrate / on-demand populate;
-    /// auto-dehydrate allowed; user pinning allowed; no AlwaysFull population.
+    /// Sync-root policy summary (WinRT + CfRegister). Partial hydrate; Full population.
+    /// MSDN: CF_POPULATION_POLICY_PARTIAL is not supported ? it left external ENUM at 0x8007016A
+    /// while the provider process could still list placeholders. AlwaysFull blocks
+    /// CfCreatePlaceholders (INVALID_REQUEST). Full is supported; seed placeholders after
+    /// AttachSession+Connect, and never open Explorer until cross-process ENUM succeeds.
     /// </summary>
     public const string SyncPolicySummary =
         "hydration=Partial; hydrationModifier=AutoDehydrationAllowed; " +
-        "population=Partial(Cf)|Full(WinRT-no-Partial); pin=AllowPinning; hardlink=None";
+        "population=Full; pin=AllowPinning; hardlink=None";
 
     public static CF_SYNC_POLICIES BuildCfSyncPolicies() => new()
     {
@@ -455,7 +470,7 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         },
         Population = new CF_POPULATION_POLICY
         {
-            Primary = CF_POPULATION_POLICY_PRIMARY.CF_POPULATION_POLICY_PARTIAL,
+            Primary = CF_POPULATION_POLICY_PRIMARY.CF_POPULATION_POLICY_FULL,
             Modifier = CF_POPULATION_POLICY_MODIFIER.CF_POPULATION_POLICY_MODIFIER_NONE,
         },
         InSync = CF_INSYNC_POLICY.CF_INSYNC_POLICY_NONE,
@@ -752,9 +767,19 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
 
         IReadOnlyList<CloudFilesPlaceholder> children = Array.Empty<CloudFilesPlaceholder>();
         var ok = false;
+        var disableOnDemand = true;
         try
         {
-            if (provider?.Session is not null)
+            if (provider?.Session is null)
+            {
+                // Not ready yet (Register→Connect race). ACK success with 0 children but KEEP
+                // on-demand population so Explorer retries after AttachSession — ACCESS_DENIED
+                // here permanently poisons the sync root (0x8007016A).
+                ok = true;
+                disableOnDemand = false;
+                children = Array.Empty<CloudFilesPlaceholder>();
+            }
+            else
             {
                 ok = TryListImmediatePlaceholders(provider.Session, dirPath, out children, pattern);
             }
@@ -765,13 +790,14 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             children = Array.Empty<CloudFilesPlaceholder>();
         }
 
-        TransferPlaceholders(info, children, success: ok);
+        TransferPlaceholders(info, children, success: ok, disableOnDemand: disableOnDemand);
     }
 
     private static void TransferPlaceholders(
         in CF_CALLBACK_INFO info,
         IReadOnlyList<CloudFilesPlaceholder> children,
-        bool success)
+        bool success,
+        bool disableOnDemand = true)
     {
         var pins = new List<IntPtr>();
         GCHandle arrayHandle = default;
@@ -824,7 +850,9 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
             var opParams = CF_OPERATION_PARAMETERS.Create(
                 new CF_OPERATION_PARAMETERS.TRANSFERPLACEHOLDERS
                 {
-                    Flags = CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION,
+                    Flags = disableOnDemand
+                        ? CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_DISABLE_ON_DEMAND_POPULATION
+                        : CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAGS.CF_OPERATION_TRANSFER_PLACEHOLDERS_FLAG_NONE,
                     CompletionStatus = success ? NTStatus.STATUS_SUCCESS : StatusCloudFileAccessDenied,
                     PlaceholderTotalCount = count,
                     PlaceholderArray = infos.Length > 0 && success

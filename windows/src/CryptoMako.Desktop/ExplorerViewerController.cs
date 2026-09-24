@@ -50,8 +50,16 @@ internal sealed class ExplorerViewerController : IDisposable
             var scrub = _provider.CleanupOrphans("default");
             _vm.LogLine("CfAPI orphan cleanup: " + scrub.Replace('\n', ' '));
             try { _provider.Dispose(); } catch { /* ignore */ }
-            EnsureFreshSyncRootDirectory();
+            // ALWAYS hard-recreate the sync-root directory. Leftover reparse/placeholder
+            // state from a prior Register is a common source of live 0x8007016A even after CfConnect.
+            HardRecreateSyncRootDirectory();
             _provider = new CloudFilesProvider(AppPaths.SyncRootPath);
+
+            // AttachSession BEFORE Register/Connect. WinRT Register creates a NameSpace pin and
+            // Explorer may FETCH_PLACEHOLDERS immediately; a null Session fail-closes with
+            // ACCESS_DENIED and poisons the root (Location is not available / cloud invalid)
+            // for the rest of the process lifetime.
+            _provider.AttachSession(_vm.Session);
 
             // Register then CfConnect with no await in between (minimize shell race).
             EnsureRegistered("default");
@@ -61,12 +69,11 @@ internal sealed class ExplorerViewerController : IDisposable
             if (!_provider.IsConnected)
                 throw new InvalidOperationException("CfConnectSyncRoot did not leave the provider connected");
 
-            _provider.AttachSession(_vm.Session);
             _vm.BindExplorerViewer(_provider);
 
             try
             {
-                var n = await _provider.PopulateRootPlaceholdersAsync(recursive: false, ct: ct)
+                var n = await _provider.PopulateRootPlaceholdersAsync(recursive: true, ct: ct)
                     .ConfigureAwait(false);
                 _vm.LogLine($"CfAPI placeholders seeded: {n} under {AppPaths.SyncRootPath}");
                 // Re-enable on-demand population on the root so Explorer FETCH_PLACEHOLDERS
@@ -93,22 +100,45 @@ internal sealed class ExplorerViewerController : IDisposable
 
             var probe = ProbeSyncRootListing();
             _vm.LogLine(probe);
+            var xprobe = ProbeCrossProcessListing();
+            _vm.LogLine(xprobe);
 
-            if (_provider.IsConnected && probe.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
+            if (!_provider.IsConnected
+                || !probe.StartsWith("CfAPI sync root OK", StringComparison.Ordinal)
+                || !xprobe.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
             {
-                // Re-probe after a short settle — opening Explorer on a still-invalid root
-                // surfaces the OS "Location is not available / cloud operation is invalid" dialog.
-                await Task.Delay(400, ct).ConfigureAwait(false);
-                var probe2 = ProbeSyncRootListing();
-                _vm.LogLine("CfAPI re-probe before Explorer open: " + probe2);
-                if (probe2.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
-                    TryOpenSyncRootInExplorer(requireLiveProbe: true);
-                else
-                    _vm.LogLine("CfAPI: skipping Explorer open — re-probe failed (avoid OS cloud dialog)");
+                // In-proc OK but cross-process FAIL is the Desktop?Explorer failure mode
+                // (provider sees placeholders; Explorer/cmd get 0x8007016A). Scrub the pin.
+                _vm.LogLine("CfAPI: sync root not listable after Connect ? scrubbing registration (avoid dead pin)");
+                try { _provider.Disconnect(); } catch { /* ignore */ }
+                _vm.BindExplorerViewer(null);
+                try
+                {
+                    var scrubFail = _provider.CleanupOrphans("default");
+                    _vm.LogLine("CfAPI unlistable cleanup: " + scrubFail.Replace('\n', ' '));
+                }
+                catch { /* ignore */ }
+                throw new InvalidOperationException(
+                    "CfAPI sync root not listable after Connect: inproc=[" + probe + "] xproc=[" + xprobe + "]");
             }
+
+            // Re-probe after a short settle ? never open Explorer on a still-invalid root.
+            await Task.Delay(500, ct).ConfigureAwait(false);
+            var probe2 = ProbeSyncRootListing();
+            var xprobe2 = ProbeCrossProcessListing();
+            _vm.LogLine("CfAPI re-probe before Explorer open: " + probe2);
+            _vm.LogLine("CfAPI re-probe cross-process: " + xprobe2);
+            if (probe2.StartsWith("CfAPI sync root OK", StringComparison.Ordinal)
+                && xprobe2.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
+                TryOpenSyncRootInExplorer(requireLiveProbe: true);
             else
             {
-                _vm.LogLine("CfAPI: skipping Explorer open — sync root not live/listable (avoid OS cloud dialog)");
+                _vm.LogLine("CfAPI: re-probe failed ? scrubbing (avoid OS cloud dialog)");
+                try { _provider.Disconnect(); } catch { /* ignore */ }
+                _vm.BindExplorerViewer(null);
+                try { _provider.CleanupOrphans("default"); } catch { /* ignore */ }
+                throw new InvalidOperationException(
+                    "CfAPI sync root re-probe failed: inproc=[" + probe2 + "] xproc=[" + xprobe2 + "]");
             }
 
             var st = _provider.GetStatus();
@@ -142,67 +172,58 @@ internal sealed class ExplorerViewerController : IDisposable
     /// After unregister, a former placeholder root can still throw 0x8007016A on enum.
     /// Recreate a plain directory so Register/Connect start clean.
     /// </summary>
-    private void EnsureFreshSyncRootDirectory()
+    /// <summary>
+    /// Always move aside any existing SyncRoot and create a plain new directory.
+    /// Conditional recreate was insufficient: a live WinRT root can still ENUM-fail with
+    /// 0x8007016A while Desktop holds CfConnect if the folder carries poisoned placeholder state.
+    /// </summary>
+    private void HardRecreateSyncRootDirectory()
     {
         var path = AppPaths.SyncRootPath;
         var parent = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(parent))
             Directory.CreateDirectory(parent);
 
-        var needsRecreate = false;
-        if (!Directory.Exists(path))
-        {
-            needsRecreate = true;
-        }
-        else
-        {
-            try
-            {
-                _ = Directory.EnumerateFileSystemEntries(path).Take(1).ToList();
-                var attrs = File.GetAttributes(path);
-                // ReparsePoint on the root after a bad unregister often means cloud residue.
-                if (attrs.HasFlag(FileAttributes.ReparsePoint))
-                    needsRecreate = true;
-            }
-            catch (Exception ex) when (IsCloudInvalid(ex))
-            {
-                needsRecreate = true;
-                _vm.LogLine("CfAPI: SyncRoot not accessible (" + ShortEx(ex) + ") — recreating");
-            }
-            catch (Exception ex)
-            {
-                needsRecreate = true;
-                _vm.LogLine("CfAPI: SyncRoot enum failed (" + ShortEx(ex) + ") — recreating");
-            }
-        }
-
-        if (!needsRecreate)
-        {
-            Directory.CreateDirectory(path);
-            return;
-        }
-
         try
         {
-            if (Directory.Exists(path))
+            if (Directory.Exists(path) || File.Exists(path))
             {
                 var bak = path + "-dead-" + DateTime.UtcNow.ToString("HHmmssfff");
                 try { Directory.Move(path, bak); }
                 catch
                 {
                     try { Directory.Delete(path, recursive: true); }
-                    catch { /* best-effort */ }
+                    catch (Exception ex)
+                    {
+                        _vm.LogLine("CfAPI: SyncRoot hard-delete: " + ShortEx(ex));
+                    }
                 }
             }
         }
         catch (Exception ex)
         {
-            _vm.LogLine("CfAPI: SyncRoot recreate move/delete: " + ShortEx(ex));
+            _vm.LogLine("CfAPI: SyncRoot hard-recreate move: " + ShortEx(ex));
         }
 
         Directory.CreateDirectory(path);
-        _vm.LogLine("CfAPI: SyncRoot recreated at " + path);
+        // Verify plain (no cloud invalid) before Register.
+        try
+        {
+            _ = Directory.EnumerateFileSystemEntries(path).Take(1).ToList();
+            var attrs = File.GetAttributes(path);
+            if (attrs.HasFlag(FileAttributes.ReparsePoint))
+                throw new IOException("SyncRoot still has ReparsePoint after recreate");
+            _vm.LogLine("CfAPI: SyncRoot hard-recreated (plain) at " + path);
+        }
+        catch (Exception ex)
+        {
+            _vm.LogLine("CfAPI: SyncRoot plain-check failed: " + ShortEx(ex));
+            throw;
+        }
     }
+
+    /// <summary>Alias used by register-retry path — always hard-recreate.</summary>
+    private void EnsureFreshSyncRootDirectory() => HardRecreateSyncRootDirectory();
 
     /// <summary>
     /// Directory listing probe — surfaces "cloud operation is invalid" (0x8007016A) in the UI log
@@ -223,6 +244,57 @@ internal sealed class ExplorerViewerController : IDisposable
             if (IsCloudInvalid(ex))
                 return "CfAPI sync root LIST FAIL (0x8007016A cloud invalid): " + ShortEx(ex);
             return "CfAPI sync root LIST FAIL: " + ShortEx(ex);
+        }
+    }
+
+    /// <summary>
+    /// Out-of-process directory enum ? the real Explorer/cmd path. In-process enum can succeed
+    /// while other processes still get 0x8007016A if population policy / CfConnect is broken.
+    /// </summary>
+    private string ProbeCrossProcessListing()
+    {
+        var path = AppPaths.SyncRootPath;
+        try
+        {
+            var psPath = path.Replace("'", "''");
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments =
+                    "-NoProfile -ExecutionPolicy Bypass -Command " +
+                    "\"try { $e = [System.IO.Directory]::GetFileSystemEntries('" + psPath + "'); " +
+                    "Write-Output ('OK ' + $e.Length + ' sample=[' + " +
+                    "((($e | Select-Object -First 5 | ForEach-Object { [System.IO.Path]::GetFileName($_) }) -join ', ') + ']')) } " +
+                    "catch { Write-Output ('FAIL ' + $_.Exception.Message); exit 1 }\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true,
+            };
+            using var proc = Process.Start(psi);
+            if (proc is null)
+                return "CfAPI sync root LIST FAIL (cross-process): failed to start powershell";
+            var stdout = proc.StandardOutput.ReadToEnd();
+            _ = proc.StandardError.ReadToEnd();
+            if (!proc.WaitForExit(20000))
+            {
+                try { proc.Kill(entireProcessTree: true); } catch { /* ignore */ }
+                return "CfAPI sync root LIST FAIL (cross-process): powershell timeout";
+            }
+            var line = (stdout ?? "").Trim().Replace('\r', ' ').Replace('\n', ' ');
+            if (proc.ExitCode == 0 && line.StartsWith("OK", StringComparison.Ordinal))
+                return "CfAPI sync root OK (cross-process) ? " + line;
+            if (line.Contains("cloud operation is invalid", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("0x8007016A", StringComparison.OrdinalIgnoreCase)
+                || line.Contains("8007016A", StringComparison.OrdinalIgnoreCase))
+                return "CfAPI sync root LIST FAIL (cross-process 0x8007016A): " + line;
+            return "CfAPI sync root LIST FAIL (cross-process): " + line;
+        }
+        catch (Exception ex)
+        {
+            if (IsCloudInvalid(ex))
+                return "CfAPI sync root LIST FAIL (cross-process 0x8007016A): " + ShortEx(ex);
+            return "CfAPI sync root LIST FAIL (cross-process): " + ShortEx(ex);
         }
     }
 
@@ -271,9 +343,11 @@ internal sealed class ExplorerViewerController : IDisposable
         if (requireLiveProbe)
         {
             var probe = ProbeSyncRootListing();
-            if (!probe.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
+            var xprobe = ProbeCrossProcessListing();
+            if (!probe.StartsWith("CfAPI sync root OK", StringComparison.Ordinal)
+                || !xprobe.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
             {
-                _vm.LogLine("CfAPI: skip Explorer open — " + probe);
+                _vm.LogLine("CfAPI: skip Explorer open ? inproc=[" + probe + "] xproc=[" + xprobe + "]");
                 return;
             }
         }

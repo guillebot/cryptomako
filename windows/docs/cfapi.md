@@ -42,7 +42,7 @@ Chosen to avoid surprising full-hydrate of huge vault trees:
 |--------|----------------------------------------|----------------------------------|
 | Hydration | **Partial** | **PARTIAL** |
 | Hydration modifier | **AutoDehydrationAllowed** | **AUTO_DEHYDRATION_ALLOWED** |
-| Population | **Full** (WinRT has no Partial; not AlwaysFull) | **PARTIAL** |
+| Population | **Full** | **FULL** |
 | Pinning | **AllowPinning = true** (user "Always keep on device") | n/a (Explorer pin via shell) |
 | Hard links | None | None |
 
@@ -66,7 +66,7 @@ Rationale: Partial hydration streams on demand (FETCH_DATA); AutoDehydrationAllo
 | NOTIFY_DELETE / NOTIFY_RENAME | OK vault mutation then ACK SUCCESS; ACCESS_DENIED on failure |
 | NOTIFY_RENAME FileIdentity | OK `CfUpdatePlaceholder` to new cleartext path after vault rename |
 | NOTIFY_FILE_CLOSE_COMPLETION | OK write-back via `PutAtCleartextPathAsync`; mark in-sync only on success |
-| Dehydrate / pin / populate policies | OK Partial + AutoDehydrationAllowed; AllowPinning; no AlwaysFull |
+| Dehydrate / pin / populate policies | OK Partial hydrate + AutoDehydrationAllowed; AllowPinning; Full population |
 | S3-backed hydrate (non-local vault) | Same path once session attached |
 
 ## Fail-closed writes / delete / rename
