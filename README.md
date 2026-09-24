@@ -32,8 +32,17 @@ Not a Cryptomator fork — ciphertext stays on the bucket; decryption is in‑pr
 | Platform | Status |
 |----------|--------|
 | **Linux** | `.deb` attached (`cryptomako_1.0.0_amd64.deb`) — CLI + FUSE + Backup Sync |
-| **macOS** | Notarized zip/dmg pending Apple Notary (attach to the same tag when ready) |
+| **macOS** | Notarized DMG on the release (`CryptoMako-1.0.0.dmg`) — install via [Homebrew](https://github.com/guillebot/homebrew-cryptomako) or download the DMG |
 | **Windows** | In‑repo under `windows/` (.NET 8 CLI, Avalonia desktop, CfAPI); **no installer** in this release |
+
+### Install via Homebrew (macOS)
+
+```bash
+brew tap guillebot/cryptomako
+brew install --cask cryptomako
+```
+
+Tap: [guillebot/homebrew-cryptomako](https://github.com/guillebot/homebrew-cryptomako).
 
 ```bash
 # Linux
