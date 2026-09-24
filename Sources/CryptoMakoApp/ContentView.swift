@@ -436,11 +436,12 @@ struct BackupView: View {
                                     HStack(spacing: 6) {
                                         ProgressView()
                                             .controlSize(.small)
-                                        Text(syncEngine.state == .scanning ? "Scanning…" : "Syncing…")
+                                        Text(syncEngine.phaseLabel.isEmpty ? "Syncing…" : syncEngine.phaseLabel)
                                             .font(.caption)
                                             .foregroundStyle(.secondary)
+                                            .lineLimit(1)
                                     }
-                                    .frame(minWidth: 88, alignment: .trailing)
+                                    .frame(minWidth: 120, alignment: .trailing)
                                 } else {
                                     Button("Sync") {
                                         model.startBackupSync(sourceID: source.id)
@@ -601,54 +602,31 @@ struct BackupView: View {
                 case .idle:
                     Text("Idle")
                         .foregroundStyle(.secondary)
-                case .scanning:
-                    ProgressView() {
-                        Text("Scanning local files…")
-                            .font(.body.weight(.semibold))
-                    }
-                    Text("\(engine.filesFoundWhileScanning) files · \(TransferSnapshot.formatBytes(engine.bytesFoundWhileScanning)) found so far")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                    if !engine.currentSourceName.isEmpty {
-                        Text("Folder: \(engine.currentSourceName)")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    if !engine.currentPath.isEmpty {
-                        Text(engine.currentPath)
-                            .font(.caption)
-                            .lineLimit(2)
-                            .truncationMode(.middle)
-                            .foregroundStyle(.secondary)
-                    }
-                    Text("Large trees (like ~/dev) can take a minute before upload starts.")
-                        .font(.caption2)
-                        .foregroundStyle(.tertiary)
-                    Button("Cancel Sync", role: .destructive) { model.cancelBackupSync() }
-                        .keyboardShortcut(.cancelAction)
                 case .running:
                     ProgressView(value: engine.progressFraction) {
                         HStack {
-                            Text(engine.isPreparingDirectories
-                                 ? "Preparing folders · \(engine.progressPercentLabel)"
-                                 : "Uploading · \(engine.progressPercentLabel)")
+                            Text("\(engine.phaseLabel.isEmpty ? "Syncing…" : engine.phaseLabel) · \(engine.progressPercentLabel)")
+                                .font(.body.weight(.semibold))
                             Spacer()
-                            if engine.isPreparingDirectories {
-                                Text("\(engine.filesQueued)/\(max(engine.filesTotal, engine.filesQueued)) files queued")
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text("\(engine.filesDone)/\(max(engine.filesTotal, engine.filesDone)) files · \(TransferSnapshot.formatBytes(engine.bytesDone))/\(TransferSnapshot.formatBytes(engine.bytesTotal))")
-                                    .foregroundStyle(.secondary)
-                            }
+                            Text("\(engine.filesDone)/\(max(engine.filesDiscovered, engine.filesDone)) files · \(TransferSnapshot.formatBytes(engine.bytesDone))/\(TransferSnapshot.formatBytes(max(engine.bytesDiscovered, engine.bytesDone)))")
+                                .foregroundStyle(.secondary)
                         }
                     }
-                    if !engine.isPreparingDirectories, engine.uploadBytesPerSecond > 0 {
-                        Text("Job bandwidth: \(TransferSnapshot.formatRate(engine.uploadBytesPerSecond))")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        Text("Discovered \(engine.filesDiscovered)")
+                        Text("Skipped \(engine.filesSkipped)")
+                        Text("Queued \(engine.filesQueued)")
+                        Text("Uploaded \(engine.filesUploaded)")
                     }
-                    if engine.filesSkipped > 0 {
-                        Text("Skipped \(engine.filesSkipped) already synced (unchanged or already in vault)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    if !engine.walkFinished {
+                        Text("% uses files discovered so far (grows while walking; may move slightly).")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                    if engine.uploadBytesPerSecond > 0 {
+                        Text("Job bandwidth: \(TransferSnapshot.formatRate(engine.uploadBytesPerSecond))")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -668,7 +646,7 @@ struct BackupView: View {
                         .keyboardShortcut(.cancelAction)
                         .help("Stop the in-progress Backup Sync (vault data already uploaded is kept)")
                 case .finished(let files, let bytes):
-                    Text("Finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)) uploaded to MinIO.")
+                    Text("Finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)) processed (skipped + uploaded).")
                         .foregroundStyle(.green)
                 case .failed(let message):
                     Text(message)
