@@ -298,12 +298,13 @@ public sealed class BackupSyncEngine
         var rootFull = localRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         // Default SearchOption.AllDirectories follows dir junctions and aborts the whole
         // walk on the first UnauthorizedAccessException (e.g. C:\Users\...\Application Data
-        // under a home-folder Backup source) â€” UI stuck at "Counting... 1 files".
+        // under a home-folder Backup source) — UI stuck at "Counting... 1 files".
+        // Keep default Hidden|System skip AND skip ReparsePoint so junctions are not entered.
         var enumOpts = new EnumerationOptions
         {
             RecurseSubdirectories = true,
             IgnoreInaccessible = true,
-            AttributesToSkip = FileAttributes.ReparsePoint,
+            AttributesToSkip = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint,
             ReturnSpecialDirectories = false,
         };
         foreach (var path in Directory.EnumerateFiles(localRoot, "*", enumOpts))

@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using CryptoMako.App;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
@@ -16,6 +16,8 @@ public sealed partial class MainWindow : Window
     private readonly AppWindow _appWindow;
     private bool _forceClose;
     private bool _syncingUi;
+    private bool _progressUiQueued;
+    private bool _fullUiQueued;
 
     public MainWindow(MainViewModel vm)
     {
@@ -228,8 +230,47 @@ public sealed partial class MainWindow : Window
 
     private void OnVmPropertyChanged(object? sender, PropertyChangedEventArgs e)
     {
-        DispatcherQueue.TryEnqueue(RefreshStatusStrip);
+        // Backup Sync Counting posts ~10 PropertyChanged events per progress tick.
+        // Enqueuing a full RefreshStatusStrip (rebuilds sources list + LogBox) for each
+        // one freezes WinUI (Responding=false) while CollectJobs walks a home folder.
+        var name = e.PropertyName ?? "";
+        if (IsBackupProgressProperty(name))
+        {
+            if (_progressUiQueued) return;
+            _progressUiQueued = true;
+            DispatcherQueue.TryEnqueue(() =>
+            {
+                _progressUiQueued = false;
+                RefreshBackupProgressUi();
+                RefreshCommandEnablement();
+            });
+            return;
+        }
+
+        if (_fullUiQueued) return;
+        _fullUiQueued = true;
+        DispatcherQueue.TryEnqueue(() =>
+        {
+            _fullUiQueued = false;
+            RefreshStatusStrip();
+        });
     }
+
+    private static bool IsBackupProgressProperty(string name) =>
+        name is nameof(MainViewModel.BackupPhase)
+            or nameof(MainViewModel.BackupProgressLabel)
+            or nameof(MainViewModel.BackupProgressPercent)
+            or nameof(MainViewModel.BackupFilesDone)
+            or nameof(MainViewModel.BackupFilesTotal)
+            or nameof(MainViewModel.BackupBytesDone)
+            or nameof(MainViewModel.BackupBytesTotal)
+            or nameof(MainViewModel.BackupBytesPerSecond)
+            or nameof(MainViewModel.BackupCurrentPath)
+            or nameof(MainViewModel.BackupSpeedLabel)
+            or nameof(MainViewModel.BackupEtaLabel)
+            or nameof(MainViewModel.IsBackupProgressVisible)
+            or nameof(MainViewModel.IsBackupSyncRunning)
+            or nameof(MainViewModel.Busy);
 
     private void OnAppWindowClosing(AppWindow sender, AppWindowClosingEventArgs args)
     {

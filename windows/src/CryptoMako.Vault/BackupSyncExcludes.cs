@@ -20,6 +20,9 @@ public sealed class BackupSyncExcludes
         "node_modules", ".git", "__pycache__", ".svn", ".hg", ".tox", ".venv", "venv", ".idea", ".next", "Pods",
         // Generation 2 — Xcode / SPM / Android build-artifact storms
         "DerivedData", "DerivedData-sim", "Index.noindex", "ModuleCache.noindex", ".build", "build",
+        // Windows home-folder storms (SyncRoot / CfAPI mirrors live under AppData\Local\CryptoMako)
+        "AppData", "Application Data", "Local Settings", "Cookies", "NetHood", "PrintHood",
+        "Recent", "SendTo", "Start Menu", "Templates",
     ];
 
     public static readonly string[] DefaultFileNames = [".DS_Store", "Thumbs.db", "desktop.ini"];

@@ -12,6 +12,8 @@ public class BackupSyncTests
     {
         var e = new BackupSyncExcludes();
         Assert.True(e.ShouldSkipDirectory("node_modules"));
+        Assert.True(e.ShouldSkipDirectory("AppData"));
+        Assert.True(e.ShouldSkipRelativePath(@"AppData/Local/CryptoMako/SyncRoot/a.txt"));
         Assert.True(e.ShouldSkipFile(".DS_Store"));
         Assert.True(e.ShouldSkipFile("x.pyc"));
         Assert.False(e.ShouldSkipFile("readme.md"));
