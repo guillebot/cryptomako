@@ -1,4 +1,4 @@
-<Project Sdk="Microsoft.NET.Sdk">
+﻿<Project Sdk="Microsoft.NET.Sdk">
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows10.0.26100.0</TargetFramework>
@@ -24,8 +24,9 @@
     <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
   <ItemGroup>
-    <Content Include="Assets\AppIcon.ico" />
-    <Content Include="Assets\tray.ico" />
+    <!-- Unpackaged WinUI: Content without CopyToOutputDirectory is omitted from publish — tray then falls back to ms-appx:/// and crashes (0x80070002) after the window appears. -->
+    <Content Include="Assets\AppIcon.ico" CopyToOutputDirectory="PreserveNewest" />
+    <Content Include="Assets\tray.ico" CopyToOutputDirectory="PreserveNewest" />
     <Content Include="Assets\tray-windows.png" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
   <ItemGroup>
