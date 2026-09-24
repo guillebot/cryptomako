@@ -35,25 +35,38 @@
           <TextBlock Text="CryptoMako" FontSize="16" FontWeight="SemiBold" />
           <TextBlock x:Name="StatusBarText" Opacity="0.85" Text="locked" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
         </StackPanel>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-          <TextBlock Text="DNS" Opacity="0.7" VerticalAlignment="Center"
-                     ToolTipService.ToolTip="DNS resolve of S3 endpoint host" />
-          <Ellipse x:Name="LampDns" Width="12" Height="12" Fill="Gray" />
-          <TextBlock Text="TCP" Opacity="0.7" VerticalAlignment="Center"
-                     ToolTipService.ToolTip="TCP connect to S3 endpoint port" />
-          <Ellipse x:Name="LampTcp" Width="12" Height="12" Fill="Gray" />
-          <TextBlock Text="HTTPS" Opacity="0.7" VerticalAlignment="Center"
-                     ToolTipService.ToolTip="HTTPS / TLS to S3 endpoint" />
-          <Ellipse x:Name="LampHttps" Width="12" Height="12" Fill="Gray" />
-          <TextBlock Text="S3" Opacity="0.7" VerticalAlignment="Center"
-                     ToolTipService.ToolTip="ListObjects on vault prefix (encrypted Cryptomator names)" />
-          <Ellipse x:Name="LampList" Width="12" Height="12" Fill="Gray" />
-          <TextBlock Text="Unlocked" Opacity="0.7" VerticalAlignment="Center"
-                     ToolTipService.ToolTip="Vault unlocked - can list cleartext / plaintext names" />
-          <Ellipse x:Name="LampUnlocked" Width="12" Height="12" Fill="Gray" />
-          <TextBlock Text="Explorer" Opacity="0.7" VerticalAlignment="Center"
-                     ToolTipService.ToolTip="Soft CfAPI Explorer sync-root connected" />
-          <Ellipse x:Name="LampExplorer" Width="12" Height="12" Fill="Gray" />
+        <!-- Outer Spacing = gap after each lamp before the next status label; inner Spacing = label to own lamp. -->
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="14" VerticalAlignment="Center">
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="DNS" Opacity="0.7" VerticalAlignment="Center"
+                       ToolTipService.ToolTip="DNS resolve of S3 endpoint host" />
+            <Ellipse x:Name="LampDns" Width="12" Height="12" Fill="Gray" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="TCP" Opacity="0.7" VerticalAlignment="Center"
+                       ToolTipService.ToolTip="TCP connect to S3 endpoint port" />
+            <Ellipse x:Name="LampTcp" Width="12" Height="12" Fill="Gray" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="HTTPS" Opacity="0.7" VerticalAlignment="Center"
+                       ToolTipService.ToolTip="HTTPS / TLS to S3 endpoint" />
+            <Ellipse x:Name="LampHttps" Width="12" Height="12" Fill="Gray" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="S3" Opacity="0.7" VerticalAlignment="Center"
+                       ToolTipService.ToolTip="ListObjects on vault prefix (encrypted Cryptomator names)" />
+            <Ellipse x:Name="LampList" Width="12" Height="12" Fill="Gray" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="Unlocked" Opacity="0.7" VerticalAlignment="Center"
+                       ToolTipService.ToolTip="Vault unlocked - can list cleartext / plaintext names" />
+            <Ellipse x:Name="LampUnlocked" Width="12" Height="12" Fill="Gray" />
+          </StackPanel>
+          <StackPanel Orientation="Horizontal" Spacing="6">
+            <TextBlock Text="Explorer" Opacity="0.7" VerticalAlignment="Center"
+                       ToolTipService.ToolTip="Soft CfAPI Explorer sync-root connected" />
+            <Ellipse x:Name="LampExplorer" Width="12" Height="12" Fill="Gray" />
+          </StackPanel>
         </StackPanel>
       </Grid>
     </Border>
