@@ -142,7 +142,8 @@ internal static class ShellSyncRoot
                 | Windows.Storage.Provider.StorageProviderInSyncPolicy.DirectoryLastWriteTime,
             HardlinkPolicy = Windows.Storage.Provider.StorageProviderHardlinkPolicy.None,
             ProviderId = CloudFilesProvider.ProviderId,
-            RecycleBinUri = new Uri("https://cryptomako.local/recycle"),
+            // Do NOT set RecycleBinUri. A fake https://cryptomako.local/recycle caused Explorer
+            // context-menu / shell verbs to block on DNS (~2–7s+). Omit until a real recycle UX exists.
             Context = Windows.Security.Cryptography.CryptographicBuffer.ConvertStringToBinary(
                 syncRootId, Windows.Security.Cryptography.BinaryStringEncoding.Utf8),
         };

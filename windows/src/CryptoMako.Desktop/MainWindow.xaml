@@ -18,6 +18,7 @@
       <RowDefinition Height="*" />
     </Grid.RowDefinitions>
 
+    <!-- Top bar: title + status left; connectivity lamps right (no big Explorer/Vault badges). -->
     <Border Grid.Row="0"
             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
             CornerRadius="8" Padding="12,8" Margin="0,0,0,8"
@@ -27,7 +28,11 @@
           <ColumnDefinition Width="*" />
           <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
-        <StackPanel Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
+        <StackPanel Orientation="Vertical" Spacing="2" VerticalAlignment="Center">
+          <TextBlock Text="CryptoMako" FontSize="16" FontWeight="SemiBold" />
+          <TextBlock x:Name="StatusBarText" Opacity="0.85" Text="locked" TextWrapping="Wrap" />
+        </StackPanel>
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
           <TextBlock Text="DNS" Opacity="0.7" VerticalAlignment="Center"
                      ToolTipService.ToolTip="DNS resolve of S3 endpoint host" />
           <Ellipse x:Name="LampDns" Width="12" Height="12" Fill="Gray" />
@@ -37,32 +42,21 @@
           <TextBlock Text="HTTPS" Opacity="0.7" VerticalAlignment="Center"
                      ToolTipService.ToolTip="HTTPS / TLS to S3 endpoint" />
           <Ellipse x:Name="LampHttps" Width="12" Height="12" Fill="Gray" />
-          <TextBlock Text="S3 list" Opacity="0.7" VerticalAlignment="Center"
+          <TextBlock Text="S3" Opacity="0.7" VerticalAlignment="Center"
                      ToolTipService.ToolTip="ListObjects on vault prefix (encrypted Cryptomator names)" />
           <Ellipse x:Name="LampList" Width="12" Height="12" Fill="Gray" />
           <TextBlock Text="Unlocked" Opacity="0.7" VerticalAlignment="Center"
                      ToolTipService.ToolTip="Vault unlocked - can list cleartext / plaintext names" />
           <Ellipse x:Name="LampUnlocked" Width="12" Height="12" Fill="Gray" />
-        </StackPanel>
-        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-          <Button x:Name="ExplorerBadge" Padding="8,4" CornerRadius="6"
-                  Click="OnExplorerBadgeClick" VerticalAlignment="Center"
-                  Background="{ThemeResource SubtleFillColorSecondaryBrush}"
-                  ToolTipService.ToolTip="Soft CfAPI Explorer viewer (secondary to vault lock state)">
-            <TextBlock x:Name="ExplorerBadgeText" Text="Explorer: off" FontSize="12" />
-          </Button>
-          <Border x:Name="VaultBadge" Padding="14,8" CornerRadius="8" MinWidth="168"
-                  Background="#FF6B7280" VerticalAlignment="Center"
-                  ToolTipService.ToolTip="Vault connection - primary lock / unlock status">
-            <TextBlock x:Name="VaultStateText" FontWeight="Bold" FontSize="16"
-                       Foreground="White" VerticalAlignment="Center" HorizontalAlignment="Center"
-                       Text="Vault: Locked" />
-          </Border>
+          <TextBlock Text="Explorer" Opacity="0.7" VerticalAlignment="Center"
+                     ToolTipService.ToolTip="Soft CfAPI Explorer sync-root connected" />
+          <Ellipse x:Name="LampExplorer" Width="12" Height="12" Fill="Gray" />
         </StackPanel>
       </Grid>
     </Border>
 
-    <TextBlock Grid.Row="1" x:Name="StatusBarText" Margin="0,0,0,8" Opacity="0.85" Text="locked" />
+    <!-- Spacer row kept for layout stability (status lives in top bar now). -->
+    <Border Grid.Row="1" Height="0" Margin="0" />
 
     <Pivot Grid.Row="2">
       <PivotItem Header="Vault">
@@ -167,10 +161,16 @@
           <TextBlock Text="Backup Sync" FontSize="18" FontWeight="SemiBold" />
           <TextBlock TextWrapping="Wrap" Opacity="0.8"
                      Text="Encrypt local folders into Backups/{folder}/. Fail-closed remote puts. Nested/overlapping sources soft-warn on add and hard-fail on Sync." />
-          <TextBlock x:Name="BackupRemoteHintText" Foreground="OrangeRed" FontWeight="SemiBold" />
+          <TextBlock x:Name="BackupRemoteHintText" Foreground="OrangeRed" FontWeight="SemiBold" TextWrapping="Wrap" />
+          <TextBlock x:Name="BackupOverlapBannerText" Foreground="DarkOrange" FontWeight="SemiBold"
+                     TextWrapping="Wrap" Visibility="Collapsed" />
           <TextBlock Text="Sources" FontWeight="SemiBold" />
-          <TextBox x:Name="BackupSourcesBox" AcceptsReturn="True" Height="80" IsReadOnly="True"
-                   TextWrapping="Wrap" FontFamily="Consolas" />
+          <ListBox x:Name="BackupSourcesList" Height="110" FontFamily="Consolas"
+                   SelectionMode="Single" />
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <Button Content="Remove selected" Click="OnRemoveBackupSource" />
+            <Button Content="Clear sources" Click="OnClearBackupSources" />
+          </StackPanel>
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="Add path" Width="100" VerticalAlignment="Center" />
             <TextBox x:Name="BackupSourceBox" Width="420" PlaceholderText="path to cleartext folder" />
@@ -180,7 +180,6 @@
             <TextBlock Text="Vault folder" Width="100" VerticalAlignment="Center" />
             <TextBox x:Name="VaultFolderBox" Width="240" />
             <Button Content="Add source" Click="OnAddBackupSource" />
-            <Button Content="Clear sources" Click="OnClearBackupSources" />
           </StackPanel>
           <Button x:Name="SyncNowButton" Content="Sync now" HorizontalAlignment="Left" Click="OnSync" Style="{StaticResource AccentButtonStyle}" IsEnabled="False" ToolTipService.ToolTip="Requires an unlocked vault" />
           <StackPanel x:Name="BackupProgressPanel" Spacing="4" Visibility="Collapsed">

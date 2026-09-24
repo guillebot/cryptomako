@@ -30,6 +30,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private string? _vaultMetadataFingerprint;
     private bool _remoteChanged;
     private string _backupSourcesSummary = "(none)";
+    private string _backupOverlapWarning = "";
     private double _backupProgressPercent;
     private int _backupFilesDone;
     private int _backupFilesTotal;
@@ -69,6 +70,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         get => _backupSourcesSummary;
         private set { if (_backupSourcesSummary != value) { _backupSourcesSummary = value; OnPropertyChanged(); } }
     }
+
+    /// <summary>Visible Backup-tab banner when nested/overlapping sources are present (soft-warn policy).</summary>
+    public string BackupOverlapWarning
+    {
+        get => _backupOverlapWarning;
+        private set { if (_backupOverlapWarning != value) { _backupOverlapWarning = value; OnPropertyChanged(); } }
+    }
+
+    public bool HasBackupOverlapWarning => !string.IsNullOrEmpty(BackupOverlapWarning);
 
     /// <summary>0–100 Backup Sync progress (bytes when known, else files). Cleared when idle.</summary>
     public double BackupProgressPercent
@@ -597,6 +607,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if (_session is null)
             throw new InvalidOperationException("unlock vault first");
 
+        // Re-read backup-sources.json every Sync Now so adds/removes after Unlock are never stale.
+        if (File.Exists(AppPaths.BackupSourcesPath))
+        {
+            BackupSources = BackupSourcesStore.LoadFromFile(AppPaths.BackupSourcesPath);
+            RefreshBackupSourcesSummary();
+            OnPropertyChanged(nameof(BackupSources));
+        }
+
         var sources = BackupSources.Sources.ToList();
         if (sources.Count == 0)
         {
@@ -746,6 +764,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         else
             BackupSourcesSummary = string.Join("\n",
                 BackupSources.Sources.Select(s => $"• {s.VaultFolderName} ← {s.Path}"));
+
+        var overlaps = BackupPathOverlap.FindOverlaps(BackupSources.Sources);
+        if (overlaps.Count == 0)
+            BackupOverlapWarning = "";
+        else
+        {
+            var o = overlaps[0];
+            BackupOverlapWarning =
+                $"Overlap: '{o.ResolvedA}' overlaps '{o.ResolvedB}'. Sync will refuse until you remove or change one source.";
+            if (overlaps.Count > 1)
+                BackupOverlapWarning += $" (+{overlaps.Count - 1} more)";
+        }
     }
 
 
