@@ -613,8 +613,10 @@ final class VaultAppModel: ObservableObject {
             detail = "Add at least one folder."
             return
         }
+        let sources: [BackupSource]
         do {
-            try BackupPathOverlap.throwIfOverlapping(backupSources)
+            sources = try prepareBackupSourcesForSync(backupSources)
+            try BackupPathOverlap.throwIfOverlapping(sources)
         } catch {
             detail = error.localizedDescription
             return
@@ -628,7 +630,6 @@ final class VaultAppModel: ObservableObject {
         }
         rcloneLog = ""
         detail = "rclone sync into FUSE mount…"
-        let sources = backupSources
         let mountPath = FuseMountController.preferredMountURL.path
         Task.detached { [weak self] in
             // Wait briefly for mount notification
@@ -683,6 +684,35 @@ final class VaultAppModel: ObservableObject {
         }
     }
 
+    /// Remount SMB sources (bookmark / NetFS) and refresh persisted paths before Sync.
+    /// Fail-closed: throws if any SMB share cannot be mounted — never pretend the tree is empty.
+    func prepareBackupSourcesForSync(_ sources: [BackupSource]) throws -> [BackupSource] {
+        var prepared: [BackupSource] = []
+        var changed = false
+        for var source in sources {
+            if source.isSMB {
+                _ = try SMBBackupMount.ensureMounted(&source)
+                if let idx = backupSources.firstIndex(where: { $0.id == source.id }),
+                   backupSources[idx] != source
+                {
+                    backupSources[idx] = source
+                    changed = true
+                }
+            } else {
+                let url = URL(fileURLWithPath: source.path, isDirectory: true)
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
+                    throw SMBBackupMount.MountError.volumeUnavailable(source.path)
+                }
+            }
+            prepared.append(source)
+        }
+        if changed {
+            persistBackupSources()
+        }
+        return prepared
+    }
+
     func addBackupFolder() {
         let panel = NSOpenPanel()
         panel.canChooseFiles = false
@@ -704,7 +734,13 @@ final class VaultAppModel: ObservableObject {
             if softWarn == nil {
                 softWarn = BackupPathOverlap.softWarnOnAdd(existing: backupSources, candidatePath: path)
             }
-            backupSources.append(BackupSource(path: (try? BackupPathOverlap.resolve(path)) ?? path))
+            var source = BackupSource(path: (try? BackupPathOverlap.resolve(path)) ?? path)
+            // If the user picked an already-mounted network volume, stamp it as SMB when possible.
+            if SMBBackupMount.looksLikeNetworkVolume(url) {
+                source.kind = .smb
+                source.bookmarkData = SMBBackupMount.makeBookmark(for: url)
+            }
+            backupSources.append(source)
         }
         persistBackupSources()
         if let softWarn {
@@ -712,7 +748,39 @@ final class VaultAppModel: ObservableObject {
         }
     }
 
+    /// Mount `smb://…`, store password in Keychain, persist bookmark + URL as a Backup source.
+    func addSMBShare(urlString: String, username: String?, password: String) throws {
+        let normalized = try SMBSourceURL.normalize(urlString)
+        if backupSources.contains(where: { $0.isSMB && $0.smbURL == normalized }) {
+            detail = "That SMB share is already in the list."
+            return
+        }
+        let user = username?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanUser = (user?.isEmpty == false) ? user : nil
+        let mounted = try SMBBackupMount.mount(
+            smbURLString: normalized,
+            username: cleanUser,
+            password: password
+        )
+        var source = BackupSource(
+            path: mounted.path,
+            kind: .smb,
+            smbURL: normalized,
+            smbUsername: cleanUser,
+            bookmarkData: SMBBackupMount.makeBookmark(for: mounted)
+        )
+        try SMBBackupMount.savePassword(password, for: source)
+        let softWarn = BackupPathOverlap.softWarnOnAdd(existing: backupSources, candidatePath: source.path)
+        backupSources.append(source)
+        persistBackupSources()
+        detail = softWarn ?? "Added SMB source \(normalized) → \(mounted.path)"
+    }
+
     func removeBackupSource(_ id: String) {
+        if let removed = backupSources.first(where: { $0.id == id }), removed.isSMB {
+            SMBBackupMount.deletePassword(for: removed)
+            // Do not force-unmount — the user may have mounted the share outside the app.
+        }
         backupSources.removeAll { $0.id == id }
         persistBackupSources()
     }
@@ -722,29 +790,33 @@ final class VaultAppModel: ObservableObject {
             detail = "Unlock the vault before syncing backups."
             return
         }
-        let sources: [BackupSource]
+        let selected: [BackupSource]
         if let sourceID {
             guard let one = backupSources.first(where: { $0.id == sourceID }) else {
                 detail = "That backup folder is no longer in the list."
                 return
             }
-            sources = [one]
-            detail = "Syncing Backups/\(one.vaultFolderName)/ via direct remote puts…"
+            selected = [one]
         } else {
             guard !backupSources.isEmpty else {
                 detail = "Add at least one folder to back up."
                 return
             }
-            sources = backupSources
-            detail = "Syncing all backup folders into vault (Backups/…) via direct remote puts…"
+            selected = backupSources
         }
-        // Soft-warn was at add time; Sync hard-fails on nested overlap (Windows parity).
-        // Single-source sync is a one-element set (no overlap possible).
+        let sources: [BackupSource]
         do {
+            sources = try prepareBackupSourcesForSync(selected)
+            // Soft-warn was at add time; Sync hard-fails on nested overlap (Windows parity).
             try BackupPathOverlap.throwIfOverlapping(sources)
         } catch {
             detail = error.localizedDescription
             return
+        }
+        if sources.count == 1, let one = sources.first {
+            detail = "Syncing Backups/\(one.vaultFolderName)/ via direct remote puts…"
+        } else {
+            detail = "Syncing all backup folders into vault (Backups/…) via direct remote puts…"
         }
         backupSync.sync(sources: sources, session: session)
         watchBackupSyncForFinderRefresh()

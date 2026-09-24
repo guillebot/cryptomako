@@ -147,9 +147,11 @@ final class BackupSyncEngine: ObservableObject {
                     try Task.checkCancellation()
                     await MainActor.run { self.currentSourceName = source.vaultFolderName }
                     let root = URL(fileURLWithPath: source.path, isDirectory: true)
+                    let isSMB = source.isSMB
                     guard FileManager.default.fileExists(atPath: root.path) else {
                         throw SyncError.missingSource(source.path)
                     }
+                    try self.assertSourceStillPresent(path: root.path, isSMB: isSMB)
                     let vaultRoot = "Backups/\(source.vaultFolderName)"
                     let leafDirId = try await session.ensureDirectoryPath(vaultRoot)
                     let result = try await self.uploadTree(
@@ -159,7 +161,8 @@ final class BackupSyncEngine: ObservableObject {
                         vaultFolderName: source.vaultFolderName,
                         syncState: &syncState,
                         excludes: excludes,
-                        bandwidthLimiter: bandwidthLimiter
+                        bandwidthLimiter: bandwidthLimiter,
+                        isSMB: isSMB
                     )
                     syncState.save()
                     files += result.files
@@ -207,18 +210,38 @@ final class BackupSyncEngine: ObservableObject {
                 self.currentPath = source.path
             }
             let root = URL(fileURLWithPath: source.path, isDirectory: true)
+            let isSMB = source.isSMB
             guard fm.fileExists(atPath: root.path) else {
                 throw SyncError.missingSource(source.path)
             }
+            try self.assertSourceStillPresent(path: root.path, isSMB: isSMB)
             guard let enumerator = fm.enumerator(
                 at: root,
                 includingPropertiesForKeys: keys,
                 options: [.skipsHiddenFiles, .skipsPackageDescendants]
-            ) else { continue }
+            ) else {
+                // Enumerator nil on a still-present root is unexpected; fail closed for network sources.
+                if isSMB || SMBBackupMount.looksLikeNetworkVolume(root) {
+                    throw SyncError.volumeLost(source.path)
+                }
+                continue
+            }
 
+            var sinceVolumeCheck = 0
             for case let fileURL as URL in enumerator {
                 try Task.checkCancellation()
-                let values = try fileURL.resourceValues(forKeys: Set(keys))
+                sinceVolumeCheck += 1
+                if sinceVolumeCheck >= 200 {
+                    sinceVolumeCheck = 0
+                    try self.assertSourceStillPresent(path: root.path, isSMB: isSMB)
+                }
+                let values: URLResourceValues
+                do {
+                    values = try fileURL.resourceValues(forKeys: Set(keys))
+                } catch {
+                    try self.assertSourceStillPresent(path: root.path, isSMB: isSMB)
+                    throw error
+                }
                 if values.isSymbolicLink == true { continue }
                 if values.isDirectory == true {
                     if excludes.shouldSkipDirectory(named: fileURL.lastPathComponent) {
@@ -259,6 +282,7 @@ final class BackupSyncEngine: ObservableObject {
                     }
                 }
             }
+            try self.assertSourceStillPresent(path: root.path, isSMB: isSMB)
         }
         await MainActor.run {
             self.filesFoundWhileScanning = total.files
@@ -386,7 +410,8 @@ final class BackupSyncEngine: ObservableObject {
         vaultFolderName: String,
         syncState: inout BackupSyncState,
         excludes: BackupSyncExcludes,
-        bandwidthLimiter: UploadBandwidthLimiter?
+        bandwidthLimiter: UploadBandwidthLimiter?,
+        isSMB: Bool
     ) async throws -> Count {
         let fm = FileManager.default
         let keys: [URLResourceKey] = [
@@ -396,11 +421,15 @@ final class BackupSyncEngine: ObservableObject {
             .isSymbolicLinkKey,
             .contentModificationDateKey,
         ]
+        try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
         guard let enumerator = fm.enumerator(
             at: localRoot,
             includingPropertiesForKeys: keys,
             options: [.skipsHiddenFiles, .skipsPackageDescendants]
         ) else {
+            if isSMB || SMBBackupMount.looksLikeNetworkVolume(localRoot) {
+                throw SyncError.volumeLost(localRoot.path)
+            }
             return Count(files: 0, bytes: 0)
         }
 
@@ -582,9 +611,21 @@ final class BackupSyncEngine: ObservableObject {
 
         // Local-first walk: disk only. Unchanged → skip. New/changed → enqueue
         // without waiting for MinIO (dir resolve happens in put workers).
+        var sinceVolumeCheck = 0
         for case let fileURL as URL in enumerator {
             try Task.checkCancellation()
-            let values = try fileURL.resourceValues(forKeys: Set(keys))
+            sinceVolumeCheck += 1
+            if sinceVolumeCheck >= 200 {
+                sinceVolumeCheck = 0
+                try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+            }
+            let values: URLResourceValues
+            do {
+                values = try fileURL.resourceValues(forKeys: Set(keys))
+            } catch {
+                try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+                throw SyncError.volumeLost(localRoot.path)
+            }
             if values.isSymbolicLink == true { continue }
             if values.isDirectory == true {
                 if excludes.shouldSkipDirectory(named: fileURL.lastPathComponent) {
@@ -667,9 +708,11 @@ final class BackupSyncEngine: ObservableObject {
         smallCont.finish()
         await flushUI(force: true, path: nil)
         box.save()
+        try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
         await MainActor.run { self.isPreparingDirectories = false }
 
         let uploaded = try await uploadResult
+        try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
         syncState = box.snapshot()
         syncState.save()
         return Count(files: skipped.files + uploaded.files, bytes: skipped.bytes + uploaded.bytes)
@@ -710,11 +753,25 @@ final class BackupSyncEngine: ObservableObject {
     enum SyncError: LocalizedError {
         case missingSource(String)
         case missingParent(String)
+        case volumeLost(String)
         var errorDescription: String? {
             switch self {
-            case .missingSource(let p): return "Source folder missing: \(p)"
-            case .missingParent(let p): return "Parent folder not registered for \(p)"
+            case .missingSource(let p):
+                return "Source folder missing: \(p). Sync stopped fail-closed (not treated as an empty tree)."
+            case .missingParent(let p):
+                return "Parent folder not registered for \(p)"
+            case .volumeLost(let p):
+                return "Backup source volume disappeared during Sync: \(p). Sync stopped fail-closed (no wipe / no silent empty-tree success)."
             }
+        }
+    }
+
+    /// Fail-closed: SMB / network volumes must stay mounted for the whole Sync.
+    nonisolated private func assertSourceStillPresent(path: String, isSMB: Bool) throws {
+        do {
+            try SMBBackupMount.assertSourceReachable(path: path, isSMB: isSMB)
+        } catch {
+            throw SyncError.volumeLost(path)
         }
     }
 }

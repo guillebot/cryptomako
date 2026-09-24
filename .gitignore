@@ -19,3 +19,7 @@ release/dist/
 
 # PKCS12 export for keychain import (never commit)
 *.p12
+
+# Local agent DerivedData
+.derivedData-smb/
+.derivedData*/

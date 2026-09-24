@@ -30,6 +30,7 @@ local speed, not MinIO bandwidth.
 - [x] Cleartext macFUSE filesystem (`VaultFuseDelegate` + `CryptoMakoFuseHost` ObjC bridge)
 - [x] rclone driver targeting `/Volumes/CryptoMakoSync` (absolute Homebrew path; host app sandbox off)
 - [x] Nested/overlapping sources: soft-warn on add, hard-fail on Sync all / rclone
+- [x] SMB Backup sources: explicit smb:// add, NetFS remount, Keychain, fail-closed
 
 ## Backup tab usage
 
@@ -57,3 +58,21 @@ Unit tests: `Tests/CryptoMakoVaultTests/BackupPathOverlapTests.swift`.
 1. Add `/tmp/cm-parent`, then add `/tmp/cm-parent/child` → status warns about nested overlap; both remain listed.
 2. Unlock + **Sync all** → status shows “Backup Sync refused…” and no upload starts.
 3. Remove one of the nested sources → Sync all proceeds.
+
+
+## SMB Backup sources (macOS)
+
+Architecture (locked): **no embedded SMB client** (no libsmbclient). CryptoMako uses macOS mounts under `/Volumes` via **NetFS** (fallback `mount_smbfs`), persists a **security-scoped bookmark** + `smb://` URL in `backup-sources.json`, and stores the password in **Keychain** (`smb-password-<source-id>`).
+
+| Step | Behavior |
+|------|----------|
+| **Add SMB share…** | URL `smb://server/share[/path]`, optional username, password → mount → bookmark → Keychain → list as source with SMB badge |
+| **Before Sync** | Remount-on-demand (`ensureMounted`: bookmark → existing `/Volumes` → NetFS) |
+| **Unavailable at start** | Sync **fails closed** with a clear error (never silent skip / empty-tree wipe) |
+| **Volume drops mid-Sync** | Sync **cancels/fails closed** (`BackupSyncEngine` probes every ~200 entries + after each source) |
+| **Remove source** | Deletes Keychain secret; does **not** force-unmount (user may have mounted outside the app) |
+| **Lock/quit** | Password never kept in plaintext UI state after add; Keychain only |
+
+Folder-picker sources remain unchanged. Overlap soft-warn / Sync hard-fail still apply once mounted paths are known.
+
+Unit tests: `Tests/CryptoMakoVaultTests/SMBSourceURLTests.swift` (URL normalize + Codable migration). Smoke-test remount with a real share on Guillermo's Mac.
