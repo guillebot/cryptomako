@@ -1,4 +1,4 @@
-using System.Runtime.Versioning;
+﻿using System.Runtime.Versioning;
 using System.Security.Principal;
 using System.Text;
 
@@ -120,8 +120,9 @@ internal static class ShellSyncRoot
         catch { /* not registered yet */ }
 
         var folder = Windows.Storage.StorageFolder.GetFolderFromPathAsync(syncRootPath).AsTask().GetAwaiter().GetResult();
-        // Policies: Partial hydration + auto-dehydrate to avoid surprising full-hydrate of huge
-        // trees/files. WinRT PopulationPolicy has no Partial — use Full (on-demand), never AlwaysFull.
+        // Policies: Partial hydration + auto-dehydrate. Population Full (PARTIAL unsupported by
+        // platform; AlwaysFull rejects CfCreatePlaceholders). AttachSession before Register;
+        // Connect ASAP; seed placeholders; gate Explorer on cross-process ENUM.
         // AllowPinning lets users "Always keep on this device" without forcing global pin.
         var info = new Windows.Storage.Provider.StorageProviderSyncRootInfo
         {
@@ -146,7 +147,7 @@ internal static class ShellSyncRoot
                 syncRootId, Windows.Security.Cryptography.BinaryStringEncoding.Utf8),
         };
         Windows.Storage.Provider.StorageProviderSyncRootManager.Register(info);
-        // Do NOT sleep here — a registered-but-not-yet-CfConnected root makes Explorer show
+        // Do NOT sleep here â€” a registered-but-not-yet-CfConnected root makes Explorer show
         // "The cloud operation is invalid" (0x8007016A). Caller must CfConnectSyncRoot immediately.
         TryRegisterViaRegistry(syncRootPath, syncRootId); // belt-and-suspenders for Explorer
         detail = "WinRT StorageProviderSyncRootManager";
@@ -217,7 +218,7 @@ internal static class ShellSyncRoot
             notes.Add("account-unreg:" + ex.Message);
         }
 
-        // 2) EVERY WinRT StorageProviderSyncRoot with CryptoMako! prefix (winrt3 / smoke / …).
+        // 2) EVERY WinRT StorageProviderSyncRoot with CryptoMako! prefix (winrt3 / smoke / â€¦).
         try
         {
             var n = TryUnregisterAllCryptoMakoWinRtRoots();
@@ -239,12 +240,12 @@ internal static class ShellSyncRoot
             }
             catch
             {
-                // Not registered / already clean — ignore.
+                // Not registered / already clean â€” ignore.
             }
         }
         if (cfN > 0) notes.Add("CfUnregister:" + cfN);
 
-        // 4) Drop ALL CryptoMako!* SyncRootManager keys (including current — re-Register recreates).
+        // 4) Drop ALL CryptoMako!* SyncRootManager keys (including current â€” re-Register recreates).
         try
         {
             var n = TryUnregisterAllCryptoMakoRegistryKeys();
@@ -278,7 +279,7 @@ internal static class ShellSyncRoot
         try
         {
             var roots = Windows.Storage.Provider.StorageProviderSyncRootManager.GetCurrentSyncRoots();
-            // Snapshot ids first — Unregister mutates the live collection.
+            // Snapshot ids first â€” Unregister mutates the live collection.
             var ids = new List<string>();
             foreach (var root in roots)
             {
@@ -461,7 +462,7 @@ internal static class ShellSyncRoot
             if (name.Equals(keep, StringComparison.OrdinalIgnoreCase))
                 continue;
             // Only drop keys that look like short smoke aliases (no SID segment) or point at
-            // CryptoMako LocalAppData trees — never touch other providers.
+            // CryptoMako LocalAppData trees â€” never touch other providers.
             var parts = name.Split('!');
             var looksSmoke = parts.Length < 3; // CryptoMako!hydrate
             var underCryptoMako = false;

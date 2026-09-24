@@ -22,6 +22,8 @@ public class AppShellTests
 
         Assert.Contains("Partial", CloudFilesProvider.SyncPolicySummary, StringComparison.Ordinal);
         Assert.Contains("AutoDehydrationAllowed", CloudFilesProvider.SyncPolicySummary, StringComparison.Ordinal);
+        Assert.Contains("population=Full", CloudFilesProvider.SyncPolicySummary, StringComparison.Ordinal);
+        Assert.DoesNotContain("population=Partial", CloudFilesProvider.SyncPolicySummary, StringComparison.Ordinal);
         Assert.DoesNotContain("AlwaysFull", CloudFilesProvider.SyncPolicySummary, StringComparison.Ordinal);
         var status = provider.GetStatus();
         Assert.Equal(CloudFilesProvider.SyncPolicySummary, status.PolicySummary);
