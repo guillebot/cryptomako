@@ -1,6 +1,4 @@
-# Document accepted findings here with a short reason and expiry/review date.
-# Example:
-# CVE-2024-12345 exp:2026-01-01 # dev-only fixture dependency, no fix yet
-
-# SPM checkouts under .build/ are excluded via --skip-dirs (not shipped).
-# Upstream Dockerfiles and benchmark private keys live there.
+# GO-2026-5932 flags golang.org/x/crypto because openpgp/* is unmaintained.
+# CryptoMako linux only imports golang.org/x/crypto/scrypt (vault KDF).
+# Confirmed not reachable via: govulncheck ./... (0 vulns in code/imports).
+GO-2026-5932
