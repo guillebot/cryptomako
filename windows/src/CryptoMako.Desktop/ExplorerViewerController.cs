@@ -100,15 +100,15 @@ internal sealed class ExplorerViewerController : IDisposable
 
             var probe = ProbeSyncRootListing();
             _vm.LogLine(probe);
-            var xprobe = ProbeCrossProcessListing();
+            var xprobe = await ProbeCrossProcessListingWithRetryAsync(ct).ConfigureAwait(false);
             _vm.LogLine(xprobe);
 
             if (!_provider.IsConnected
                 || !probe.StartsWith("CfAPI sync root OK", StringComparison.Ordinal)
                 || !xprobe.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
             {
-                // In-proc OK but cross-process FAIL is the Desktop?Explorer failure mode
-                // (provider sees placeholders; Explorer/cmd get 0x8007016A). Scrub the pin.
+                // In-proc OK but cross-process FAIL is the Desktop?Explorer failure mode.
+                // Scrub so Explorer never keeps a dead pin.
                 _vm.LogLine("CfAPI: sync root not listable after Connect ? scrubbing registration (avoid dead pin)");
                 try { _provider.Disconnect(); } catch { /* ignore */ }
                 _vm.BindExplorerViewer(null);
@@ -125,7 +125,7 @@ internal sealed class ExplorerViewerController : IDisposable
             // Re-probe after a short settle ? never open Explorer on a still-invalid root.
             await Task.Delay(500, ct).ConfigureAwait(false);
             var probe2 = ProbeSyncRootListing();
-            var xprobe2 = ProbeCrossProcessListing();
+            var xprobe2 = await ProbeCrossProcessListingWithRetryAsync(ct).ConfigureAwait(false);
             _vm.LogLine("CfAPI re-probe before Explorer open: " + probe2);
             _vm.LogLine("CfAPI re-probe cross-process: " + xprobe2);
             if (probe2.StartsWith("CfAPI sync root OK", StringComparison.Ordinal)
@@ -249,23 +249,33 @@ internal sealed class ExplorerViewerController : IDisposable
 
     /// <summary>
     /// Out-of-process directory enum ? the real Explorer/cmd path. In-process enum can succeed
-    /// while other processes still get 0x8007016A if population policy / CfConnect is broken.
+    /// while other processes still get 0x8007016A if SyncRoot FETCH TRANSFER poisons the root.
     /// </summary>
+    private async Task<string> ProbeCrossProcessListingWithRetryAsync(CancellationToken ct)
+    {
+        string last = ProbeCrossProcessListing();
+        if (last.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
+            return last;
+        for (var i = 0; i < 3; i++)
+        {
+            await Task.Delay(400, ct).ConfigureAwait(false);
+            last = ProbeCrossProcessListing();
+            if (last.StartsWith("CfAPI sync root OK", StringComparison.Ordinal))
+                return last;
+        }
+        return last;
+    }
+
     private string ProbeCrossProcessListing()
     {
         var path = AppPaths.SyncRootPath;
         try
         {
-            var psPath = path.Replace("'", "''");
+            // Prefer cmd.exe ? nested PowerShell -Command quoting is fragile under WinUI.
             var psi = new ProcessStartInfo
             {
-                FileName = "powershell.exe",
-                Arguments =
-                    "-NoProfile -ExecutionPolicy Bypass -Command " +
-                    "\"try { $e = [System.IO.Directory]::GetFileSystemEntries('" + psPath + "'); " +
-                    "Write-Output ('OK ' + $e.Length + ' sample=[' + " +
-                    "((($e | Select-Object -First 5 | ForEach-Object { [System.IO.Path]::GetFileName($_) }) -join ', ') + ']')) } " +
-                    "catch { Write-Output ('FAIL ' + $_.Exception.Message); exit 1 }\"",
+                FileName = "cmd.exe",
+                Arguments = "/d /c dir /b \"" + path + "\"",
                 UseShellExecute = false,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
@@ -273,22 +283,28 @@ internal sealed class ExplorerViewerController : IDisposable
             };
             using var proc = Process.Start(psi);
             if (proc is null)
-                return "CfAPI sync root LIST FAIL (cross-process): failed to start powershell";
+                return "CfAPI sync root LIST FAIL (cross-process): failed to start cmd";
             var stdout = proc.StandardOutput.ReadToEnd();
-            _ = proc.StandardError.ReadToEnd();
-            if (!proc.WaitForExit(20000))
+            var stderr = proc.StandardError.ReadToEnd();
+            if (!proc.WaitForExit(15000))
             {
                 try { proc.Kill(entireProcessTree: true); } catch { /* ignore */ }
-                return "CfAPI sync root LIST FAIL (cross-process): powershell timeout";
+                return "CfAPI sync root LIST FAIL (cross-process): cmd timeout";
             }
-            var line = (stdout ?? "").Trim().Replace('\r', ' ').Replace('\n', ' ');
-            if (proc.ExitCode == 0 && line.StartsWith("OK", StringComparison.Ordinal))
-                return "CfAPI sync root OK (cross-process) ? " + line;
-            if (line.Contains("cloud operation is invalid", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("0x8007016A", StringComparison.OrdinalIgnoreCase)
-                || line.Contains("8007016A", StringComparison.OrdinalIgnoreCase))
-                return "CfAPI sync root LIST FAIL (cross-process 0x8007016A): " + line;
-            return "CfAPI sync root LIST FAIL (cross-process): " + line;
+            var err = (stderr ?? "").Trim();
+            var outTrim = (stdout ?? "").Trim();
+            if (proc.ExitCode == 0)
+            {
+                var names = outTrim.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+                return "CfAPI sync root OK (cross-process) ? " + names.Length
+                    + " sample=[" + string.Join(", ", names.Take(5)) + "]";
+            }
+            var combined = (outTrim + " " + err).Trim();
+            if (combined.Contains("cloud operation is invalid", StringComparison.OrdinalIgnoreCase)
+                || combined.Contains("0x8007016A", StringComparison.OrdinalIgnoreCase)
+                || combined.Contains("File Not Found", StringComparison.OrdinalIgnoreCase))
+                return "CfAPI sync root LIST FAIL (cross-process 0x8007016A): " + combined;
+            return "CfAPI sync root LIST FAIL (cross-process): exit=" + proc.ExitCode + " " + combined;
         }
         catch (Exception ex)
         {
@@ -297,6 +313,7 @@ internal sealed class ExplorerViewerController : IDisposable
             return "CfAPI sync root LIST FAIL (cross-process): " + ShortEx(ex);
         }
     }
+
 
     private void EnsureRegistered(string account)
     {
