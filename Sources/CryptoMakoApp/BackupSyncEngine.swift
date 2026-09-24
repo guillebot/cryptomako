@@ -547,16 +547,19 @@ final class BackupSyncEngine: ObservableObject {
 
         func putOne(_ job: PendingUpload) async throws {
             try Task.checkCancellation()
-            // Pace Sync puts only (Finder File Provider uses a different path).
-            if let limiter = bandwidthLimiter {
-                await limiter.acquire(job.size)
-            }
             let parentId = try await dirCache.resolve(job.parentRel)
+            // Start the put without waiting for full-file bandwidth tokens (bucket
+            // holds only ~1s of rate). Charge after so large files proceed and
+            // TransferMetrics.inFlight reflects live createOrOverwrite work.
             _ = try await session.createOrOverwriteFile(
                 parentDirId: parentId,
                 cleartextName: job.fileURL.lastPathComponent,
                 contentsURL: job.fileURL
             )
+            // Pace Sync puts only (Finder File Provider uses a different path).
+            if let limiter = bandwidthLimiter {
+                await limiter.acquire(job.size)
+            }
             let key = BackupSyncState.key(
                 vaultFolder: vaultFolder,
                 relativePath: job.relativePath

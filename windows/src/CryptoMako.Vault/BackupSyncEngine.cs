@@ -120,8 +120,6 @@ public sealed class BackupSyncEngine
             await foreach (var job in reader.ReadAllAsync(ct))
             {
                 ct.ThrowIfCancellationRequested();
-                if (limiter is not null)
-                    await limiter.AcquireAsync(job.Size, ct);
 
                 // Surface the in-flight file BEFORE put so UI never looks stuck on N-1/N
                 // while the last PutFileAsync is still running (or hung).
@@ -156,6 +154,11 @@ public sealed class BackupSyncEngine
                     throw new TimeoutException(
                         $"Backup Sync timed out after {putTimeoutSeconds}s on: {job.RelativePath}");
                 }
+
+                // Pace after bytes are sent so large files are not blocked waiting
+                // for a full-file token grant (bucket holds only ~1s of rate).
+                if (limiter is not null)
+                    await limiter.AcquireAsync(job.Size, ct);
 
                 var key = BackupSyncState.Key(vaultFolderName, job.RelativePath);
                 BackupSyncProgressUpdate? update = null;

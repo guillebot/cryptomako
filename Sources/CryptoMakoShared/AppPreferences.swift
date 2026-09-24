@@ -172,16 +172,24 @@ public struct AppPreferences: Codable, Equatable, Sendable {
 }
 
 /// Token-bucket limiter for Backup Sync put pacing. Shared across put workers.
+///
+/// The bucket holds at most ~1s of rate (`maxTokens`). Callers must **not** wait for
+/// the entire file size to be present before starting a put — `acquire` consumes in
+/// chunks as tokens refill. Prefer charging **after** (or during) the transfer so
+/// large files can proceed while the sustained average still respects Mbps.
 public final class UploadBandwidthLimiter: @unchecked Sendable {
     private let lock = NSLock()
     private let rateBytesPerSec: Double
+    /// Burst / chunk cap (= 1s of rate). Tokens never accumulate beyond this.
+    private let maxTokens: Double
     private var tokens: Double
     private var lastRefill: CFAbsoluteTime
 
     /// - Parameter bytesPerSecond: Sustained cleartext-byte budget (0 disables).
     public init(bytesPerSecond: Double) {
         self.rateBytesPerSec = max(0, bytesPerSecond)
-        self.tokens = self.rateBytesPerSec // 1s burst
+        self.maxTokens = self.rateBytesPerSec // 1s burst
+        self.tokens = self.maxTokens
         self.lastRefill = CFAbsoluteTimeGetCurrent()
     }
 
@@ -190,24 +198,36 @@ public final class UploadBandwidthLimiter: @unchecked Sendable {
         return UploadBandwidthLimiter(bytesPerSecond: rate)
     }
 
-    /// Block until `byteCount` tokens are available, then consume them.
+    /// Consume `byteCount` tokens as the bucket refills.
+    ///
+    /// - Never requires `byteCount` ≤ `maxTokens` (chunked takes).
+    /// - Never zeroes the bucket on deficit (concurrent waiters keep sharing refill).
+    /// - No-op when bandwidth limiting is off or `byteCount` ≤ 0.
+    /// - Returns early on task cancellation (Cancel path).
     public func acquire(_ byteCount: Int64) async {
         guard rateBytesPerSec > 0, byteCount > 0 else { return }
-        let need = Double(byteCount)
-        while true {
+        var remaining = Double(byteCount)
+        while remaining > 0 {
+            if Task.isCancelled { return }
             let sleepSeconds: Double = lock.withLock {
                 refillLocked()
-                if tokens >= need {
-                    tokens -= need
-                    return 0
+                // Take whatever is available now — partial progress is required so
+                // files larger than the 1s burst can ever finish acquiring.
+                if tokens > 0 {
+                    let take = min(tokens, remaining)
+                    tokens -= take
+                    remaining -= take
+                    if remaining <= 0 { return 0 }
                 }
-                let deficit = need - tokens
-                tokens = 0
-                lastRefill = CFAbsoluteTimeGetCurrent()
-                return deficit / rateBytesPerSec
+                // Sleep until we expect another useful chunk. Do **not** reset
+                // `tokens` / `lastRefill` — that wiped the bucket and starved peers.
+                let want = min(remaining, maxTokens)
+                return want / rateBytesPerSec
             }
-            if sleepSeconds <= 0 { return }
-            let ns = UInt64(min(sleepSeconds, 2.0) * 1_000_000_000)
+            if sleepSeconds <= 0 { continue }
+            // Short slices so Cancel stays responsive; wake and re-evaluate.
+            let slice = min(max(sleepSeconds, 0.001), 0.25)
+            let ns = UInt64(slice * 1_000_000_000)
             try? await Task.sleep(nanoseconds: max(ns, 1_000_000))
         }
     }
@@ -216,7 +236,7 @@ public final class UploadBandwidthLimiter: @unchecked Sendable {
         let now = CFAbsoluteTimeGetCurrent()
         let elapsed = now - lastRefill
         guard elapsed > 0 else { return }
-        tokens = min(rateBytesPerSec, tokens + elapsed * rateBytesPerSec)
+        tokens = min(maxTokens, tokens + elapsed * rateBytesPerSec)
         lastRefill = now
     }
 }
