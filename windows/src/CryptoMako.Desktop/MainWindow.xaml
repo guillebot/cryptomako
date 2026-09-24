@@ -11,26 +11,29 @@
     <MicaBackdrop />
   </Window.SystemBackdrop>
 
-  <Grid x:Name="RootGrid" Padding="12">
+  <!-- Top padding 0 so AppTitleBar reaches the caption area for drag. -->
+  <Grid x:Name="RootGrid" Padding="12,0,12,12">
     <Grid.RowDefinitions>
       <RowDefinition Height="Auto" />
       <RowDefinition Height="Auto" />
       <RowDefinition Height="*" />
     </Grid.RowDefinitions>
 
-    <!-- Top bar: title + status left; connectivity lamps right (no big Explorer/Vault badges). -->
-    <Border Grid.Row="0"
+    <!-- Draggable title bar (SetTitleBar). Lamps stay on the right; no big badges. -->
+    <Border x:Name="AppTitleBar" Grid.Row="0"
             Background="{ThemeResource CardBackgroundFillColorDefaultBrush}"
-            CornerRadius="8" Padding="12,8" Margin="0,0,0,8"
-            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1">
-      <Grid>
+            CornerRadius="0,0,8,8" Padding="12,10" Margin="0,0,0,8"
+            MinHeight="48"
+            BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="0,0,0,1">
+      <!-- Right margin keeps lamps clear of system min/max/close. -->
+      <Grid Margin="0,0,120,0">
         <Grid.ColumnDefinitions>
           <ColumnDefinition Width="*" />
           <ColumnDefinition Width="Auto" />
         </Grid.ColumnDefinitions>
         <StackPanel Orientation="Vertical" Spacing="2" VerticalAlignment="Center">
           <TextBlock Text="CryptoMako" FontSize="16" FontWeight="SemiBold" />
-          <TextBlock x:Name="StatusBarText" Opacity="0.85" Text="locked" TextWrapping="Wrap" />
+          <TextBlock x:Name="StatusBarText" Opacity="0.85" Text="locked" TextWrapping="NoWrap" TextTrimming="CharacterEllipsis" />
         </StackPanel>
         <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
           <TextBlock Text="DNS" Opacity="0.7" VerticalAlignment="Center"

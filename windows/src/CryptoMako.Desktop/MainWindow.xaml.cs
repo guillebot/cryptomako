@@ -22,7 +22,9 @@ public sealed partial class MainWindow : Window
         _vm = vm;
         InitializeComponent();
 
+        // Custom chrome: AppTitleBar is the drag region (window movable by dragging top bar).
         ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
 
         var hwnd = WindowNative.GetWindowHandle(this);
         var windowId = Microsoft.UI.Win32Interop.GetWindowIdFromWindow(hwnd);
@@ -36,6 +38,17 @@ public sealed partial class MainWindow : Window
                 _appWindow.SetIcon(iconPath);
         }
         catch { /* optional */ }
+        try
+        {
+            // Keep system caption buttons visible over mica / custom title content.
+            var tb = _appWindow.TitleBar;
+            tb.ExtendsContentIntoTitleBar = true;
+            tb.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
+            tb.ButtonInactiveBackgroundColor = Microsoft.UI.Colors.Transparent;
+            tb.ButtonHoverBackgroundColor = Microsoft.UI.ColorHelper.FromArgb(32, 128, 128, 128);
+            tb.ButtonPressedBackgroundColor = Microsoft.UI.ColorHelper.FromArgb(48, 128, 128, 128);
+        }
+        catch { /* older builds / non-AppWindow title bar */ }
 
         _appWindow.Closing += OnAppWindowClosing;
         _appWindow.Changed += OnAppWindowChanged;
