@@ -16,7 +16,9 @@ public sealed class BackupSyncEngine
     {
         public int FilesUploaded { get; init; }
         public int FilesSkipped { get; init; }
+        public int FilesScanned { get; init; }
         public long BytesUploaded { get; init; }
+        public long BytesScanned { get; init; }
     }
 
     private readonly record struct PendingUpload(
@@ -182,17 +184,32 @@ public sealed class BackupSyncEngine
         }
 
         syncProgress?.Report(new BackupSyncProgressUpdate { Phase = "scanning", CurrentPath = localRoot });
-        var (jobs, skipped) = CollectJobs(localRoot, excludes, syncState, vaultFolderName);
+        var (jobs, skipped, skippedBytes) = CollectJobs(localRoot, excludes, syncState, vaultFolderName);
         filesTotal = jobs.Count;
         bytesTotal = jobs.Sum(j => j.Size);
+        var filesScanned = jobs.Count + skipped;
+        var bytesScanned = bytesTotal + skippedBytes;
+        if (filesScanned == 0)
+            throw new InvalidOperationException(
+                "No regular files found under backup source: " + localRoot);
+        string startMsg;
+        if (filesTotal == 0)
+            startMsg = $"All {skipped} files up-to-date";
+        else if (skipped > 0)
+            startMsg = $"Starting upload? ({skipped} already up-to-date)";
+        else
+            startMsg = "Starting upload?";
         syncProgress?.Report(new BackupSyncProgressUpdate
         {
-            Phase = "uploading",
-            FilesDone = 0,
-            FilesTotal = filesTotal,
-            BytesDone = 0,
-            BytesTotal = bytesTotal,
-            CurrentPath = filesTotal == 0 ? "No regular files to upload" : "Starting upload…",
+            Phase = filesTotal == 0 ? "done" : "uploading",
+            FilesDone = filesTotal == 0 ? skipped : 0,
+            FilesTotal = filesTotal == 0 ? skipped : filesTotal,
+            FilesSkipped = skipped,
+            FilesScanned = filesScanned,
+            BytesDone = filesTotal == 0 ? bytesScanned : 0,
+            BytesTotal = filesTotal == 0 ? bytesScanned : bytesTotal,
+            BytesScanned = bytesScanned,
+            CurrentPath = startMsg,
         });
 
         var workers = new List<Task>();
@@ -232,11 +249,13 @@ public sealed class BackupSyncEngine
         {
             FilesUploaded = uploaded,
             FilesSkipped = skipped,
+            FilesScanned = filesScanned,
             BytesUploaded = bytes,
+            BytesScanned = bytesScanned,
         };
     }
 
-    private static (List<PendingUpload> Jobs, int Skipped) CollectJobs(
+    private static (List<PendingUpload> Jobs, int Skipped, long SkippedBytes) CollectJobs(
         string localRoot,
         BackupSyncExcludes excludes,
         BackupSyncState syncState,
@@ -244,6 +263,7 @@ public sealed class BackupSyncEngine
     {
         var jobs = new List<PendingUpload>();
         var skipped = 0;
+        long skippedBytes = 0;
         var rootFull = localRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         foreach (var path in Directory.EnumerateFiles(localRoot, "*", SearchOption.AllDirectories))
         {
@@ -267,6 +287,7 @@ public sealed class BackupSyncEngine
             if (syncState.Files.TryGetValue(key, out var fp) && fp.Matches(info.Length, mtime))
             {
                 skipped++;
+                skippedBytes += info.Length;
                 continue;
             }
 
@@ -274,6 +295,6 @@ public sealed class BackupSyncEngine
             if (parentRel == ".") parentRel = "";
             jobs.Add(new PendingUpload(path, rel, parentRel, Path.GetFileName(path), info.Length, mtime));
         }
-        return (jobs, skipped);
+        return (jobs, skipped, skippedBytes);
     }
 }

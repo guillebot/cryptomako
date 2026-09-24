@@ -619,11 +619,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             var syncProgress = new Progress<BackupSyncProgressUpdate>(ApplyBackupProgress);
             var uploaded = 0;
             var skipped = 0;
+            var scanned = 0;
             long bytes = 0;
+            long bytesScanned = 0;
             foreach (var src in sources)
             {
                 linked.Token.ThrowIfCancellationRequested();
-                AppendLog($"sync source {src.VaultFolderName} ← {src.Path}");
+                AppendLog($"sync source {src.VaultFolderName} ? {src.Path}");
                 BackupPhase = "uploading";
                 BackupCurrentPath = src.Path;
                 var result = await engine.SyncAsync(
@@ -637,13 +639,28 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                     ct: linked.Token);
                 uploaded += result.FilesUploaded;
                 skipped += result.FilesSkipped;
+                scanned += result.FilesScanned;
                 bytes += result.BytesUploaded;
+                bytesScanned += result.BytesScanned;
             }
-            AppendLog($"sync done uploaded={uploaded} skipped={skipped} bytes={bytes}");
-            Status = $"synced {uploaded} files";
+            AppendLog($"sync done uploaded={uploaded} skipped={skipped} scanned={scanned} bytes={bytes}");
+            Status = uploaded > 0
+                ? $"synced {uploaded} files"
+                : (scanned > 0 ? $"up-to-date ({scanned} files)" : "sync: no files");
             BackupPhase = "done";
             BackupProgressPercent = 100;
-            BackupProgressLabel = $"Finished - {uploaded} files - {FormatBytes(bytes)}";
+            BackupFilesDone = uploaded + skipped;
+            BackupFilesTotal = Math.Max(scanned, uploaded + skipped);
+            BackupBytesDone = Math.Max(bytes, bytesScanned);
+            BackupBytesTotal = Math.Max(bytesScanned, bytes);
+            if (scanned == 0)
+                BackupProgressLabel = "Finished - no files found under backup sources";
+            else if (uploaded == 0)
+                BackupProgressLabel = $"Finished - all {skipped} files up-to-date - {FormatBytes(bytesScanned)}";
+            else if (skipped > 0)
+                BackupProgressLabel = $"Finished - {uploaded} uploaded, {skipped} up-to-date - {FormatBytes(bytes)}";
+            else
+                BackupProgressLabel = $"Finished - {uploaded} files - {FormatBytes(bytes)}";
             BackupSpeedLabel = "";
             BackupEtaLabel = "";
             BackupCurrentPath = "";
@@ -807,9 +824,27 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         BackupBytesPerSecond = u.BytesPerSecond;
         BackupCurrentPath = u.CurrentPath ?? "";
         BackupProgressPercent = u.Percent;
-        BackupProgressLabel = u.FilesTotal > 0 || u.BytesTotal > 0
-            ? string.Format(CultureInfo.InvariantCulture, "{0:0}% - {1}/{2} files - {3}/{4}", u.Percent, u.FilesDone, Math.Max(u.FilesTotal, u.FilesDone), FormatBytes(u.BytesDone), FormatBytes(u.BytesTotal))
-            : (u.Phase == "scanning" ? "Counting local files..." : u.Phase);
+        if (u.FilesTotal > 0 || u.BytesTotal > 0)
+        {
+            BackupProgressLabel = string.Format(
+                CultureInfo.InvariantCulture,
+                "{0:0}% - {1}/{2} files - {3}/{4}",
+                u.Percent,
+                u.FilesDone,
+                Math.Max(u.FilesTotal, u.FilesDone),
+                FormatBytes(u.BytesDone),
+                FormatBytes(u.BytesTotal));
+        }
+        else if (u.FilesScanned > 0)
+        {
+            BackupProgressLabel = u.FilesSkipped >= u.FilesScanned
+                ? $"All {u.FilesSkipped} files up-to-date - {FormatBytes(u.BytesScanned)}"
+                : $"Scanned {u.FilesScanned} files?";
+        }
+        else if (u.Phase == "scanning")
+            BackupProgressLabel = "Counting local files...";
+        else
+            BackupProgressLabel = string.IsNullOrWhiteSpace(u.CurrentPath) ? u.Phase : u.CurrentPath;
         BackupSpeedLabel = u.BytesPerSecond > 0 ? FormatRate(u.BytesPerSecond) : "";
         BackupEtaLabel = FormatEta(u.BytesDone, u.BytesTotal, u.BytesPerSecond);
         OnPropertyChanged(nameof(IsBackupProgressVisible));
