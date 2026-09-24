@@ -17,34 +17,54 @@ type BackupSyncExcludes struct {
 
 // backupSyncExcludesStore is the on-disk wrapper (macOS BackupSyncExcludesStore).
 type backupSyncExcludesStore struct {
-	Excludes BackupSyncExcludes `json:"excludes"`
+	Excludes           BackupSyncExcludes `json:"excludes"`
+	DefaultsGeneration int                `json:"defaultsGeneration,omitempty"`
 }
 
 // DefaultBackupSyncExcludes matches macOS BackupSyncExcludes.default.
+// DefaultsGeneration mirrors macOS BackupSyncExcludes.defaultsGeneration.
+const DefaultsGeneration = 2
+
+func directoryNamesAddedInGeneration2() []string {
+	return []string{
+		"DerivedData",
+		"DerivedData-sim",
+		"Index.noindex",
+		"ModuleCache.noindex",
+		".build",
+		"build",
+	}
+}
+
+func fileExtensionsAddedInGeneration2() []string {
+	return []string{"swiftinterface"}
+}
+
 func DefaultBackupSyncExcludes() BackupSyncExcludes {
+	dirs := []string{
+		"node_modules",
+		".git",
+		"__pycache__",
+		".svn",
+		".hg",
+		".tox",
+		".venv",
+		"venv",
+		".idea",
+		".next",
+		"Pods",
+	}
+	dirs = append(dirs, directoryNamesAddedInGeneration2()...)
+	exts := []string{"pyc", "pyo"}
+	exts = append(exts, fileExtensionsAddedInGeneration2()...)
 	return BackupSyncExcludes{
-		DirectoryNames: []string{
-			"node_modules",
-			".git",
-			"__pycache__",
-			".svn",
-			".hg",
-			".tox",
-			".venv",
-			"venv",
-			".idea",
-			".next",
-			"Pods",
-		},
+		DirectoryNames: dirs,
 		FileNames: []string{
 			".DS_Store",
 			"Thumbs.db",
 			"desktop.ini",
 		},
-		FileExtensions: []string{
-			"pyc",
-			"pyo",
-		},
+		FileExtensions: exts,
 	}
 }
 
@@ -77,7 +97,56 @@ func LoadBackupSyncExcludes(path string) (BackupSyncExcludes, error) {
 	if err := json.Unmarshal(data, &store); err != nil {
 		return BackupSyncExcludes{}, err
 	}
+	if migrated := migrateShippedDefaults(&store); migrated {
+		// Best-effort rewrite so next load skips migration.
+		if out, err := json.Marshal(store); err == nil {
+			_ = os.WriteFile(path, out, 0o600)
+		}
+	}
 	return store.Excludes, nil
+}
+
+func containsString(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+func unionStrings(base []string, add []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(base)+len(add))
+	for _, s := range base {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	for _, s := range add {
+		if _, ok := seen[s]; ok {
+			continue
+		}
+		seen[s] = struct{}{}
+		out = append(out, s)
+	}
+	return out
+}
+
+// migrateShippedDefaults mirrors macOS BackupSyncExcludesStore.migrateShippedDefaultsIfNeeded.
+func migrateShippedDefaults(store *backupSyncExcludesStore) bool {
+	if store.DefaultsGeneration >= DefaultsGeneration {
+		return false
+	}
+	looksLikePriorDefaults := containsString(store.Excludes.DirectoryNames, "node_modules") || store.DefaultsGeneration >= 1
+	if looksLikePriorDefaults && store.DefaultsGeneration < 2 {
+		store.Excludes.DirectoryNames = unionStrings(store.Excludes.DirectoryNames, directoryNamesAddedInGeneration2())
+		store.Excludes.FileExtensions = unionStrings(store.Excludes.FileExtensions, fileExtensionsAddedInGeneration2())
+	}
+	store.DefaultsGeneration = DefaultsGeneration
+	return true
 }
 
 func (e BackupSyncExcludes) dirSet() map[string]struct{} {
