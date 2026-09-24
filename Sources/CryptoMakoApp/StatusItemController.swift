@@ -27,14 +27,20 @@ final class StatusItemController {
         statusItem = item
         rebuildMenu()
 
+        let rebuild = { [weak self] in
+            DispatchQueue.main.async {
+                self?.rebuildMenu()
+            }
+        }
         model.objectWillChange
             .receive(on: RunLoop.main)
-            .sink { [weak self] _ in
-                // Defer one turn so @Published values are settled.
-                DispatchQueue.main.async {
-                    self?.rebuildMenu()
-                }
-            }
+            .sink { _ in rebuild() }
+            .store(in: &cancellables)
+        // BackupSyncEngine is a separate ObservableObject; without this the menu
+        // never learns Sync started/stopped and Cancel Sync would not appear.
+        model.backupSync.objectWillChange
+            .receive(on: RunLoop.main)
+            .sink { _ in rebuild() }
             .store(in: &cancellables)
 
         DistributedNotificationCenter.default.addObserver(
@@ -106,6 +112,17 @@ final class StatusItemController {
         showItem.keyEquivalentModifierMask = [.command]
         showItem.target = self
         menu.addItem(showItem)
+
+        if model.backupSync.isRunning {
+            let cancelSync = NSMenuItem(
+                title: "Cancel Backup Sync",
+                action: #selector(cancelBackupSync(_:)),
+                keyEquivalent: "."
+            )
+            cancelSync.keyEquivalentModifierMask = [.command]
+            cancelSync.target = self
+            menu.addItem(cancelSync)
+        }
 
         menu.addItem(.separator())
 
@@ -216,6 +233,11 @@ final class StatusItemController {
         Task { @MainActor in
             await UpdateChecker.checkAndPresent()
         }
+    }
+
+    @objc private func cancelBackupSync(_ sender: Any?) {
+        model.cancelBackupSync()
+        rebuildMenu()
     }
 
     @objc private func quitApp(_ sender: Any?) {

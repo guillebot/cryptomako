@@ -126,6 +126,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.model.startBackupSync()
             }
         }
+        // Agents / scripts: `post net.gschimmel.cryptomako.cancelBackupSync` to stop Sync.
+        DistributedNotificationCenter.default.addObserver(
+            forName: Notification.Name("net.gschimmel.cryptomako.cancelBackupSync"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.model.cancelBackupSync()
+            }
+        }
         // Poll so tooltip stays live even if a notification is missed across processes.
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
