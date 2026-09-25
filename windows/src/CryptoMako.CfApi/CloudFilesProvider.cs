@@ -963,15 +963,13 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
         // not a vault path. ResolveVaultPathFromCallback must reject that or we would seed wrongly.
         var dirPath = provider?.ResolveVaultPathFromCallback(info) ?? "/";
 
-        // Fast path: when the directory already has children on disk, ACK immediately without an
-        // S3 ListNodes round-trip. Explorer right-click / property / verb queries re-enter FETCH
-        // and used to block the shell for seconds waiting on network I/O before TRANSFER ACK.
-        var alreadyPopulated = provider is not null && DirectoryHasLocalChildren(provider, dirPath);
-
+        // Always re-list + CreatePlaceholders for missing children. Skipping S3 whenever ANY
+        // local child exists permanently freezes a partial populate (e.g. only "go/" seeded
+        // under Users/guill while Desktop/Dev/Documents still exist in the vault).
+        // CreatePlaceholders is best-effort for names that already exist on disk.
         try
         {
-            if (!alreadyPopulated
-                && provider?.Session is not null
+            if (provider?.Session is not null
                 && provider.GetStatus().Registered
                 && TryListImmediatePlaceholders(provider.Session, dirPath, out var children, pattern)
                 && children.Count > 0)

@@ -914,7 +914,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         BackupBytesPerSecond = u.BytesPerSecond;
         BackupCurrentPath = u.CurrentPath ?? "";
         // Counting has no known total - keep bar at 0 (Percent would be 100 if Done==Total).
-        BackupProgressPercent = u.Phase == "scanning" ? 0 : u.Percent;
+        BackupProgressPercent = u.Phase == "scanning" ? 0 : DisplayProgressPercent(u);
         BackupProgressLabel = BuildBackupProgressLabel(u);
         BackupSpeedLabel = u.BytesPerSecond > 0 ? FormatRate(u.BytesPerSecond) : "";
         BackupEtaLabel = u.Phase == "scanning"
@@ -923,6 +923,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         OnPropertyChanged(nameof(IsBackupProgressVisible));
     }
 
+
+    /// <summary>
+    /// UI percent for the progress label. Floor to avoid "{0:0}%" rounding 99.5+ to 100
+    /// while files/bytes still remain; only show 100 when the engine reports completion.
+    /// </summary>
+    public static double DisplayProgressPercent(BackupSyncProgressUpdate u)
+    {
+        if (u.Phase is "done" or "pruning")
+            return 100;
+        var p = u.Percent;
+        if (p >= 100)
+        {
+            var filesRemain = Math.Max(u.FilesScanned, u.FilesTotal) > u.FilesDone;
+            var bytesRemain = u.BytesTotal > 0 && u.BytesDone < u.BytesTotal;
+            if (filesRemain || bytesRemain)
+                return 99;
+        }
+        return Math.Min(99, Math.Floor(p));
+    }
     /// <summary>Pure label builder (unit-tested). Scanning checked before percent format.</summary>
     public static string BuildBackupProgressLabel(BackupSyncProgressUpdate u)
     {
@@ -955,7 +974,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             return string.Format(
                 CultureInfo.InvariantCulture,
                 "{0:0}% - {1}/{2} files - {3}/{4}",
-                u.Percent,
+                DisplayProgressPercent(u),
                 u.FilesDone,
                 totalFiles,
                 FormatBytes(u.BytesDone),
