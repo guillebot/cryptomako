@@ -200,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 enum BrandIcon {
     private static let cached: NSImage? = load()
-    private static let statusBarSize = NSSize(width: 22, height: 22)
+    private static let statusBarSize = NSSize(width: 28, height: 28)
 
     static var image: NSImage? { cached }
 
@@ -238,7 +238,7 @@ enum BrandIcon {
             tinted.draw(in: bounds)
 
             // Small status dot (bottom-trailing) with a contrasting halo.
-            let diameter: CGFloat = 7.5
+            let diameter: CGFloat = 8.5
             let pad: CGFloat = 0.5
             let haloRect = NSRect(
                 x: bounds.maxX - diameter - pad - 1,
@@ -267,7 +267,7 @@ enum BrandIcon {
             let scaled = NSImage(size: size)
             scaled.lockFocus()
             NSGraphicsContext.current?.imageInterpolation = .high
-            let inset: CGFloat = 1
+            let inset: CGFloat = 0.5
             let dest = NSRect(
                 x: inset,
                 y: inset,
