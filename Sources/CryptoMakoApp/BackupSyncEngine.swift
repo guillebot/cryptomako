@@ -27,6 +27,8 @@ final class BackupSyncEngine: ObservableObject {
     }
 
     /// Coarse UI phase for Backup Sync (walk and upload can overlap briefly).
+    /// While the enumerator runs we keep `.walking` (counters still show skipped/queued);
+    /// `.skipping` / `.queuing` remain for label compatibility but are not flipped per file.
     enum Phase: String, Equatable {
         case idle = ""
         case preparing = "Preparing sources…"
@@ -299,6 +301,91 @@ final class BackupSyncEngine: ObservableObject {
         }
     }
 
+    /// Accumulates walk discovery/skip/queue counters without awaiting MainActor.
+    /// A timer task publishes snapshots ~0.75s so SMB walks are not starved by
+    /// SwiftUI (~40 files / 0.2s MainActor hops were ~100× slower than a plain walk).
+    private final class WalkUIPublisher: @unchecked Sendable {
+        private let lock = NSLock()
+        private var discovered = 0
+        private var discoveredBytes: Int64 = 0
+        private var skipped = 0
+        private var skippedBytes: Int64 = 0
+        private var queued = 0
+        private var pendingPath: String?
+        private var lastPathAt = Date.distantPast
+        /// How often currentPath may change (walk hot path).
+        private let pathInterval: TimeInterval = 1.0
+        /// MainActor publish cadence for counters.
+        private let publishInterval: TimeInterval = 0.75
+
+        struct Snapshot: Sendable {
+            let discovered: Int
+            let discoveredBytes: Int64
+            let skipped: Int
+            let skippedBytes: Int64
+            let queued: Int
+            let path: String?
+        }
+
+        func noteDiscovered(bytes: Int64) {
+            lock.lock()
+            discovered += 1
+            discoveredBytes += bytes
+            lock.unlock()
+        }
+
+        func noteSkipped(bytes: Int64) {
+            lock.lock()
+            skipped += 1
+            skippedBytes += bytes
+            lock.unlock()
+        }
+
+        func noteQueued() {
+            lock.lock()
+            queued += 1
+            lock.unlock()
+        }
+
+        /// Throttle path updates to ~1/s so string churn stays off the walk.
+        func notePath(_ path: String) {
+            lock.lock()
+            let now = Date()
+            if now.timeIntervalSince(lastPathAt) >= pathInterval {
+                pendingPath = path
+                lastPathAt = now
+            }
+            lock.unlock()
+        }
+
+        func take() -> Snapshot? {
+            lock.lock()
+            defer { lock.unlock() }
+            guard discovered > 0 || skipped > 0 || queued > 0 || pendingPath != nil else {
+                return nil
+            }
+            let snap = Snapshot(
+                discovered: discovered,
+                discoveredBytes: discoveredBytes,
+                skipped: skipped,
+                skippedBytes: skippedBytes,
+                queued: queued,
+                path: pendingPath
+            )
+            discovered = 0
+            discoveredBytes = 0
+            skipped = 0
+            skippedBytes = 0
+            queued = 0
+            pendingPath = nil
+            return snap
+        }
+
+        var intervalNanoseconds: UInt64 {
+            UInt64(publishInterval * 1_000_000_000)
+        }
+    }
+
     /// Batches MainActor UI hops so 100+ put workers never serialize on
     /// `currentPath` / counters after every object.
     private final class PutUIBatcher: @unchecked Sendable {
@@ -382,12 +469,6 @@ final class BackupSyncEngine: ObservableObject {
         var localFiles = Set<String>()
         var skipped = Count(files: 0, bytes: 0)
         var sinceSave = 0
-        var discoveredSinceUI = 0
-        var skippedSinceUI = 0
-        var skippedBytesSinceUI: Int64 = 0
-        var queuedSinceUI = 0
-        var discoveredBytesSinceUI: Int64 = 0
-        var lastUI = Date()
         let dirCache = DirIdCache(rootDirId: parentDirId, session: session)
 
         func cachedFileNames(_ dirId: String) async throws -> Set<String> {
@@ -397,55 +478,27 @@ final class BackupSyncEngine: ObservableObject {
             return names
         }
 
-        enum WalkUIHint: Sendable {
-            case walking
-            case skipping
-            case queuing
-        }
+        let walkUI = WalkUIPublisher()
 
-        func flushUI(force: Bool, path: String?, hint: WalkUIHint) async {
-            let now = Date()
-            guard force
-                    || discoveredSinceUI + skippedSinceUI + queuedSinceUI >= 40
-                    || now.timeIntervalSince(lastUI) >= 0.2
-            else { return }
-            let d = discoveredSinceUI
-            let db = discoveredBytesSinceUI
-            let s = skippedSinceUI
-            let sb = skippedBytesSinceUI
-            let q = queuedSinceUI
-            let p = path
-            let h = hint
-            discoveredSinceUI = 0
-            discoveredBytesSinceUI = 0
-            skippedSinceUI = 0
-            skippedBytesSinceUI = 0
-            queuedSinceUI = 0
-            lastUI = now
+        func applyWalkSnapshot(_ snap: WalkUIPublisher.Snapshot) async {
             await MainActor.run {
-                if d > 0 {
-                    self.filesDiscovered += d
-                    self.bytesDiscovered += db
+                if snap.discovered > 0 {
+                    self.filesDiscovered += snap.discovered
+                    self.bytesDiscovered += snap.discoveredBytes
                     self.filesTotal = self.filesDiscovered
                     self.bytesTotal = self.bytesDiscovered
                 }
-                if q > 0 { self.filesQueued += q }
-                if s > 0 {
-                    self.filesSkipped += s
+                if snap.queued > 0 { self.filesQueued += snap.queued }
+                if snap.skipped > 0 {
+                    self.filesSkipped += snap.skipped
                     self.filesDone = self.filesSkipped + self.filesUploaded
-                    self.bytesDone += sb
+                    self.bytesDone += snap.skippedBytes
                 }
-                if let p { self.currentPath = p }
-                // Prefer a stable primary label while walking; refine when useful.
+                if let p = snap.path { self.currentPath = p }
+                // Keep a stable Walking label until the enumerator finishes —
+                // flipping skipping/queuing every flush starved SMB walks via MainActor.
                 if !self.walkFinished {
-                    switch h {
-                    case .skipping:
-                        self.phase = .skipping
-                    case .queuing:
-                        self.phase = .queuing
-                    case .walking:
-                        self.phase = .walking
-                    }
+                    self.phase = .walking
                 }
             }
         }
@@ -456,6 +509,18 @@ final class BackupSyncEngine: ObservableObject {
             self.phase = .walking
             self.currentPath = "Walking \(localRoot.path)…"
         }
+
+        // Publish counters on a timer without suspending the walk on MainActor.
+        let walkPublishTask = Task {
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: walkUI.intervalNanoseconds)
+                if Task.isCancelled { break }
+                if let snap = walkUI.take() {
+                    await applyWalkSnapshot(snap)
+                }
+            }
+        }
+        defer { walkPublishTask.cancel() }
 
         // Three priority streams: large / medium / small. Walk yields without
         // awaiting MinIO so the buffers fill from local disk; put drainers
@@ -636,7 +701,8 @@ final class BackupSyncEngine: ObservableObject {
         // Single local walk: disk only. Unchanged → skip. New/changed → enqueue
         // without waiting for MinIO (dir resolve happens in put workers).
         var sinceVolumeCheck = 0
-        var lastHint: WalkUIHint = .walking
+        // Cache root path once — avoid per-file standardizedFileURL (SMB-expensive).
+        let rootPath = localRoot.path
         for case let fileURL as URL in enumerator {
             try Task.checkCancellation()
             sinceVolumeCheck += 1
@@ -662,7 +728,7 @@ final class BackupSyncEngine: ObservableObject {
 
             let name = fileURL.lastPathComponent
             if excludes.shouldSkipFile(named: name) { continue }
-            let rel = relativePath(fileURL, under: localRoot)
+            let rel = relativePath(fileURL, underRootPath: rootPath)
             if excludes.shouldSkipRelativePath(rel) { continue }
 
             localFiles.insert(rel)
@@ -672,17 +738,14 @@ final class BackupSyncEngine: ObservableObject {
             let stateKey = BackupSyncState.key(vaultFolder: vaultFolderName, relativePath: rel)
             let fingerprint = BackupFileFingerprint(size: size, contentModification: mtime)
 
-            discoveredSinceUI += 1
-            discoveredBytesSinceUI += size
+            walkUI.noteDiscovered(bytes: size)
+            walkUI.notePath(rel)
 
             if box.get(stateKey)?.matches(size: size, contentModification: mtime) == true {
                 skipped.files += 1
                 skipped.bytes += size
                 sinceSave += 1
-                skippedSinceUI += 1
-                skippedBytesSinceUI += size
-                lastHint = .skipping
-                await flushUI(force: false, path: rel, hint: .skipping)
+                walkUI.noteSkipped(bytes: size)
                 if sinceSave >= 500 {
                     box.save()
                     sinceSave = 0
@@ -702,10 +765,7 @@ final class BackupSyncEngine: ObservableObject {
                     skipped.files += 1
                     skipped.bytes += size
                     sinceSave += 1
-                    skippedSinceUI += 1
-                    skippedBytesSinceUI += size
-                    lastHint = .skipping
-                    await flushUI(force: false, path: rel, hint: .skipping)
+                    walkUI.noteSkipped(bytes: size)
                     if sinceSave >= 500 {
                         box.save()
                         sinceSave = 0
@@ -730,15 +790,16 @@ final class BackupSyncEngine: ObservableObject {
             } else {
                 smallCont.yield(job)
             }
-            queuedSinceUI += 1
-            lastHint = .queuing
-            await flushUI(force: false, path: rel, hint: .queuing)
+            walkUI.noteQueued()
         }
 
         largeCont.finish()
         mediumCont.finish()
         smallCont.finish()
-        await flushUI(force: true, path: nil, hint: lastHint)
+        walkPublishTask.cancel()
+        if let snap = walkUI.take() {
+            await applyWalkSnapshot(snap)
+        }
         box.save()
         try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
         await MainActor.run {
@@ -873,9 +934,10 @@ final class BackupSyncEngine: ObservableObject {
         }
     }
 
-    nonisolated private func relativePath(_ url: URL, under root: URL) -> String {
-        let rootPath = root.standardizedFileURL.path
-        let path = url.standardizedFileURL.path
+    /// Relative path under `rootPath` without per-file `standardizedFileURL`
+    /// (that call is disproportionately expensive on SMB volumes).
+    nonisolated private func relativePath(_ url: URL, underRootPath rootPath: String) -> String {
+        let path = url.path
         if path.hasPrefix(rootPath) {
             var rel = String(path.dropFirst(rootPath.count))
             if rel.hasPrefix("/") { rel.removeFirst() }
