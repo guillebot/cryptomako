@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using CryptoMako.App;
+using CryptoMako.Vault;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
 using Microsoft.UI.Xaml.Media;
 using Windows.Storage.Pickers;
@@ -112,6 +114,7 @@ public sealed partial class MainWindow : Window
         DisconnectExplorerButton.IsEnabled = explorer;
 
         SyncNowButton.IsEnabled = unlocked;
+        RefreshTransferModeUi();
 
         ExplorerPathLink.IsEnabled = explorer;
     }
@@ -181,6 +184,7 @@ public sealed partial class MainWindow : Window
             WorkersSBox.Text = _vm.Preferences.SyncSmallPutConcurrency.ToString();
             WorkersMBox.Text = _vm.Preferences.SyncMediumPutConcurrency.ToString();
             WorkersLBox.Text = _vm.Preferences.SyncLargePutConcurrency.ToString();
+            ApplyTransferModeRadios(_vm.BackupTransferMode);
         }
         finally
         {
@@ -217,6 +221,10 @@ public sealed partial class MainWindow : Window
         if (int.TryParse(ProxyPortBox.Text, out var port))
             _vm.Preferences.ProxyPort = port;
         _vm.Preferences.ProxyUsername = ProxyUserBox.Text ?? "";
+        if (TransferModeSyncRadio?.IsChecked == true || SettingsTransferModeSyncRadio?.IsChecked == true)
+            _vm.BackupTransferMode = AppPreferences.BackupTransferModeSync;
+        else
+            _vm.BackupTransferMode = AppPreferences.BackupTransferModeBackup;
         _vm.Preferences.LimitSyncUploadBandwidth = LimitUploadCheck.IsChecked == true;
         if (double.TryParse(UploadCapBox.Text, out var mbps))
             _vm.Preferences.SyncUploadCapMbps = mbps;
@@ -408,13 +416,58 @@ public sealed partial class MainWindow : Window
             PushToVm();
             if (_vm.BackupSources.Sources.Count == 0
                 && (string.IsNullOrWhiteSpace(_vm.BackupSource) || !Directory.Exists(_vm.BackupSource)))
-                throw new InvalidOperationException("add a backup source (Backup tab) before Sync");
-            UiNote("Backup Sync starting…");
+                throw new InvalidOperationException("add a backup source (Backup tab) before " + _vm.TransferRunAllLabel);
+            UiNote(_vm.TransferRunAllLabel + " starting (" + _vm.BackupTransferMode + ").");
             await _vm.SyncAsync();
             UiNote(_vm.Status);
             RefreshStatusStrip();
         }
         catch (Exception ex) { VmLog(ex, backupHint: true); }
+    }
+
+    private void OnTransferModeClick(object sender, RoutedEventArgs e)
+    {
+        if (_syncingUi) return;
+        var sync = ReferenceEquals(sender, TransferModeSyncRadio)
+            || ReferenceEquals(sender, SettingsTransferModeSyncRadio)
+            || (sender is RadioButton rb && string.Equals(rb.Content?.ToString(), "Sync", StringComparison.Ordinal));
+        var mode = sync
+            ? AppPreferences.BackupTransferModeSync
+            : AppPreferences.BackupTransferModeBackup;
+        _vm.BackupTransferMode = mode;
+        ApplyTransferModeRadios(mode);
+        try { _vm.SaveSettings(); }
+        catch (Exception ex) { VmLog(ex); }
+        RefreshTransferModeUi();
+    }
+
+    private void ApplyTransferModeRadios(string mode)
+    {
+        var sync = AppPreferences.NormalizeBackupTransferMode(mode) == AppPreferences.BackupTransferModeSync;
+        var prev = _syncingUi;
+        _syncingUi = true;
+        try
+        {
+            if (TransferModeBackupRadio is not null) TransferModeBackupRadio.IsChecked = !sync;
+            if (TransferModeSyncRadio is not null) TransferModeSyncRadio.IsChecked = sync;
+            if (SettingsTransferModeBackupRadio is not null) SettingsTransferModeBackupRadio.IsChecked = !sync;
+            if (SettingsTransferModeSyncRadio is not null) SettingsTransferModeSyncRadio.IsChecked = sync;
+        }
+        finally { _syncingUi = prev; }
+    }
+
+    private void RefreshTransferModeUi()
+    {
+        if (SyncNowButton is not null)
+            SyncNowButton.Content = _vm.TransferRunAllLabel;
+        if (TransferModeHelpText is not null)
+            TransferModeHelpText.Text = _vm.TransferModeHelp;
+        if (SettingsTransferModeHelpText is not null)
+        {
+            SettingsTransferModeHelpText.Text = _vm.IsSyncTransferMode
+                ? "Sync: copy/update, then delete vault ciphertext under Backups/<folder>/ missing from the local source. Never deletes the local source. Prefs key backupTransferMode."
+                : "Backup (default): copy/update source to vault. Never deletes the local source. Does not remove vault files missing from source. Prefs key backupTransferMode.";
+        }
     }
 
     private async void OnBrowseBackupSource(object sender, RoutedEventArgs e)
@@ -453,12 +506,13 @@ public sealed partial class MainWindow : Window
     {
         try
         {
-            if (BackupSourcesList.SelectedItem is not BackupSourceListItem item)
+            var id = SelectedBackupSourceId();
+            if (id is null)
             {
                 UiNote("Select a backup source to remove.");
                 return;
             }
-            _vm.RemoveBackupSource(item.Id);
+            _vm.RemoveBackupSource(id);
             RefreshStatusStrip();
             UiNote("Removed backup source.");
         }
@@ -487,27 +541,65 @@ public sealed partial class MainWindow : Window
 
     private void RefreshBackupSourcesListUi()
     {
-        var selectedId = (BackupSourcesList.SelectedItem as BackupSourceListItem)?.Id;
+        var selectedId = SelectedBackupSourceId();
         BackupSourcesList.Items.Clear();
         foreach (var s in _vm.BackupSources.Sources)
         {
-            var item = new BackupSourceListItem(s.Id, $"{s.VaultFolderName} ← {s.Path}");
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Spacing = 6,
+            };
+            row.Children.Add(new TextBlock
+            {
+                Text = $"{s.VaultFolderName} ← {s.Path}",
+                FontFamily = new FontFamily("Consolas"),
+                VerticalAlignment = VerticalAlignment.Center,
+            });
+            if (s.LastFullSyncAt is { } at)
+            {
+                // Segoe Fluent CheckMark — green tick beside source name (Mac checkmark.circle.fill parity).
+                var check = new FontIcon
+                {
+                    Glyph = "\uE73E",
+                    FontSize = 12,
+                    Foreground = new SolidColorBrush(Color.FromArgb(255, 16, 124, 16)),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(2, 0, 0, 0),
+                };
+                ToolTipService.SetToolTip(check, "Last full sync " + FormatFullSyncAgo(at));
+                AutomationProperties.SetName(check, "Fully synced");
+                row.Children.Add(check);
+            }
+
+            var item = new ListBoxItem
+            {
+                Content = row,
+                Tag = s.Id,
+            };
             BackupSourcesList.Items.Add(item);
             if (selectedId is not null && selectedId == s.Id)
                 BackupSourcesList.SelectedItem = item;
         }
     }
 
-    private sealed class BackupSourceListItem
+    private string? SelectedBackupSourceId() =>
+        BackupSourcesList.SelectedItem is ListBoxItem { Tag: string id } ? id : null;
+
+    /// <summary>Relative “ago” text for the full-sync tick tooltip (Mac RelativeDateTimeFormatter parity).</summary>
+    private static string FormatFullSyncAgo(DateTimeOffset at, DateTimeOffset? now = null)
     {
-        public BackupSourceListItem(string id, string label)
-        {
-            Id = id;
-            Label = label;
-        }
-        public string Id { get; }
-        public string Label { get; }
-        public override string ToString() => Label;
+        var n = now ?? DateTimeOffset.Now;
+        var span = n - at;
+        if (span < TimeSpan.Zero) span = TimeSpan.Zero;
+        if (span.TotalSeconds < 45) return "just now";
+        if (span.TotalMinutes < 1.5) return "1 minute ago";
+        if (span.TotalMinutes < 60) return $"{(int)Math.Round(span.TotalMinutes)} minutes ago";
+        if (span.TotalHours < 1.5) return "1 hour ago";
+        if (span.TotalHours < 24) return $"{(int)Math.Round(span.TotalHours)} hours ago";
+        if (span.TotalDays < 1.5) return "1 day ago";
+        if (span.TotalDays < 30) return $"{(int)Math.Round(span.TotalDays)} days ago";
+        return at.ToLocalTime().ToString("g");
     }
 
     private async void OnConnectExplorer(object sender, RoutedEventArgs e)

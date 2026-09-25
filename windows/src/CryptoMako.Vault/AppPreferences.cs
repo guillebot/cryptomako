@@ -18,6 +18,18 @@ public sealed class AppPreferences
     [JsonPropertyName("proxyUsername")]
     public string ProxyUsername { get; set; } = "";
 
+    /// <summary>
+    /// Platforms-locked key <c>backupTransferMode</c>: <c>backup</c> | <c>sync</c>.
+    /// Default <c>backup</c> (safer: put/update only, no vault deletes).
+    /// <c>sync</c> = same puts plus delete vault ciphertext orphans under that source's
+    /// <c>Backups/&lt;folder&gt;/</c> only. Never deletes the local source.
+    /// </summary>
+    [JsonPropertyName("backupTransferMode")]
+    public string BackupTransferMode { get; set; } = BackupTransferModeBackup;
+
+    public const string BackupTransferModeBackup = "backup";
+    public const string BackupTransferModeSync = "sync";
+
     [JsonPropertyName("limitSyncUploadBandwidth")]
     public bool LimitSyncUploadBandwidth { get; set; }
 
@@ -56,8 +68,26 @@ public sealed class AppPreferences
         }
     }
 
-    public static AppPreferences Deserialize(string json) =>
-        JsonSerializer.Deserialize<AppPreferences>(json, VaultSettings.JsonOptions) ?? new AppPreferences();
+    /// <summary>
+    /// Returns <c>sync</c> only for that exact mode (case-insensitive); anything else
+    /// (empty, unknown) fails closed to <c>backup</c> (no vault deletes).
+    /// </summary>
+    public static string NormalizeBackupTransferMode(string? mode)
+    {
+        if (string.Equals(mode?.Trim(), BackupTransferModeSync, StringComparison.OrdinalIgnoreCase))
+            return BackupTransferModeSync;
+        return BackupTransferModeBackup;
+    }
+
+    public bool IsSyncTransferMode =>
+        NormalizeBackupTransferMode(BackupTransferMode) == BackupTransferModeSync;
+
+    public static AppPreferences Deserialize(string json)
+    {
+        var p = JsonSerializer.Deserialize<AppPreferences>(json, VaultSettings.JsonOptions) ?? new AppPreferences();
+        p.BackupTransferMode = NormalizeBackupTransferMode(p.BackupTransferMode);
+        return p;
+    }
 
     public string Serialize()
     {
@@ -67,6 +97,7 @@ public sealed class AppPreferences
             ProxyHost = ProxyHost,
             ProxyPort = ProxyPort,
             ProxyUsername = ProxyUsername,
+            BackupTransferMode = NormalizeBackupTransferMode(BackupTransferMode),
             LimitSyncUploadBandwidth = LimitSyncUploadBandwidth,
             SyncUploadCapMbps = SyncUploadCapMbps,
             SyncSmallPutConcurrency = SyncSmallPutConcurrency,

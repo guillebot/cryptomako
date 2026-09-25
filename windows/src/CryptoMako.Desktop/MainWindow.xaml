@@ -174,9 +174,19 @@
 
       <PivotItem Header="Backup">
         <StackPanel Spacing="8" Margin="0,8,0,0">
-          <TextBlock Text="Backup Sync" FontSize="18" FontWeight="SemiBold" />
+          <TextBlock Text="Backup" FontSize="18" FontWeight="SemiBold" />
           <TextBlock TextWrapping="Wrap" Opacity="0.8"
-                     Text="Encrypt local folders into Backups/{folder}/. Fail-closed remote puts. Nested/overlapping sources soft-warn on add and hard-fail on Sync." />
+                     Text="Encrypt local folders into Backups/{folder}/. Fail-closed remote puts. Nested/overlapping sources soft-warn on add and hard-fail on run. Never deletes files on the source." />
+          <TextBlock Text="Transfer mode" FontWeight="SemiBold" Margin="0,4,0,0" />
+          <StackPanel Orientation="Horizontal" Spacing="16">
+            <RadioButton x:Name="TransferModeBackupRadio" Content="Backup" GroupName="TransferMode"
+                         Click="OnTransferModeClick"
+                         ToolTipService.ToolTip="Put/update only. Never deletes source or vault extras." />
+            <RadioButton x:Name="TransferModeSyncRadio" Content="Sync" GroupName="TransferMode"
+                         Click="OnTransferModeClick"
+                         ToolTipService.ToolTip="Put/update plus delete vault-only files under that source's Backups folder. Never deletes source." />
+          </StackPanel>
+          <TextBlock x:Name="TransferModeHelpText" TextWrapping="Wrap" Opacity="0.75" FontSize="12" />
           <TextBlock x:Name="BackupRemoteHintText" Foreground="OrangeRed" FontWeight="SemiBold" TextWrapping="Wrap" />
           <TextBlock x:Name="BackupOverlapBannerText" Foreground="DarkOrange" FontWeight="SemiBold"
                      TextWrapping="Wrap" Visibility="Collapsed" />
@@ -197,7 +207,7 @@
             <TextBox x:Name="VaultFolderBox" Width="240" />
             <Button Content="Add source" Click="OnAddBackupSource" />
           </StackPanel>
-          <Button x:Name="SyncNowButton" Content="Sync now" HorizontalAlignment="Left" Click="OnSync" Style="{StaticResource AccentButtonStyle}" IsEnabled="False" ToolTipService.ToolTip="Requires an unlocked vault" />
+          <Button x:Name="SyncNowButton" Content="Backup all" HorizontalAlignment="Left" Click="OnSync" Style="{StaticResource AccentButtonStyle}" IsEnabled="False" ToolTipService.ToolTip="Requires an unlocked vault. Backup = puts only; Sync = puts + vault orphan deletes under Backups/&lt;folder&gt;/. Source is never deleted." />
           <StackPanel x:Name="BackupProgressPanel" Spacing="4" Visibility="Collapsed">
             <TextBlock x:Name="BackupProgressLabelText" FontWeight="SemiBold" />
             <ProgressBar x:Name="BackupProgressBar" Minimum="0" Maximum="100" Height="8" />
@@ -215,6 +225,17 @@
           <TextBlock Text="Preferences" FontSize="18" FontWeight="SemiBold" />
           <TextBlock TextWrapping="Wrap" Opacity="0.8"
                      Text="Platforms-locked keys. Proxy password: CRYPTOMAKO_PROXY_PASSWORD." />
+          <TextBlock Text="Backup / Sync mode" FontWeight="SemiBold" Margin="0,8,0,0" />
+          <StackPanel Orientation="Horizontal" Spacing="16">
+            <RadioButton x:Name="SettingsTransferModeBackupRadio" Content="Backup" GroupName="SettingsTransferMode"
+                         Click="OnTransferModeClick"
+                         ToolTipService.ToolTip="backupTransferMode=backup (default)" />
+            <RadioButton x:Name="SettingsTransferModeSyncRadio" Content="Sync" GroupName="SettingsTransferMode"
+                         Click="OnTransferModeClick"
+                         ToolTipService.ToolTip="backupTransferMode=sync" />
+          </StackPanel>
+          <TextBlock x:Name="SettingsTransferModeHelpText" TextWrapping="Wrap" Opacity="0.75" FontSize="12"
+                     Text="Backup (default): copy/update only. Sync: also delete vault-only ciphertext under Backups/&lt;folder&gt;/. Never deletes the local source. Key: backupTransferMode." />
           <TextBlock Text="Proxy" FontWeight="SemiBold" Margin="0,8,0,0" />
           <StackPanel Orientation="Horizontal" Spacing="16">
             <RadioButton x:Name="ProxyOffRadio" Content="Off" GroupName="ProxyMode" Click="OnProxyModeClick"

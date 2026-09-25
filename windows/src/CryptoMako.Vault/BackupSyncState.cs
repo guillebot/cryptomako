@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text.Json;
 
 namespace CryptoMako.Vault;
@@ -45,5 +46,22 @@ public sealed class BackupSyncState
         {
             // Best-effort; never fail a sync because the index could not persist.
         }
+    }
+
+    /// <summary>
+    /// Drop fingerprint keys under a relative path after Sync-mode vault orphan delete.
+    /// </summary>
+    public void RemoveUnder(string vaultFolder, string relativePath, bool isDirectory)
+    {
+        var baseKey = Key(vaultFolder, relativePath);
+        if (!isDirectory)
+        {
+            Files.Remove(baseKey);
+            return;
+        }
+        var prefix = baseKey + "/";
+        var victims = Files.Keys.Where(k => k == baseKey || k.StartsWith(prefix, StringComparison.Ordinal)).ToList();
+        foreach (var k in victims)
+            Files.Remove(k);
     }
 }

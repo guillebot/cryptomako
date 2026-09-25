@@ -51,6 +51,7 @@ public class SettingsTests
             ProxyHost = "proxy.example",
             ProxyPort = 3128,
             ProxyUsername = "u",
+            BackupTransferMode = AppPreferences.BackupTransferModeSync,
             LimitSyncUploadBandwidth = true,
             SyncUploadCapMbps = 0.5, // below min
             SyncSmallPutConcurrency = 999,
@@ -58,11 +59,31 @@ public class SettingsTests
             SyncLargePutConcurrency = 100,
         };
         var json = p.Serialize();
+        Assert.Contains("\"backupTransferMode\"", json);
+        Assert.Contains("\"sync\"", json);
         var back = AppPreferences.Deserialize(json);
         Assert.Equal(1, back.SyncUploadCapMbps);
         Assert.Equal(256, back.SyncSmallPutConcurrency);
         Assert.Equal(1, back.SyncMediumPutConcurrency);
         Assert.Equal(16, back.SyncLargePutConcurrency);
+        Assert.Equal(AppPreferences.BackupTransferModeSync, back.BackupTransferMode);
+        Assert.True(back.IsSyncTransferMode);
+    }
+
+    [Fact]
+    public void AppPreferences_backupTransferMode_defaults_and_normalizes()
+    {
+        Assert.Equal(AppPreferences.BackupTransferModeBackup, new AppPreferences().BackupTransferMode);
+        Assert.False(new AppPreferences().IsSyncTransferMode);
+        Assert.Equal(AppPreferences.BackupTransferModeBackup, AppPreferences.NormalizeBackupTransferMode(""));
+        Assert.Equal(AppPreferences.BackupTransferModeBackup, AppPreferences.NormalizeBackupTransferMode("weird"));
+        Assert.Equal(AppPreferences.BackupTransferModeSync, AppPreferences.NormalizeBackupTransferMode("SYNC"));
+        var missing = AppPreferences.Deserialize("{\"proxyMode\":\"direct\"}");
+        Assert.Equal(AppPreferences.BackupTransferModeBackup, missing.BackupTransferMode);
+        var invalid = AppPreferences.Deserialize("{\"backupTransferMode\":\"nope\"}");
+        Assert.Equal(AppPreferences.BackupTransferModeBackup, invalid.BackupTransferMode);
+        var sync = AppPreferences.Deserialize("{\"backupTransferMode\":\"sync\"}");
+        Assert.True(sync.IsSyncTransferMode);
     }
 
     [Fact]

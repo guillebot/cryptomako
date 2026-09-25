@@ -16,6 +16,8 @@ public sealed class BackupSyncProgressUpdate
     public long BytesScanned { get; init; }
     public double BytesPerSecond { get; init; }
     public string? CurrentPath { get; init; }
+    /// <summary>Vault ciphertext items removed in Sync-mode orphan prune. Always 0 in Backup mode.</summary>
+    public int FilesDeleted { get; init; }
 
     /// <summary>0-100 based on bytes when known, else files. 100 when all skipped.</summary>
     public double Percent

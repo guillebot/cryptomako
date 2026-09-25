@@ -1,4 +1,4 @@
-﻿using CryptoMako.App;
+using CryptoMako.App;
 using CryptoMako.Vault;
 using Xunit;
 
@@ -114,5 +114,28 @@ public class BackupProgressFormatTests
         Assert.StartsWith("50%", label);
         Assert.Contains("1/4 files", label);
     }
-}
 
+    [Fact]
+    public void DisplayProgressPercent_floors_below_100_when_files_remain()
+    {
+        var u = new BackupSyncProgressUpdate
+        {
+            Phase = "uploading",
+            FilesDone = 30000,
+            FilesTotal = 35000,
+            FilesScanned = 35000,
+            BytesDone = 9_910_000_000,
+            BytesTotal = 9_940_000_000,
+        };
+        // Raw Percent ~99.7 would round to 100% with "{0:0}%"; display must stay <=99.
+        Assert.True(u.Percent >= 99.5);
+        Assert.Equal(99, MainViewModel.DisplayProgressPercent(u));
+    }
+
+    [Fact]
+    public void DisplayProgressPercent_100_when_done_phase()
+    {
+        var u = new BackupSyncProgressUpdate { Phase = "done", FilesDone = 1, FilesTotal = 1, BytesDone = 1, BytesTotal = 1 };
+        Assert.Equal(100, MainViewModel.DisplayProgressPercent(u));
+    }
+}
