@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/guillebot/cryptomako/linux/internal/config"
 	"github.com/guillebot/cryptomako/linux/internal/vault"
@@ -60,7 +61,11 @@ parity). No new shared settings keys.
 
 Ctrl-C / SIGTERM cancels in-flight sync (stops scheduling new puts; workers
 finish or exit; process returns a cancelled error). Session is closed on exit;
-OS secret store is untouched.`,
+OS secret store is untouched.
+
+After each backup-sources.json source completes successfully (including 0 puts),
+lastFullSyncAt is stamped on that source id (macOS #44 parity). Cancel/fail does
+not stamp; earlier sources in a multi-source run keep theirs if a later fails.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		targets, err := config.ResolveSyncTargets(flagSyncSource, flagSyncDest, flagSyncSources)
 		if err != nil {
@@ -127,6 +132,14 @@ OS secret store is untouched.`,
 			}
 			total += n
 			totalDeleted += deleted
+			if t.SourceID != "" {
+				store := config.LoadBackupSources(flagSyncSources)
+				if store.MarkFullySynced(t.SourceID, time.Now().UTC()) {
+					if saveErr := store.Save(flagSyncSources); saveErr != nil {
+						return fmt.Errorf("stamp lastFullSyncAt for %s: %w", t.SourceID, saveErr)
+					}
+				}
+			}
 		}
 		if len(targets) > 1 {
 			verb := "backed up"
