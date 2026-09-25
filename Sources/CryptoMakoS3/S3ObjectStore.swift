@@ -1,5 +1,7 @@
 import CryptoKit
 import Foundation
+import Darwin
+import OSLog
 
 public struct S3Settings: Sendable {
     public var endpoint: URL
@@ -154,16 +156,109 @@ public final class S3ObjectStore: ObjectStore {
     }
 
 
+    private static let putLog = Logger(subsystem: "net.gschimmel.cryptomako", category: "s3-put")
+    /// Attempts for a single PUT (1 initial + retries). Transient WireGuard/MinIO drops
+    /// (-1005 mid-body) are common; fail-closed only after these are exhausted.
+    private static let maxPutAttempts = 5
+
+    /// URLError / POSIX codes that often clear after a fresh TCP connection.
+    private func isTransientTransportError(_ error: Error) -> Bool {
+        var current: Error? = error
+        var depth = 0
+        while let err = current, depth < 6 {
+            let ns = err as NSError
+            if ns.domain == NSURLErrorDomain {
+                switch ns.code {
+                case NSURLErrorNetworkConnectionLost, // -1005
+                     NSURLErrorTimedOut, // -1001
+                     NSURLErrorNotConnectedToInternet: // -1009
+                    return true
+                default:
+                    break
+                }
+            }
+            if ns.domain == NSPOSIXErrorDomain {
+                // ECONNABORTED=53, ECONNRESET=54 on Darwin
+                if ns.code == Int(ECONNABORTED) || ns.code == Int(ECONNRESET) {
+                    return true
+                }
+            }
+            current = ns.userInfo[NSUnderlyingErrorKey] as? Error
+            depth += 1
+        }
+        return false
+    }
+
+    private func putBackoffNanoseconds(attempt: Int) -> UInt64 {
+        // attempt 1 failed → wait ~0.4s, then ~0.8s, ~1.6s, ~3.2s (+ jitter)
+        let baseMs = 400.0 * pow(2.0, Double(max(0, attempt - 1)))
+        let capped = min(baseMs, 5_000.0)
+        let jitter = Double.random(in: 0..<0.25) * capped
+        return UInt64((capped + jitter) * 1_000_000.0)
+    }
+
+    /// Retries only raw URLSession transport failures. HTTP 403/4xx/5xx from `check`
+    /// are not retried (auth/config stay fail-closed).
+    private func withTransientPutRetry(
+        key: String,
+        operation: () async throws -> Void
+    ) async throws {
+        var attempt = 0
+        var lastError: Error?
+        while attempt < Self.maxPutAttempts {
+            attempt += 1
+            do {
+                try await operation()
+                if attempt > 1 {
+                    Self.putLog.info("S3 PUT succeeded after retry key=\(key, privacy: .public) attempts=\(attempt)")
+                }
+                return
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let store as ObjectStoreError {
+                // HTTP status mapping from `check` — do not retry or re-wrap.
+                throw store
+            } catch {
+                lastError = error
+                let ns = error as NSError
+                if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
+                    throw CancellationError()
+                }
+                let transient = isTransientTransportError(error)
+                let willRetry = transient && attempt < Self.maxPutAttempts
+                if willRetry {
+                    let delay = putBackoffNanoseconds(attempt: attempt)
+                    Self.putLog.warning(
+                        "S3 PUT transient failure key=\(key, privacy: .public) attempt=\(attempt)/\(Self.maxPutAttempts) error=\(self.describe(error), privacy: .public) backoffMs=\(delay / 1_000_000)"
+                    )
+                    try await Task.sleep(nanoseconds: delay)
+                    continue
+                }
+                throw ObjectStoreError.transport(describe(error))
+            }
+        }
+        throw ObjectStoreError.transport(describe(lastError ?? ObjectStoreError.transport("PUT retry exhausted")))
+    }
+
     public func putObject(key: String, data: Data) async throws {
         // Hash the body so MinIO/S3 accept the SigV4 signature. Success means
         // the remote object exists — never treat a local CloudStorage write as done.
         let digest = SHA256.hash(data: data)
         let payloadHash = digest.map { String(format: "%02x", $0) }.joined()
-        var request = try signedRequest(method: "PUT", key: key, query: [], payloadHash: payloadHash)
-        request.httpBody = data
-        request.setValue(String(data.count), forHTTPHeaderField: "Content-Length")
-        let (body, response) = try await send(request, key: key)
-        try check(response, key: key, body: body)
+        try await withTransientPutRetry(key: key) {
+            var request = try self.signedRequest(method: "PUT", key: key, query: [], payloadHash: payloadHash)
+            request.httpBody = data
+            request.setValue(String(data.count), forHTTPHeaderField: "Content-Length")
+            // Fresh session pick per attempt (pooled URLSessions → new TCP flow).
+            let (body, response): (Data, URLResponse)
+            do {
+                (body, response) = try await self.nextSession().data(for: request)
+            } catch {
+                // Re-throw raw URLError so retry helper can classify transient codes.
+                throw error
+            }
+            try self.check(response, key: key, body: body)
+        }
         // PUT HTTP 2xx is durable success. The follow-up HEAD doubled RTT per object
         // and starved Backup Sync on latency-bound uplinks (small-file death << 1 Mbps).
     }
@@ -173,20 +268,22 @@ public final class S3ObjectStore: ObjectStore {
     /// was a primary Backup Sync throughput / memory bottleneck.
     public func putObject(key: String, from fileURL: URL) async throws {
         let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-        var request = try signedRequest(
-            method: "PUT",
-            key: key,
-            query: [],
-            payloadHash: "UNSIGNED-PAYLOAD"
-        )
-        request.setValue(String(size), forHTTPHeaderField: "Content-Length")
-        let response: URLResponse
-        do {
-            (_, response) = try await nextSession().upload(for: request, fromFile: fileURL)
-        } catch {
-            throw ObjectStoreError.transport(describe(error))
+        try await withTransientPutRetry(key: key) {
+            var request = try self.signedRequest(
+                method: "PUT",
+                key: key,
+                query: [],
+                payloadHash: "UNSIGNED-PAYLOAD"
+            )
+            request.setValue(String(size), forHTTPHeaderField: "Content-Length")
+            let response: URLResponse
+            do {
+                (_, response) = try await self.nextSession().upload(for: request, fromFile: fileURL)
+            } catch {
+                throw error
+            }
+            try self.check(response, key: key, body: nil)
         }
-        try check(response, key: key, body: nil)
     }
 
     public func deleteObject(key: String) async throws {

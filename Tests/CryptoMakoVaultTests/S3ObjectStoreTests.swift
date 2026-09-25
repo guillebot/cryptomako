@@ -132,4 +132,46 @@ final class S3ObjectStoreTests: XCTestCase {
         XCTAssertEqual(meta.size, 42)
         XCTAssertEqual(meta.eTag, "abc")
     }
+    func testPutObjectRetriesTransientNetworkConnectionLost() async throws {
+        var calls = 0
+        MockURLProtocol.handler = { request in
+            calls += 1
+            XCTAssertEqual(request.httpMethod, "PUT")
+            if calls < 3 {
+                throw URLError(.networkConnectionLost)
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data())
+        }
+        try await store.putObject(key: "family/x.c9r", data: Data("hi".utf8))
+        XCTAssertEqual(calls, 3)
+    }
+
+    func testPutObjectDoesNotRetryHTTP403() async {
+        var calls = 0
+        MockURLProtocol.handler = { request in
+            calls += 1
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 403,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            return (response, Data("AccessDenied".utf8))
+        }
+        do {
+            try await store.putObject(key: "family/x.c9r", data: Data("hi".utf8))
+            XCTFail("expected transport error")
+        } catch ObjectStoreError.transport {
+            XCTAssertEqual(calls, 1)
+        } catch {
+            XCTFail("unexpected error \(error)")
+        }
+    }
+
 }
