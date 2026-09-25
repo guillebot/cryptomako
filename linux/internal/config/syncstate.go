@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"strings"
 	"path/filepath"
 	"time"
 )
@@ -119,6 +120,34 @@ func (s *BackupSyncState) Set(key string, fp BackupFileFingerprint) {
 		s.Files = map[string]BackupFileFingerprint{}
 	}
 	s.Files[key] = fp
+}
+
+
+// Remove deletes one fingerprint key (after vault orphan delete).
+func (s *BackupSyncState) Remove(key string) {
+	if s.Files == nil {
+		return
+	}
+	delete(s.Files, key)
+}
+
+// RemoveUnder clears fingerprint keys for a relative path under vaultFolder.
+// For directories, also removes all nested keys (prefix match).
+func (s *BackupSyncState) RemoveUnder(vaultFolder, relativePath string, isDirectory bool) {
+	if s.Files == nil {
+		return
+	}
+	base := BackupSyncStateKey(vaultFolder, relativePath)
+	if !isDirectory {
+		delete(s.Files, base)
+		return
+	}
+	prefix := base + "/"
+	for k := range s.Files {
+		if k == base || strings.HasPrefix(k, prefix) {
+			delete(s.Files, k)
+		}
+	}
 }
 
 // Save persists the index atomically. Best-effort: never returns an error that

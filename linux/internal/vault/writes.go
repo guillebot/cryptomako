@@ -153,10 +153,16 @@ type pendingUpload struct {
 // vaultFolderName empty → basename of localRoot (macOS BackupSource default);
 // multi-source sync passes BackupSource.vaultFolderName explicitly.
 //
+// Transfer mode (prefs.backupTransferMode / --mode):
+//   - backup (default): put/update only; never deletes local source or vault extras.
+//   - sync: same puts, then delete vault ciphertext orphans under destPrefix only
+//     (macOS Backups/<folder>/). Refuses destPrefix "/". Never deletes local source.
+//     Remote deletes fail closed.
+//
 // ctx cancellation (e.g. SIGINT/SIGTERM via signal.NotifyContext) stops scheduling
 // new puts; in-flight workers exit after their current file. Fail-closed remote
 // writes are unchanged; OS secret store is untouched.
-func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences, statePath, vaultFolderName string) (files int, err error) {
+func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences, statePath, vaultFolderName string) (uploaded, deleted int, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -169,11 +175,12 @@ func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix s
 		p = *prefs
 	}
 	p.ClampSyncWorkers()
+	p.BackupTransferMode = config.NormalizeBackupTransferMode(p.BackupTransferMode)
 
 	destPrefix = normalizePath(destPrefix)
 	localRoot, err = filepath.Abs(localRoot)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	vaultFolder := strings.TrimSpace(vaultFolderName)
 	if vaultFolder == "" {
@@ -188,8 +195,9 @@ func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix s
 	}()
 
 	var (
-		jobs      []pendingUpload
-		sinceSave int
+		jobs       []pendingUpload
+		sinceSave  int
+		localFiles = map[string]struct{}{}
 	)
 	err = filepath.WalkDir(localRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
@@ -225,6 +233,8 @@ func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix s
 		if d.IsDir() {
 			return s.EnsureDir(clearPath)
 		}
+		// Eligible local file (post-exclude). Used by Sync-mode orphan prune.
+		localFiles[rel] = struct{}{}
 		info, err := d.Info()
 		if err != nil {
 			return err
@@ -250,134 +260,231 @@ func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix s
 		return nil
 	})
 	if err != nil {
-		return 0, err
-	}
-	if len(jobs) == 0 {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		return 0, nil
+		return 0, 0, err
 	}
 
-	// Ensure destination + unique parents sequentially so parallel PutFile
-	// workers do not race createDirectory on the same cleartext folder.
-	if destPrefix != "/" {
-		if err := s.EnsureDir(destPrefix); err != nil {
-			return 0, err
+	if len(jobs) > 0 {
+		// Ensure destination + unique parents sequentially so parallel PutFile
+		// workers do not race createDirectory on the same cleartext folder.
+		if destPrefix != "/" {
+			if err := s.EnsureDir(destPrefix); err != nil {
+				return 0, 0, err
+			}
 		}
-	}
-	seenParents := map[string]struct{}{}
-	for _, job := range jobs {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		parent := path.Dir(job.clearPath)
-		if parent == "/" || parent == "." || parent == "" {
-			continue
-		}
-		if _, ok := seenParents[parent]; ok {
-			continue
-		}
-		seenParents[parent] = struct{}{}
-		if err := s.EnsureDir(parent); err != nil {
-			return 0, err
-		}
-	}
-
-	limiter := config.UploadBandwidthLimiterFromPreferences(p)
-	smallCh := make(chan pendingUpload, len(jobs))
-	mediumCh := make(chan pendingUpload, len(jobs))
-	largeCh := make(chan pendingUpload, len(jobs))
-
-	ctx, cancel := context.WithCancel(ctx)
-	defer cancel()
-
-	var (
-		mu       sync.Mutex
-		uploaded int
-		firstErr error
-	)
-	setErr := func(e error) {
-		if e == nil {
-			return
-		}
-		mu.Lock()
-		if firstErr == nil {
-			firstErr = e
-			cancel()
-		}
-		mu.Unlock()
-	}
-
-	worker := func(ch <-chan pendingUpload) {
-		for job := range ch {
-			if ctx.Err() != nil {
+		seenParents := map[string]struct{}{}
+		for _, job := range jobs {
+			if err := ctx.Err(); err != nil {
+				return uploaded, 0, err
+			}
+			parent := path.Dir(job.clearPath)
+			if parent == "/" || parent == "." || parent == "" {
 				continue
 			}
-			if limiter != nil {
-				limiter.Acquire(job.size)
-			}
-			data, err := os.ReadFile(job.absPath)
-			if err != nil {
-				setErr(err)
+			if _, ok := seenParents[parent]; ok {
 				continue
 			}
-			if err := s.PutFile(job.clearPath, data); err != nil {
-				setErr(err)
-				continue
+			seenParents[parent] = struct{}{}
+			if err := s.EnsureDir(parent); err != nil {
+				return 0, 0, err
 			}
-			key := config.BackupSyncStateKey(vaultFolder, job.relPath)
-			fp := config.NewBackupFileFingerprint(job.size, job.mtime)
-			stateMu.Lock()
-			state.Set(key, fp)
-			stateMu.Unlock()
+		}
+
+		limiter := config.UploadBandwidthLimiterFromPreferences(p)
+		smallCh := make(chan pendingUpload, len(jobs))
+		mediumCh := make(chan pendingUpload, len(jobs))
+		largeCh := make(chan pendingUpload, len(jobs))
+
+		ctx, cancel := context.WithCancel(ctx)
+		defer cancel()
+
+		var (
+			mu       sync.Mutex
+			firstErr error
+		)
+		setErr := func(e error) {
+			if e == nil {
+				return
+			}
 			mu.Lock()
-			uploaded++
+			if firstErr == nil {
+				firstErr = e
+				cancel()
+			}
 			mu.Unlock()
 		}
+
+		worker := func(ch <-chan pendingUpload) {
+			for job := range ch {
+				if ctx.Err() != nil {
+					continue
+				}
+				if limiter != nil {
+					limiter.Acquire(job.size)
+				}
+				data, err := os.ReadFile(job.absPath)
+				if err != nil {
+					setErr(err)
+					continue
+				}
+				if err := s.PutFile(job.clearPath, data); err != nil {
+					setErr(err)
+					continue
+				}
+				key := config.BackupSyncStateKey(vaultFolder, job.relPath)
+				fp := config.NewBackupFileFingerprint(job.size, job.mtime)
+				stateMu.Lock()
+				state.Set(key, fp)
+				stateMu.Unlock()
+				mu.Lock()
+				uploaded++
+				mu.Unlock()
+			}
+		}
+
+		var wg sync.WaitGroup
+		start := func(n int, ch <-chan pendingUpload) {
+			for i := 0; i < n; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					worker(ch)
+				}()
+			}
+		}
+		start(p.ClampedSmallPutConcurrency(), smallCh)
+		start(p.ClampedMediumPutConcurrency(), mediumCh)
+		start(p.ClampedLargePutConcurrency(), largeCh)
+
+		for _, job := range jobs {
+			if ctx.Err() != nil {
+				break
+			}
+			switch {
+			case job.size >= LargeFileBytes:
+				largeCh <- job
+			case job.size >= MediumFileBytes:
+				mediumCh <- job
+			default:
+				smallCh <- job
+			}
+		}
+		close(smallCh)
+		close(mediumCh)
+		close(largeCh)
+		wg.Wait()
+
+		mu.Lock()
+		ferr := firstErr
+		mu.Unlock()
+		if ferr != nil {
+			return uploaded, 0, ferr
+		}
+		if err := ctx.Err(); err != nil {
+			return uploaded, 0, err
+		}
+	} else if err := ctx.Err(); err != nil {
+		return 0, 0, err
 	}
 
-	var wg sync.WaitGroup
-	start := func(n int, ch <-chan pendingUpload) {
-		for i := 0; i < n; i++ {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				worker(ch)
-			}()
+	// Sync mode: delete vault ciphertext orphans under this source's dest folder
+	// only (macOS Backups/<folder>/). Never deletes the local source. Fail-closed.
+	if p.IsSyncTransferMode() {
+		n, err := s.deleteVaultOrphans(ctx, destPrefix, localFiles, vaultFolder, &state, &stateMu)
+		if err != nil {
+			return uploaded, n, err
 		}
+		deleted = n
 	}
-	start(p.ClampedSmallPutConcurrency(), smallCh)
-	start(p.ClampedMediumPutConcurrency(), mediumCh)
-	start(p.ClampedLargePutConcurrency(), largeCh)
+	return uploaded, deleted, nil
+}
 
-	for _, job := range jobs {
-		if ctx.Err() != nil {
-			break
-		}
-		switch {
-		case job.size >= LargeFileBytes:
-			largeCh <- job
-		case job.size >= MediumFileBytes:
-			mediumCh <- job
-		default:
-			smallCh <- job
-		}
-	}
-	close(smallCh)
-	close(mediumCh)
-	close(largeCh)
-	wg.Wait()
-
-	mu.Lock()
-	defer mu.Unlock()
-	if firstErr != nil {
-		return uploaded, firstErr
+// deleteVaultOrphans removes remote ciphertext under destPrefix that has no
+// matching eligible local file. Scope is that backup's vault folder only —
+// refuses vault root "/" (macOS scopes to Backups/<folder>/). Never touches
+// the local source tree. Fail-closed on ObjectStore deletes.
+func (s *Session) deleteVaultOrphans(ctx context.Context, destPrefix string, localFiles map[string]struct{}, vaultFolder string, state *config.BackupSyncState, stateMu *sync.Mutex) (int, error) {
+	destPrefix = normalizePath(destPrefix)
+	if destPrefix == "/" {
+		return 0, fmt.Errorf("vault: sync mode orphan prune refuses vault root; use --dest /Backups/<folder>/ (macOS Backup Sync scope)")
 	}
 	if err := ctx.Err(); err != nil {
-		return uploaded, err
+		return 0, err
 	}
-	return uploaded, nil
+
+	hasLocalUnder := func(relDir string) bool {
+		if relDir == "" {
+			return true
+		}
+		if _, ok := localFiles[relDir]; ok {
+			return true
+		}
+		prefix := relDir + "/"
+		for p := range localFiles {
+			if strings.HasPrefix(p, prefix) {
+				return true
+			}
+		}
+		return false
+	}
+
+	removeState := func(rel string, isDirectory bool) {
+		stateMu.Lock()
+		state.RemoveUnder(vaultFolder, rel, isDirectory)
+		stateMu.Unlock()
+	}
+
+	var prune func(dirClear, relPrefix string) (int, error)
+	prune = func(dirClear, relPrefix string) (int, error) {
+		if err := ctx.Err(); err != nil {
+			return 0, err
+		}
+		children, err := s.List(dirClear, false)
+		if err != nil {
+			// Missing dest folder → nothing to prune (first sync).
+			if _, rerr := s.resolve(dirClear); rerr != nil {
+				return 0, nil
+			}
+			return 0, err
+		}
+		deleted := 0
+		for _, child := range children {
+			if err := ctx.Err(); err != nil {
+				return deleted, err
+			}
+			base := path.Base(child.Name)
+			childRel := base
+			if relPrefix != "" {
+				childRel = relPrefix + "/" + base
+			}
+			childClear := child.Name
+			if child.IsDir {
+				if !hasLocalUnder(childRel) {
+					if err := s.DeletePath(childClear); err != nil {
+						return deleted, err
+					}
+					removeState(childRel, true)
+					deleted++
+				} else {
+					n, err := prune(childClear, childRel)
+					deleted += n
+					if err != nil {
+						return deleted, err
+					}
+				}
+			} else {
+				if _, ok := localFiles[childRel]; !ok {
+					if err := s.DeleteFile(childClear); err != nil {
+						return deleted, err
+					}
+					removeState(childRel, false)
+					deleted++
+				}
+			}
+		}
+		return deleted, nil
+	}
+
+	return prune(destPrefix, "")
 }
 
 // DeleteFile removes a cleartext file's ciphertext from the store. Fail-closed.

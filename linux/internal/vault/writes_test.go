@@ -42,7 +42,7 @@ func TestSyncRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
-	n, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
+	n, _, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestSyncRespectsExcludes(t *testing.T) {
 
 	ex := config.DefaultBackupSyncExcludes()
 	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
-	n, err := s.SyncCleartextTree(context.Background(), clearDir, "/", &ex, nil, statePath, "")
+	n, _, err := s.SyncCleartextTree(context.Background(), clearDir, "/", &ex, nil, statePath, "")
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -281,7 +281,7 @@ func TestSyncHonorsPreferencesConcurrencyAndBandwidth(t *testing.T) {
 		t.Fatal("expected bandwidth limiter when limit enabled")
 	}
 	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
-	n, err := s.SyncCleartextTree(context.Background(), clearDir, "/prefs-sync", nil, &prefs, statePath, "")
+	n, _, err := s.SyncCleartextTree(context.Background(), clearDir, "/prefs-sync", nil, &prefs, statePath, "")
 	if err != nil {
 		t.Fatalf("sync: %v", err)
 	}
@@ -306,7 +306,7 @@ func TestSyncSkipsUnchangedFingerprint(t *testing.T) {
 	}
 	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
 
-	n1, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
+	n1, _, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
 	if err != nil {
 		t.Fatalf("first sync: %v", err)
 	}
@@ -320,7 +320,7 @@ func TestSyncSkipsUnchangedFingerprint(t *testing.T) {
 		t.Fatalf("missing fingerprint for %s in %#v", key, st.Files)
 	}
 
-	n2, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
+	n2, _, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
 	if err != nil {
 		t.Fatalf("second sync: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestSyncRewritesWhenSizeOrMtimeChanges(t *testing.T) {
 	}
 	statePath := filepath.Join(t.TempDir(), "backup-sync-state.json")
 
-	if n, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
+	if n, _, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
 		t.Fatalf("first: n=%d err=%v", n, err)
 	}
 
@@ -353,7 +353,7 @@ func TestSyncRewritesWhenSizeOrMtimeChanges(t *testing.T) {
 	if err := os.WriteFile(note, []byte("v2-longer\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
+	if n, _, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
 		t.Fatalf("size change: n=%d err=%v", n, err)
 	}
 	r, err := s.Open("/note.txt")
@@ -375,7 +375,7 @@ func TestSyncRewritesWhenSizeOrMtimeChanges(t *testing.T) {
 	if err := os.Chtimes(note, newMtime, newMtime); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
+	if n, _, err := s.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
 		t.Fatalf("mtime change: n=%d err=%v", n, err)
 	}
 }
@@ -409,7 +409,7 @@ func TestSyncPutFailureDoesNotUpdateFingerprint(t *testing.T) {
 	key := config.BackupSyncStateKey(folder, "note.txt")
 
 	store.failPut = true
-	n, err := s2.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
+	n, _, err := s2.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, "")
 	if err == nil {
 		t.Fatal("expected put failure")
 	}
@@ -422,7 +422,7 @@ func TestSyncPutFailureDoesNotUpdateFingerprint(t *testing.T) {
 	}
 
 	store.failPut = false
-	if n, err := s2.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
+	if n, _, err := s2.SyncCleartextTree(context.Background(), clearDir, "/", nil, nil, statePath, ""); err != nil || n != 1 {
 		t.Fatalf("retry: n=%d err=%v", n, err)
 	}
 	st = config.LoadBackupSyncState(statePath)
@@ -457,7 +457,7 @@ func TestSyncMultiSourceVaultFolderRouting(t *testing.T) {
 	}
 	total := 0
 	for _, job := range jobs {
-		n, err := s.SyncCleartextTree(context.Background(), job.SourcePath, job.DestPrefix, nil, nil, statePath, job.VaultFolderName)
+		n, _, err := s.SyncCleartextTree(context.Background(), job.SourcePath, job.DestPrefix, nil, nil, statePath, job.VaultFolderName)
 		if err != nil {
 			t.Fatalf("%s: %v", job.VaultFolderName, err)
 		}
@@ -502,7 +502,7 @@ func TestSyncMultiSourceVaultFolderRouting(t *testing.T) {
 
 	// Second pass should skip unchanged for both vault folders.
 	for _, job := range jobs {
-		n, err := s.SyncCleartextTree(context.Background(), job.SourcePath, job.DestPrefix, nil, nil, statePath, job.VaultFolderName)
+		n, _, err := s.SyncCleartextTree(context.Background(), job.SourcePath, job.DestPrefix, nil, nil, statePath, job.VaultFolderName)
 		if err != nil || n != 0 {
 			t.Fatalf("skip %s: n=%d err=%v", job.VaultFolderName, n, err)
 		}
@@ -529,8 +529,123 @@ func TestSyncCleartextTreeCancelledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	n, err := s.SyncCleartextTree(ctx, clearDir, "/", nil, nil, statePath, "")
+	n, _, err := s.SyncCleartextTree(ctx, clearDir, "/", nil, nil, statePath, "")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("want context.Canceled, got n=%d err=%v", n, err)
+	}
+}
+
+
+func TestBackupModeKeepsVaultOrphans(t *testing.T) {
+	root := t.TempDir()
+	pass := "orphan-backup-pass"
+	s, err := CreateFormat8(root, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	dest := "/Backups/Docs"
+	if err := s.PutFile(dest+"/keep.txt", []byte("keep")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutFile(dest+"/orphan.txt", []byte("orphan")); err != nil {
+		t.Fatal(err)
+	}
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	prefs := config.DefaultAppPreferences() // backup mode
+	uploaded, deleted, err := s.SyncCleartextTree(context.Background(), src, dest, nil, &prefs, statePath, "Docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 0 {
+		t.Fatalf("backup mode must not delete vault orphans, deleted=%d uploaded=%d", deleted, uploaded)
+	}
+	if _, err := s.Open(dest + "/orphan.txt"); err != nil {
+		t.Fatalf("orphan should remain in backup mode: %v", err)
+	}
+	// Local source untouched
+	if _, err := os.Stat(filepath.Join(src, "keep.txt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncModeDeletesVaultOrphansUnderDestOnly(t *testing.T) {
+	root := t.TempDir()
+	pass := "orphan-sync-pass"
+	s, err := CreateFormat8(root, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	dest := "/Backups/Photos"
+	other := "/Backups/Other"
+	if err := s.PutFile(dest+"/keep.txt", []byte("keep")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutFile(dest+"/gone.txt", []byte("gone")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutFile(other+"/safe.txt", []byte("safe")); err != nil {
+		t.Fatal(err)
+	}
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	prefs := config.DefaultAppPreferences()
+	prefs.BackupTransferMode = config.BackupTransferModeSync
+	uploaded, deleted, err := s.SyncCleartextTree(context.Background(), src, dest, nil, &prefs, statePath, "Photos")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted < 1 {
+		t.Fatalf("expected orphan delete, deleted=%d uploaded=%d", deleted, uploaded)
+	}
+	if _, err := s.Open(dest + "/gone.txt"); err == nil {
+		t.Fatal("vault orphan under dest should be deleted in sync mode")
+	}
+	if _, err := s.Open(other + "/safe.txt"); err != nil {
+		t.Fatalf("files outside dest must not be deleted: %v", err)
+	}
+	if _, err := s.Open(dest + "/keep.txt"); err != nil {
+		t.Fatalf("matching file should remain: %v", err)
+	}
+	// Never deletes local source
+	if _, err := os.Stat(filepath.Join(src, "keep.txt")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSyncModeRefusesVaultRootDest(t *testing.T) {
+	root := t.TempDir()
+	pass := "orphan-root-pass"
+	s, err := CreateFormat8(root, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("a"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prefs := config.DefaultAppPreferences()
+	prefs.BackupTransferMode = config.BackupTransferModeSync
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	_, _, err = s.SyncCleartextTree(context.Background(), src, "/", nil, &prefs, statePath, "Root")
+	if err == nil {
+		t.Fatal("expected error refusing vault root orphan prune")
+	}
+	if !strings.Contains(err.Error(), "vault root") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

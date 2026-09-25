@@ -18,7 +18,7 @@ Lives under `linux/` in the main repo (not a sibling). Shares `fixtures/` with m
 |---------|------|
 | **CLI** (`unlock` / `ls` / `cat` / `fixture`) | Unlock/browse; `fixture` builds a minimal format-8 vault for CI |
 | **FUSE** (`mount`) | Cleartext mount (`go-fuse` / `/dev/fuse`); default **ro**, optional **`--rw`** with fail-closed remote put/delete |
-| **Backup Sync** (`sync` / `sources`) | Walk cleartext → encrypt → put (local or S3). Multi-source via `backup-sources.json`. Fail-closed |
+| **Backup Sync** (`sync` / `sources`) | Walk cleartext → encrypt → put (local or S3). Multi-source via `backup-sources.json`. Modes: **backup** (default, put/update only) or **sync** (also prune vault orphans under that source’s `Backups/<folder>/`). Never deletes local source. Fail-closed |
 
 ## Product locks
 
@@ -179,6 +179,25 @@ cryptomako sources remove ID|PATH
 
 Override path: `cryptomako sync --sources /path/to/backup-sources.json` or `cryptomako sources --file …`.
 
+### Backup vs Sync transfer mode
+
+Shared prefs key `backupTransferMode` (macOS AppPreferences / PR #40): `"backup"` | `"sync"`, **default `"backup"`**.
+
+| Mode | Puts | Vault deletes |
+|------|------|---------------|
+| **backup** (default) | source → vault put/update | **None** — vault extras missing from source are kept |
+| **sync** | same puts | **Yes** — delete remote ciphertext orphans under that source’s dest (`Backups/<folder>/` when using `backup-sources.json`). Fail-closed. Refuses dest `/`. |
+
+Never deletes the local source. Override for one run: `cryptomako sync --mode backup|sync`. When `--mode` is omitted, the value from `app-preferences.json` is used (default backup).
+
+```bash
+# Put/update only (default)
+./cryptomako sync --local ../fixtures/vault --source ~/Documents/tree --dest /Backups/Documents --mode backup
+
+# Also remove vault-only files under /Backups/Documents/
+./cryptomako sync --local ../fixtures/vault --source ~/Documents/tree --dest /Backups/Documents --mode sync
+```
+
 ### App preferences (proxy + Sync workers)
 
 Same JSON keys as macOS `Sources/CryptoMakoShared/AppPreferences.swift` (app-group
@@ -192,6 +211,7 @@ Same JSON keys as macOS `Sources/CryptoMakoShared/AppPreferences.swift` (app-gro
 | `proxyHost` | string | `""` | custom proxy hostname |
 | `proxyPort` | int | `8080` | custom proxy port |
 | `proxyUsername` | string | `""` | custom proxy user (non-secret) |
+| `backupTransferMode` | string | `backup` | `backup` \| `sync` (macOS PR #40; default backup = no vault deletes) |
 | `limitSyncUploadBandwidth` | bool | `false` | pace Backup Sync puts |
 | `syncUploadCapMbps` | float | `50` | decimal Mbps when limit on (clamped ≥ 1 on save) |
 | `syncSmallPutConcurrency` | int | `96` | clamp 1–256 |
@@ -243,7 +263,7 @@ Backup Sync excludes file (separate): `directoryNames`, `fileNames`, `fileExtens
 Backup Sync state file (separate): `files` map with `size` + `contentModification` (Apple reference-date seconds); see table above.
 
 App preferences file (separate): `proxyMode`, `proxyHost`, `proxyPort`, `proxyUsername`,
-`limitSyncUploadBandwidth`, `syncUploadCapMbps`, sync*PutConcurrency (see table above).
+`backupTransferMode`, `limitSyncUploadBandwidth`, `syncUploadCapMbps`, sync*PutConcurrency (see table above).
 
 Env secrets: `CRYPTOMAKO_PASSWORD`, `CRYPTOMAKO_SECRET_KEY`, `CRYPTOMAKO_PROXY_PASSWORD` (custom proxy only).
 

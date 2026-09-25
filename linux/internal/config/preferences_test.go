@@ -217,3 +217,62 @@ func TestNewHTTPClientScrubsProxyPasswordEnv(t *testing.T) {
 		t.Fatal("expected CRYPTOMAKO_PROXY_PASSWORD unset after NewHTTPClient")
 	}
 }
+
+
+func TestBackupTransferModeDefaultAndNormalize(t *testing.T) {
+	def := DefaultAppPreferences()
+	if def.BackupTransferMode != BackupTransferModeBackup {
+		t.Fatalf("default mode = %q", def.BackupTransferMode)
+	}
+	if def.IsSyncTransferMode() {
+		t.Fatal("default should not be sync")
+	}
+	if NormalizeBackupTransferMode("") != BackupTransferModeBackup {
+		t.Fatal("empty → backup")
+	}
+	if NormalizeBackupTransferMode("SYNC") != BackupTransferModeSync {
+		t.Fatal("SYNC → sync")
+	}
+	if NormalizeBackupTransferMode("weird") != BackupTransferModeBackup {
+		t.Fatal("unknown → backup (fail closed)")
+	}
+	p, err := ParseAppPreferences([]byte(`{"backupTransferMode":"sync"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.BackupTransferMode != BackupTransferModeSync || !p.IsSyncTransferMode() {
+		t.Fatalf("%+v", p)
+	}
+	p2, err := ParseAppPreferences([]byte(`{"backupTransferMode":"nope"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2.BackupTransferMode != BackupTransferModeBackup {
+		t.Fatalf("invalid → backup, got %q", p2.BackupTransferMode)
+	}
+	p3, err := ParseAppPreferences([]byte(`{"proxyMode":"direct"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p3.BackupTransferMode != BackupTransferModeBackup {
+		t.Fatalf("missing → backup, got %q", p3.BackupTransferMode)
+	}
+}
+
+func TestBackupTransferModeSaveRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "app-preferences.json")
+	in := DefaultAppPreferences()
+	in.BackupTransferMode = BackupTransferModeSync
+	if err := SaveAppPreferences(path, in); err != nil {
+		t.Fatal(err)
+	}
+	got := LoadAppPreferences(path)
+	if got.BackupTransferMode != BackupTransferModeSync {
+		t.Fatalf("got %q", got.BackupTransferMode)
+	}
+	raw, _ := os.ReadFile(path)
+	if !strings.Contains(string(raw), `"backupTransferMode"`) {
+		t.Fatalf("missing key in JSON: %s", raw)
+	}
+}
