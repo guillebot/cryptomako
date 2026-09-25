@@ -20,6 +20,9 @@ public struct BackupSource: Codable, Equatable, Identifiable, Sendable {
     public var smbUsername: String?
     /// Security-scoped bookmark for the mounted path (remount / re-resolve).
     public var bookmarkData: Data?
+    /// When this source last completed a full Sync/Backup run successfully (no cancel/fail).
+    /// Nil until the first successful per-source completion. Persisted across launches.
+    public var lastFullSyncAt: Date?
 
     public init(
         id: String = UUID().uuidString,
@@ -29,7 +32,8 @@ public struct BackupSource: Codable, Equatable, Identifiable, Sendable {
         kind: Kind = .folder,
         smbURL: String? = nil,
         smbUsername: String? = nil,
-        bookmarkData: Data? = nil
+        bookmarkData: Data? = nil,
+        lastFullSyncAt: Date? = nil
     ) {
         self.id = id
         self.path = path
@@ -42,6 +46,7 @@ public struct BackupSource: Codable, Equatable, Identifiable, Sendable {
         self.smbURL = smbURL
         self.smbUsername = smbUsername
         self.bookmarkData = bookmarkData
+        self.lastFullSyncAt = lastFullSyncAt
     }
 
     public var isSMB: Bool { kind == .smb }
@@ -60,7 +65,7 @@ public struct BackupSource: Codable, Equatable, Identifiable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, path, vaultFolderName, addedAt, kind, smbURL, smbUsername, bookmarkData
+        case id, path, vaultFolderName, addedAt, kind, smbURL, smbUsername, bookmarkData, lastFullSyncAt
     }
 
     public init(from decoder: Decoder) throws {
@@ -73,6 +78,20 @@ public struct BackupSource: Codable, Equatable, Identifiable, Sendable {
         smbURL = try c.decodeIfPresent(String.self, forKey: .smbURL)
         smbUsername = try c.decodeIfPresent(String.self, forKey: .smbUsername)
         bookmarkData = try c.decodeIfPresent(Data.self, forKey: .bookmarkData)
+        lastFullSyncAt = try c.decodeIfPresent(Date.self, forKey: .lastFullSyncAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(path, forKey: .path)
+        try c.encode(vaultFolderName, forKey: .vaultFolderName)
+        try c.encode(addedAt, forKey: .addedAt)
+        try c.encode(kind, forKey: .kind)
+        try c.encodeIfPresent(smbURL, forKey: .smbURL)
+        try c.encodeIfPresent(smbUsername, forKey: .smbUsername)
+        try c.encodeIfPresent(bookmarkData, forKey: .bookmarkData)
+        try c.encodeIfPresent(lastFullSyncAt, forKey: .lastFullSyncAt)
     }
 }
 
