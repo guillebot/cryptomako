@@ -200,7 +200,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 enum BrandIcon {
     private static let cached: NSImage? = load()
-    private static let statusBarSize = NSSize(width: 18, height: 18)
+    private static let statusBarSize = NSSize(width: 22, height: 22)
 
     static var image: NSImage? { cached }
 
@@ -238,7 +238,7 @@ enum BrandIcon {
             tinted.draw(in: bounds)
 
             // Small status dot (bottom-trailing) with a contrasting halo.
-            let diameter: CGFloat = 6.5
+            let diameter: CGFloat = 7.5
             let pad: CGFloat = 0.5
             let haloRect = NSRect(
                 x: bounds.maxX - diameter - pad - 1,
@@ -267,9 +267,19 @@ enum BrandIcon {
             let scaled = NSImage(size: size)
             scaled.lockFocus()
             NSGraphicsContext.current?.imageInterpolation = .high
+            let inset: CGFloat = 1
+            let dest = NSRect(
+                x: inset,
+                y: inset,
+                width: size.width - inset * 2,
+                height: size.height - inset * 2
+            )
+            let from = opaqueContentRect(of: source) ?? NSRect(origin: .zero, size: source.size)
+            // Aspect-fit the opaque mark into the status-item slot.
+            let fitted = aspectFit(from.size, into: dest)
             source.draw(
-                in: NSRect(origin: .zero, size: size),
-                from: NSRect(origin: .zero, size: source.size),
+                in: fitted,
+                from: from,
                 operation: .copy,
                 fraction: 1.0
             )
@@ -281,6 +291,68 @@ enum BrandIcon {
             ?? NSImage(size: statusBarSize)
         symbol.isTemplate = true
         return symbol
+    }
+
+    /// Bounding rect of non-near-transparent pixels, or nil if unavailable.
+    private static func opaqueContentRect(of image: NSImage) -> NSRect? {
+        guard let tiff = image.tiffRepresentation,
+              let rep = NSBitmapImageRep(data: tiff),
+              let data = rep.bitmapData
+        else { return nil }
+
+        let w = rep.pixelsWide
+        let h = rep.pixelsHigh
+        let spp = rep.samplesPerPixel
+        let bpp = rep.bitsPerPixel / 8
+        let rowBytes = rep.bytesPerRow
+        let hasAlpha = rep.hasAlpha
+        guard w > 0, h > 0, hasAlpha, bpp > 0, spp > 0 else { return nil }
+
+        // Alpha is the last sample for non-planar RGBA/WA bitmaps.
+        let alphaOffset = spp - 1
+        var minX = w
+        var minY = h
+        var maxX = 0
+        var maxY = 0
+        var found = false
+
+        for y in 0..<h {
+            let row = data.advanced(by: y * rowBytes)
+            for x in 0..<w {
+                let alpha = row.advanced(by: x * bpp + alphaOffset).pointee
+                guard alpha > 10 else { continue }
+                found = true
+                minX = min(minX, x)
+                minY = min(minY, y)
+                maxX = max(maxX, x)
+                maxY = max(maxY, y)
+            }
+        }
+        guard found else { return nil }
+
+        // NSImage draws with a bottom-left origin; bitmap rows are top-down.
+        let scaleX = image.size.width / CGFloat(w)
+        let scaleY = image.size.height / CGFloat(h)
+        let bottom = CGFloat(h - 1 - maxY)
+        return NSRect(
+            x: CGFloat(minX) * scaleX,
+            y: bottom * scaleY,
+            width: CGFloat(maxX - minX + 1) * scaleX,
+            height: CGFloat(maxY - minY + 1) * scaleY
+        )
+    }
+
+    private static func aspectFit(_ content: NSSize, into dest: NSRect) -> NSRect {
+        guard content.width > 0, content.height > 0 else { return dest }
+        let scale = min(dest.width / content.width, dest.height / content.height)
+        let w = content.width * scale
+        let h = content.height * scale
+        return NSRect(
+            x: dest.midX - w / 2,
+            y: dest.midY - h / 2,
+            width: w,
+            height: h
+        )
     }
 
     private static func loadNamed(_ name: String) -> NSImage? {
