@@ -16,10 +16,14 @@ var sourcesCmd = &cobra.Command{
 	Use:   "sources",
 	Short: "Manage backup-sources.json (folders synced into Backups/)",
 	Long: `Thin management for ~/.config/cryptomako/backup-sources.json — the same
-schema as macOS BackupSourcesStore (id, path, vaultFolderName, addedAt).
+schema as macOS BackupSourcesStore (id, path, vaultFolderName, addedAt,
+optional lastFullSyncAt).
 
 When backup-sources.json has entries, cryptomako sync (without --source) syncs
-each folder to cleartext /Backups/{vaultFolderName}/.`,
+each folder to cleartext /Backups/{vaultFolderName}/.
+
+sources list shows a ✓ and relative "Last full sync … ago" when lastFullSyncAt
+is set (macOS Source folders tick parity; no GUI).`,
 }
 
 var sourcesListCmd = &cobra.Command{
@@ -32,10 +36,16 @@ var sourcesListCmd = &cobra.Command{
 			return nil
 		}
 		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tVAULT_FOLDER\tPATH\tADDED")
+		fmt.Fprintln(w, "ID\tVAULT_FOLDER\tPATH\tADDED\tLAST_FULL_SYNC")
+		now := time.Now().UTC()
 		for _, s := range store.Sources {
 			added := appleRefToRFC3339(s.AddedAt)
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", s.ID, s.VaultFolderName, s.Path, added)
+			last := "—"
+			if s.LastFullSyncAt != nil {
+				ago := config.FormatFullSyncAgo(config.TimeFromAppleReference(*s.LastFullSyncAt), now)
+				last = "✓ Last full sync " + ago
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", s.ID, s.VaultFolderName, s.Path, added, last)
 		}
 		return w.Flush()
 	},
