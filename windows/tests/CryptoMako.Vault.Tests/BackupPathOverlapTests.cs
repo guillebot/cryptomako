@@ -123,6 +123,57 @@ public class BackupPathOverlapTests
                 BackupSource.ComposeVaultFolderName("TempHost", tempRoot),
                 back.Sources[0].VaultFolderName);
             Assert.False(string.IsNullOrWhiteSpace(back.Sources[0].Id));
+            // Legacy / fresh sources have no lastFullSyncAt until first successful run.
+            Assert.Null(back.Sources[0].LastFullSyncAt);
+            Assert.DoesNotContain("lastFullSyncAt", File.ReadAllText(path), StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void BackupSource_lastFullSyncAt_roundtrips_json()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "cm-sources-lfs-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var stamp = DateTimeOffset.Parse("2023-11-14T22:13:20Z");
+            var store = new BackupSourcesStore();
+            var src = BackupSource.Create(Path.GetTempPath(), "Host");
+            src.LastFullSyncAt = stamp;
+            store.Sources.Add(src);
+            store.SaveToFile(path);
+
+            var json = File.ReadAllText(path);
+            Assert.Contains("lastFullSyncAt", json, StringComparison.Ordinal);
+
+            var back = BackupSourcesStore.LoadFromFile(path);
+            Assert.Single(back.Sources);
+            Assert.NotNull(back.Sources[0].LastFullSyncAt);
+            Assert.Equal(stamp.UtcTicks, back.Sources[0].LastFullSyncAt!.Value.UtcTicks);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
+    public void BackupSource_legacy_json_without_lastFullSyncAt_loads_null()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "cm-sources-legacy-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            // Minimal legacy shape (no lastFullSyncAt key) must decode with null stamp.
+            File.WriteAllText(path, """
+                {"sources":[{"id":"s1","path":"C:\\tmp","vaultFolderName":"X","addedAt":"2024-01-01T00:00:00Z"}]}
+                """);
+            var back = BackupSourcesStore.LoadFromFile(path);
+            Assert.Single(back.Sources);
+            Assert.Equal("s1", back.Sources[0].Id);
+            Assert.Null(back.Sources[0].LastFullSyncAt);
         }
         finally
         {
