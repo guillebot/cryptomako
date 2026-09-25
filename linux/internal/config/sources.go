@@ -20,6 +20,11 @@ type BackupSource struct {
 	Path            string  `json:"path"`
 	VaultFolderName string  `json:"vaultFolderName"`
 	AddedAt         float64 `json:"addedAt"`
+	// LastFullSyncAt is seconds since Apple reference date 2001-01-01 UTC when
+	// this source last completed a full Sync/Backup run successfully (no cancel/fail).
+	// Nil until the first successful per-source completion. Omitted from JSON when nil
+	// (macOS encodeIfPresent parity; legacy files without the key decode as nil).
+	LastFullSyncAt *float64 `json:"lastFullSyncAt,omitempty"`
 }
 
 // BackupSourcesStore mirrors Sources/CryptoMakoShared/BackupSources.swift.
@@ -156,6 +161,96 @@ type SyncTarget struct {
 	SourcePath      string
 	DestPrefix      string // absolute cleartext path inside the vault
 	VaultFolderName string // fingerprint key prefix
+	// SourceID is BackupSource.id when resolved from backup-sources.json.
+	// Empty for --source flag jobs (no store entry to stamp).
+	SourceID string
+}
+
+// MarkFullySynced stamps lastFullSyncAt for the source with the given id.
+// Returns false if no source matched. at is encoded as Apple reference-date seconds
+// (same as addedAt / macOS Date.timeIntervalSinceReferenceDate).
+func (s *BackupSourcesStore) MarkFullySynced(sourceID string, at time.Time) bool {
+	sourceID = strings.TrimSpace(sourceID)
+	if sourceID == "" || s == nil {
+		return false
+	}
+	stamp := ContentModificationFromTime(at.UTC())
+	for i := range s.Sources {
+		if s.Sources[i].ID == sourceID {
+			s.Sources[i].LastFullSyncAt = &stamp
+			return true
+		}
+	}
+	return false
+}
+
+// TimeFromAppleReference converts Apple reference-date seconds to UTC time.
+func TimeFromAppleReference(sec float64) time.Time {
+	whole := int64(sec)
+	frac := sec - float64(whole)
+	nsec := int64(frac * 1e9)
+	return time.Unix(AppleReferenceDateUnix+whole, nsec).UTC()
+}
+
+// FormatFullSyncAgo returns a relative English phrase like "3 minutes ago"
+// (macOS RelativeDateTimeFormatter .full / .named style for Source folders tooltip).
+func FormatFullSyncAgo(at, now time.Time) string {
+	if at.IsZero() {
+		return ""
+	}
+	at = at.UTC()
+	now = now.UTC()
+	if at.After(now) {
+		at, now = now, at
+	}
+	d := now.Sub(at)
+	sec := int64(d.Seconds())
+	if sec < 0 {
+		sec = 0
+	}
+	switch {
+	case sec < 60:
+		if sec <= 1 {
+			return "1 second ago"
+		}
+		return fmt.Sprintf("%d seconds ago", sec)
+	case sec < 3600:
+		m := sec / 60
+		if m == 1 {
+			return "1 minute ago"
+		}
+		return fmt.Sprintf("%d minutes ago", m)
+	case sec < 86400:
+		h := sec / 3600
+		if h == 1 {
+			return "1 hour ago"
+		}
+		return fmt.Sprintf("%d hours ago", h)
+	case sec < 86400*7:
+		days := sec / 86400
+		if days == 1 {
+			return "1 day ago"
+		}
+		return fmt.Sprintf("%d days ago", days)
+	case sec < 86400*30:
+		weeks := sec / (86400 * 7)
+		if weeks == 1 {
+			return "1 week ago"
+		}
+		return fmt.Sprintf("%d weeks ago", weeks)
+	case sec < 86400*365:
+		months := sec / (86400 * 30)
+		if months <= 1 {
+			return "1 month ago"
+		}
+		return fmt.Sprintf("%d months ago", months)
+	default:
+		years := sec / (86400 * 365)
+		if years <= 1 {
+			return "1 year ago"
+		}
+		return fmt.Sprintf("%d years ago", years)
+	}
 }
 
 // CleartextBackupDest matches macOS BackupSyncEngine: Backups/{vaultFolderName}.
@@ -198,6 +293,7 @@ func ResolveSyncTargets(sourceFlag, destFlag, sourcesPath string) ([]SyncTarget,
 			SourcePath:      src.Path,
 			DestPrefix:      CleartextBackupDest(folder),
 			VaultFolderName: folder,
+			SourceID:        src.ID,
 		})
 	}
 	return out, nil
