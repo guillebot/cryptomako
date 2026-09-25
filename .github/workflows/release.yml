@@ -1,0 +1,134 @@
+# Build and attach Linux (.deb) + Windows (win-x64 zips) to a GitHub Release.
+# Mac .dmg/.zip stay manual (notarization / signing secrets).
+#
+# Triggers:
+#   - release published (tag v*)
+#   - workflow_dispatch with tag input (backfill / re-upload)
+name: Release assets
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to upload into (e.g. v1.0.1)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-assets-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - id: meta
+        env:
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          TAG="${EVENT_TAG:-$INPUT_TAG}"
+          if [[ -z "$TAG" ]]; then
+            echo "No release tag" >&2
+            exit 1
+          fi
+          VER="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag=$TAG version=$VER"
+
+  linux-deb:
+    needs: resolve
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.x"
+          cache-dependency-path: linux/go.sum
+
+      - name: Build .deb
+        working-directory: linux
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          ARCH: amd64
+        run: ./packaging/build-deb.sh
+
+      - name: Upload .deb to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          deb=(linux/packaging/dist/cryptomako_${{ needs.resolve.outputs.version }}_amd64.deb)
+          ls -la "${deb[@]}"
+          gh release upload "$TAG" "${deb[@]}" --clobber --repo "${{ github.repository }}"
+
+  windows-win-x64:
+    needs: resolve
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: windows
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.tag }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Publish CLI + Desktop (win-x64)
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          ./scripts/publish-win-x64.ps1
+          $ver = $env:VERSION
+          if (-not $ver) { throw "VERSION unset" }
+          New-Item -ItemType Directory -Force -Path artifacts | Out-Null
+          $cliZip = "artifacts/CryptoMako-$ver-win-x64-cli.zip"
+          $deskZip = "artifacts/CryptoMako-$ver-win-x64-desktop.zip"
+          if (Test-Path $cliZip) { Remove-Item $cliZip -Force }
+          if (Test-Path $deskZip) { Remove-Item $deskZip -Force }
+          Compress-Archive -Path "artifacts/cli-win-x64/*" -DestinationPath $cliZip
+          Compress-Archive -Path "artifacts/desktop-win-x64/*" -DestinationPath $deskZip
+          $sums = "artifacts/SHA256SUMS-win-x64.txt"
+          $h1 = (Get-FileHash -Algorithm SHA256 $cliZip).Hash.ToLowerInvariant()
+          $h2 = (Get-FileHash -Algorithm SHA256 $deskZip).Hash.ToLowerInvariant()
+          Set-Content -Path $sums -Encoding ascii -Value @(
+            "$h1  CryptoMako-$ver-win-x64-cli.zip",
+            "$h2  CryptoMako-$ver-win-x64-desktop.zip"
+          )
+          Get-Content $sums
+          Get-Item $cliZip, $deskZip, $sums | Format-Table Name, Length
+
+      - name: Upload Windows assets to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ver="$VERSION"
+          gh release upload "$TAG" \
+            "artifacts/CryptoMako-${ver}-win-x64-cli.zip" \
+            "artifacts/CryptoMako-${ver}-win-x64-desktop.zip" \
+            "artifacts/SHA256SUMS-win-x64.txt" \
+            --clobber --repo "${{ github.repository }}"
