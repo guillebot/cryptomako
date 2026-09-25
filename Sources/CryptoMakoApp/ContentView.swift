@@ -445,6 +445,13 @@ struct BackupView: View {
                                     HStack(spacing: 6) {
                                         Text(source.vaultFolderName)
                                             .font(.body.weight(.medium))
+                                        if let at = source.lastFullSyncAt {
+                                            Image(systemName: "checkmark.circle.fill")
+                                                .foregroundStyle(.green)
+                                                .imageScale(.small)
+                                                .accessibilityLabel("Fully synced")
+                                                .help("Last full sync \(FullSyncAgoFormatting.string(from: at))")
+                                        }
                                         if source.isSMB {
                                             Text("SMB")
                                                 .font(.caption2.weight(.semibold))
@@ -724,3 +731,20 @@ struct BackupView: View {
         }
     }
 }
+
+
+// MARK: - Relative “ago” for last full sync tick
+
+private enum FullSyncAgoFormatting {
+    static let formatter: RelativeDateTimeFormatter = {
+        let f = RelativeDateTimeFormatter()
+        f.unitsStyle = .full
+        f.dateTimeStyle = .named
+        return f
+    }()
+
+    static func string(from date: Date, now: Date = Date()) -> String {
+        formatter.localizedString(for: date, relativeTo: now)
+    }
+}
+

@@ -120,7 +120,11 @@ final class BackupSyncEngine: ObservableObject {
         }
     }
 
-    func sync(sources: [BackupSource], session: VaultSession) {
+    /// - Parameter onSourceCompleted: Invoked on the main actor after each source finishes
+    ///   successfully (walk + puts + Sync-mode prune). Not called on cancel/fail for that source.
+    ///   Multi-source jobs fire once per completed source; earlier sources keep their stamp if a
+    ///   later source fails or the job is cancelled.
+    func sync(sources: [BackupSource], session: VaultSession, onSourceCompleted: ((String) -> Void)? = nil) {
         cancel()
         state = .running
         phase = .preparing
@@ -198,8 +202,10 @@ final class BackupSyncEngine: ObservableObject {
                     syncState.save()
                     files += result.files
                     bytes += result.bytes
+                    let completedID = source.id
                     await MainActor.run {
                         self.filesDone = self.filesSkipped + self.filesUploaded
+                        onSourceCompleted?(completedID)
                     }
                 }
                 await MainActor.run {

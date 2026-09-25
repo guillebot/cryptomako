@@ -658,7 +658,14 @@ final class VaultAppModel: ObservableObject {
                             }
                         }
                     }
-                    if code != 0 { failures += 1 }
+                    if code != 0 {
+                        failures += 1
+                    } else {
+                        let sid = source.id
+                        await MainActor.run {
+                            self?.markBackupSourceFullySynced(sid)
+                        }
+                    }
                 } catch {
                     failures += 1
                     await MainActor.run {
@@ -683,6 +690,14 @@ final class VaultAppModel: ObservableObject {
         } catch {
             detail = "Could not save backup sources: \(error.localizedDescription)"
         }
+    }
+
+    /// Stamp a source after one complete successful run (native Sync or rclone+FUSE).
+    /// Cancel / failure must not call this. Safe to call from MainActor.
+    func markBackupSourceFullySynced(_ sourceID: String, at date: Date = Date()) {
+        guard let idx = backupSources.firstIndex(where: { $0.id == sourceID }) else { return }
+        backupSources[idx].lastFullSyncAt = date
+        persistBackupSources()
     }
 
     /// Remount SMB sources (bookmark / NetFS) and refresh persisted paths before Sync.
@@ -852,7 +867,9 @@ final class VaultAppModel: ObservableObject {
                 ? "Syncing all backup folders (puts + delete vault-only under each Backups/<folder>/)…"
                 : "Backing up all folders into vault (Backups/…) via direct remote puts (no vault deletes)…"
         }
-        backupSync.sync(sources: sources, session: session)
+        backupSync.sync(sources: sources, session: session) { [weak self] sourceID in
+            self?.markBackupSourceFullySynced(sourceID)
+        }
         watchBackupSyncForFinderRefresh()
     }
 

@@ -42,6 +42,19 @@ final class SMBSourceURLTests: XCTestCase {
         let decoded = try JSONDecoder().decode(BackupSource.self, from: legacy)
         XCTAssertEqual(decoded.kind, .folder)
         XCTAssertNil(decoded.smbURL)
+        XCTAssertNil(decoded.lastFullSyncAt)
+    }
+
+    func testBackupSourceLastFullSyncAtRoundTrip() throws {
+        let stamp = Date(timeIntervalSince1970: 1_700_000_000)
+        var source = BackupSource(id: "s1", path: "/tmp/y", vaultFolderName: "Y")
+        source.lastFullSyncAt = stamp
+        let data = try JSONEncoder().encode(source)
+        let decoded = try JSONDecoder().decode(BackupSource.self, from: data)
+        XCTAssertEqual(decoded.lastFullSyncAt, stamp)
+        // Encoded JSON must include the key when set.
+        let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        XCTAssertNotNil(obj?["lastFullSyncAt"])
     }
 
     func testBackupSourceSMBRoundTrip() throws {
