@@ -92,7 +92,8 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request: NSFileProviderRequest,
         completionHandler: @escaping (URL?, NSFileProviderItem?, Error?) -> Void
     ) -> Progress {
-        run { [index] in
+        // Download-shaped Progress (not runUpload) so Finder shows downloading/receiving.
+        return runDownload(byteCount: 1, fileName: nil, body: { [index] _ in
             guard case .file(let parentDirId, let cipherName)? = ItemID.parse(itemIdentifier) else {
                 throw NSFileProviderError(.noSuchItem)
             }
@@ -103,12 +104,28 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             let destination = FileManager.default.temporaryDirectory
                 .appendingPathComponent("cryptomako-\(UUID().uuidString)")
             try await session.fetch(node: node, to: destination)
+            // Cleartext size on disk — not ciphertext `node.size`.
             let size = (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(Int64.init) ?? (node.size ?? 0)
             TransferMetrics.recordDownload(bytes: size)
-            completionHandler(destination, VaultItem.file(node: node), nil)
-        } onError: { error in
+            // Mirror item(for:): full d:<grandparent>/<parent> — short d:/<parent>
+            // desyncs FPFS (parentItemNotYetPropagated → materializationFailed).
+            let parentItem = try await Self.fullDirectoryIdentifier(
+                dirId: parentDirId,
+                index: index
+            )
+            completionHandler(
+                destination,
+                VaultItem.file(
+                    node: node,
+                    parentItemIdentifier: parentItem,
+                    documentSize: NSNumber(value: size),
+                    downloaded: true
+                ),
+                nil
+            )
+        }, onError: { error in
             completionHandler(nil, nil, error)
-        }
+        })
     }
 
     func enumerator(
@@ -442,6 +459,36 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             } catch {
                 onError(error)
                 progress.completedUnitCount = progress.totalUnitCount
+            }
+        }
+        progress.cancellationHandler = { task.cancel() }
+        return progress
+    }
+
+    /// Download-shaped Progress for fetchContents (Finder "downloading" UI).
+    private func runDownload(
+        byteCount: Int64,
+        fileName: String?,
+        body: @escaping (Progress) async throws -> Void,
+        onError: @escaping (Error) -> Void
+    ) -> Progress {
+        let total = max(byteCount, 1)
+        let progress = Progress(totalUnitCount: total)
+        progress.kind = .file
+        progress.setUserInfoObject(
+            Progress.FileOperationKind.downloading,
+            forKey: .fileOperationKindKey
+        )
+        if let fileName {
+            progress.localizedDescription = "Downloading \(fileName) from CryptoMako vault"
+        }
+        let task = Task {
+            do {
+                try await body(progress)
+                progress.completedUnitCount = total
+            } catch {
+                onError(error)
+                progress.completedUnitCount = total
             }
         }
         progress.cancellationHandler = { task.cancel() }

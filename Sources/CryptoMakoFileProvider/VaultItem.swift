@@ -117,7 +117,9 @@ final class VaultItem: NSObject, NSFileProviderItem {
 
     static func file(
         node: VaultNode,
-        parentItemIdentifier: NSFileProviderItemIdentifier? = nil
+        parentItemIdentifier: NSFileProviderItemIdentifier? = nil,
+        documentSize: NSNumber? = nil,
+        downloaded: Bool = false
     ) -> VaultItem {
         // ETag is the natural contentVersion: it changes exactly when bytes change.
         let content = Data((node.eTag ?? "0").utf8)
@@ -131,12 +133,15 @@ final class VaultItem: NSObject, NSFileProviderItem {
             // (stale NFS / parentItemNotYetPropagated) before modifyItem ran. Cmd-Delete
             // / Delete go through deleteItem → remote MinIO delete (fail-closed).
             capabilities: [.allowsReading, .allowsWriting, .allowsDeleting, .allowsRenaming, .allowsReparenting],
-            documentSize: node.size.map { NSNumber(value: $0) },
+            // Default size is ciphertext `node.size`; callers that just hydrated
+            // cleartext (fetchContents) should pass the destination fileSize.
+            documentSize: documentSize ?? node.size.map { NSNumber(value: $0) },
             itemVersion: NSFileProviderItemVersion(
                 contentVersion: content,
                 metadataVersion: content
             ),
-            downloaded: false
+            // Enumerated/remote items stay dataless until fetchContents marks downloaded.
+            downloaded: downloaded
         )
     }
 
