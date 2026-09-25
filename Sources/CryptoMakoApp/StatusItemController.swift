@@ -18,7 +18,7 @@ final class StatusItemController {
 
     func install() {
         guard statusItem == nil else { return }
-        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         if let button = item.button {
             button.imagePosition = .imageLeft
             button.toolTip = "CryptoMako"
@@ -84,26 +84,6 @@ final class StatusItemController {
 
         menu.addItem(.separator())
 
-        if model.isUnlocked {
-            let lockItem = NSMenuItem(
-                title: "Lock",
-                action: #selector(lockVault(_:)),
-                keyEquivalent: ""
-            )
-            lockItem.target = self
-            lockItem.isEnabled = !model.busy
-            menu.addItem(lockItem)
-        } else {
-            let unlockItem = NSMenuItem(
-                title: "Unlock",
-                action: #selector(unlockVault(_:)),
-                keyEquivalent: ""
-            )
-            unlockItem.target = self
-            unlockItem.isEnabled = !model.busy
-            menu.addItem(unlockItem)
-        }
-
         let showItem = NSMenuItem(
             title: "Open CryptoMako…",
             action: #selector(showWindow(_:)),
@@ -165,6 +145,28 @@ final class StatusItemController {
             let item = NSMenuItem(title: truncate(line, limit: 72), action: nil, keyEquivalent: "")
             item.isEnabled = false
             menu.addItem(item)
+        }
+
+        menu.addItem(.separator())
+
+        if model.isUnlocked {
+            let lockItem = NSMenuItem(
+                title: "Lock",
+                action: #selector(lockVault(_:)),
+                keyEquivalent: ""
+            )
+            lockItem.target = self
+            lockItem.isEnabled = !model.busy
+            menu.addItem(lockItem)
+        } else {
+            let unlockItem = NSMenuItem(
+                title: "Unlock",
+                action: #selector(unlockVault(_:)),
+                keyEquivalent: ""
+            )
+            unlockItem.target = self
+            unlockItem.isEnabled = !model.busy
+            menu.addItem(unlockItem)
         }
 
         let quitItem = NSMenuItem(
