@@ -1,4 +1,5 @@
 import CryptoMakoShared
+import CryptoMakoS3
 import CryptoMakoVault
 import Foundation
 import OSLog
@@ -601,6 +602,23 @@ final class BackupSyncEngine: ObservableObject {
         }
         let counter = UploadCounter()
         let uiBatcher = PutUIBatcher()
+        /// Per-file transport failures after S3 retries. Does not cancel sibling puts.
+        final class FailureCounter: @unchecked Sendable {
+            let lock = NSLock()
+            var failedPuts = 0
+            var lastDetail: String?
+            func note(path: String, detail: String) {
+                lock.lock()
+                failedPuts += 1
+                lastDetail = "\(path): \(detail)"
+                lock.unlock()
+            }
+            func snapshot() -> (count: Int, lastDetail: String?) {
+                lock.lock(); defer { lock.unlock() }
+                return (failedPuts, lastDetail)
+            }
+        }
+        let putFailures = FailureCounter()
 
         func applyUIBatch(_ batch: PutUIBatcher.Batch) async {
             await MainActor.run {
@@ -618,34 +636,53 @@ final class BackupSyncEngine: ObservableObject {
 
         func putOne(_ job: PendingUpload) async throws {
             try Task.checkCancellation()
-            let parentId = try await dirCache.resolve(job.parentRel)
-            // Start the put without waiting for full-file bandwidth tokens (bucket
-            // holds only ~1s of rate). Charge after so large files proceed and
-            // TransferMetrics.inFlight reflects live createOrOverwrite work.
-            _ = try await session.createOrOverwriteFile(
-                parentDirId: parentId,
-                cleartextName: job.fileURL.lastPathComponent,
-                contentsURL: job.fileURL
-            )
-            // Pace Sync puts only (Finder File Provider uses a different path).
-            if let limiter = bandwidthLimiter {
-                await limiter.acquire(job.size)
-            }
-            let key = BackupSyncState.key(
-                vaultFolder: vaultFolder,
-                relativePath: job.relativePath
-            )
-            let fp = BackupFileFingerprint(
-                size: job.size,
-                contentModification: job.contentModification
-            )
-            box.set(key, fp)
-            counter.add(fileBytes: job.size)
-            if box.notePutCommittedForPersist() {
-                box.save()
-            }
-            if let batch = uiBatcher.note(path: job.relativePath, bytes: job.size) {
-                await applyUIBatch(batch)
+            do {
+                let parentId = try await dirCache.resolve(job.parentRel)
+                // Start the put without waiting for full-file bandwidth tokens (bucket
+                // holds only ~1s of rate). Charge after so large files proceed and
+                // TransferMetrics.inFlight reflects live createOrOverwrite work.
+                _ = try await session.createOrOverwriteFile(
+                    parentDirId: parentId,
+                    cleartextName: job.fileURL.lastPathComponent,
+                    contentsURL: job.fileURL
+                )
+                // Pace Sync puts only (Finder File Provider uses a different path).
+                if let limiter = bandwidthLimiter {
+                    await limiter.acquire(job.size)
+                }
+                let key = BackupSyncState.key(
+                    vaultFolder: vaultFolder,
+                    relativePath: job.relativePath
+                )
+                let fp = BackupFileFingerprint(
+                    size: job.size,
+                    contentModification: job.contentModification
+                )
+                box.set(key, fp)
+                counter.add(fileBytes: job.size)
+                if box.notePutCommittedForPersist() {
+                    box.save()
+                }
+                if let batch = uiBatcher.note(path: job.relativePath, bytes: job.size) {
+                    await applyUIBatch(batch)
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                if Task.isCancelled {
+                    throw CancellationError()
+                }
+                if Self.isIsolatablePutTransportFailure(error) {
+                    let detail = error.localizedDescription
+                    Self.syncLog.error(
+                        "put isolated transport failure path=\(job.relativePath, privacy: .public) err=\(detail, privacy: .public)"
+                    )
+                    putFailures.note(path: job.relativePath, detail: detail)
+                    return
+                }
+                // Auth, vault crypto, volume/config, and other hard errors fail closed
+                // (rethrow → TaskGroup cancels siblings).
+                throw error
             }
         }
 
@@ -694,7 +731,13 @@ final class BackupSyncEngine: ObservableObject {
                 await applyUIBatch(batch)
             }
             let snap = counter.snapshot()
-            Self.syncLog.info("uploadPending done files=\(snap.files) bytes=\(snap.bytes)")
+            let failures = putFailures.snapshot()
+            Self.syncLog.info(
+                "uploadPending done files=\(snap.files) bytes=\(snap.bytes) failedPuts=\(failures.count)"
+            )
+            if failures.count > 0 {
+                throw SyncError.putFailures(count: failures.count, detail: failures.lastDetail)
+            }
             return snap
         }()
 
@@ -950,6 +993,8 @@ final class BackupSyncEngine: ObservableObject {
         case missingSource(String)
         case missingParent(String)
         case volumeLost(String)
+        /// One or more file puts failed after S3 retries; siblings were not cancelled.
+        case putFailures(count: Int, detail: String?)
         var errorDescription: String? {
             switch self {
             case .missingSource(let p):
@@ -958,8 +1003,52 @@ final class BackupSyncEngine: ObservableObject {
                 return "Parent folder not registered for \(p)"
             case .volumeLost(let p):
                 return "Backup source volume disappeared during Sync: \(p). Sync stopped fail-closed (no wipe / no silent empty-tree success)."
+            case .putFailures(let count, let detail):
+                let suffix = detail.map { " Last: \($0)" } ?? ""
+                return "\(count) file(s) failed to upload after retries (network). Other files completed; retry Sync for the rest.\(suffix)"
             }
         }
+    }
+
+    /// Transport failures that should not cancel sibling puts in `drainTier`.
+    /// Distinguished from user Cancel (`CancellationError` / URLError.cancelled) and
+    /// hard vault/auth/config errors (those still fail closed via rethrow).
+    nonisolated private static func isIsolatablePutTransportFailure(_ error: Error) -> Bool {
+        if error is CancellationError { return false }
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain && ns.code == NSURLErrorCancelled {
+            return false
+        }
+        if let store = error as? ObjectStoreError {
+            switch store {
+            case .transport(let message):
+                // HTTP 403 from S3ObjectStore.check — auth, fail closed.
+                let lower = message.lowercased()
+                if lower.contains("access denied") || lower.contains("http 403") {
+                    return false
+                }
+                return true
+            case .notFound:
+                return false
+            }
+        }
+        if let vault = error as? VaultError {
+            switch vault {
+            case .store(let store):
+                return isIsolatablePutTransportFailure(store)
+            default:
+                return false
+            }
+        }
+        if ns.domain == NSURLErrorDomain {
+            switch ns.code {
+            case NSURLErrorNetworkConnectionLost, NSURLErrorTimedOut, NSURLErrorNotConnectedToInternet:
+                return true
+            default:
+                break
+            }
+        }
+        return false
     }
 
     /// Fail-closed: SMB / network volumes must stay mounted for the whole Sync.
