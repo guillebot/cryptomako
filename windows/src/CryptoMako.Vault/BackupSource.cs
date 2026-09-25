@@ -23,6 +23,15 @@ public sealed class BackupSource
     [JsonPropertyName("addedAt")]
     public DateTimeOffset AddedAt { get; set; } = DateTimeOffset.UtcNow;
 
+    /// <summary>
+    /// When this source last completed a full Backup/Sync run successfully (walk + puts + Sync-mode prune).
+    /// Null until the first successful per-source completion. Persisted across launches.
+    /// Cancel/fail must not set this. JSON key aligns with Mac <c>lastFullSyncAt</c>.
+    /// </summary>
+    [JsonPropertyName("lastFullSyncAt")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public DateTimeOffset? LastFullSyncAt { get; set; }
+
     public static BackupSource Create(string path, string? vaultFolderName = null)
     {
         var full = System.IO.Path.GetFullPath(path);

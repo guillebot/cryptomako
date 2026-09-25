@@ -711,6 +711,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 deleted += result.FilesDeleted;
                 bytes += result.BytesUploaded;
                 bytesScanned += result.BytesScanned;
+                // Per-source stamp after successful walk + puts + Sync-mode prune.
+                // Cancel/fail never reaches here for that source; earlier stamps are kept.
+                MarkBackupSourceFullySynced(src.Id);
             }
             AppendLog($"{modeVerb.ToLowerInvariant()} done uploaded={uploaded} skipped={skipped} scanned={scanned} deleted={deleted} bytes={bytes}");
             Status = uploaded > 0
@@ -764,6 +767,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             BackupSpeedLabel = "";
             BackupEtaLabel = "";
         }
+    }
+
+    /// <summary>
+    /// Stamp a source after one complete successful Backup/Sync run (walk + puts + Sync-mode prune).
+    /// Cancel / failure must not call this. Safe to call from the UI thread.
+    /// </summary>
+    public void MarkBackupSourceFullySynced(string sourceId, DateTimeOffset? at = null)
+    {
+        if (string.IsNullOrWhiteSpace(sourceId)) return;
+        var live = BackupSources.Sources.FirstOrDefault(x => x.Id == sourceId);
+        if (live is null) return;
+        live.LastFullSyncAt = at ?? DateTimeOffset.UtcNow;
+        PersistBackupSources();
     }
 
     /// <summary>Add a source path. Soft-warns (log) on nested overlap; still persists the add.</summary>
