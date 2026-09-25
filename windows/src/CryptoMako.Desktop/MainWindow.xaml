@@ -176,7 +176,7 @@
         <StackPanel Spacing="8" Margin="0,8,0,0">
           <TextBlock Text="Backup Sync" FontSize="18" FontWeight="SemiBold" />
           <TextBlock TextWrapping="Wrap" Opacity="0.8"
-                     Text="Encrypt local folders into Backups/{folder}/. Fail-closed remote puts. Nested/overlapping sources soft-warn on add and hard-fail on Sync." />
+                     Text="Encrypt local folders or an explicit SMB share (smb:// or UNC) into Backups/{folder}/. SMB uses Windows networking (UNC, no embedded client); remount-on-demand before Sync; fail-closed if the share drops. Nested/overlapping sources soft-warn on add and hard-fail on Sync." />
           <TextBlock x:Name="BackupRemoteHintText" Foreground="OrangeRed" FontWeight="SemiBold" TextWrapping="Wrap" />
           <TextBlock x:Name="BackupOverlapBannerText" Foreground="DarkOrange" FontWeight="SemiBold"
                      TextWrapping="Wrap" Visibility="Collapsed" />
@@ -186,6 +186,7 @@
           <StackPanel Orientation="Horizontal" Spacing="8">
             <Button Content="Remove selected" Click="OnRemoveBackupSource" />
             <Button Content="Clear sources" Click="OnClearBackupSources" />
+            <Button Content="Add SMB share…" Click="OnAddSmbShare" ToolTipService.ToolTip="Mount smb://server/share via Windows networking and add as a Backup source" />
           </StackPanel>
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="Add path" Width="100" VerticalAlignment="Center" />
