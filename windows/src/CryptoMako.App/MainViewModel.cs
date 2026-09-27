@@ -42,6 +42,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private string _backupProgressLabel = "";
     private string _backupSpeedLabel = "";
     private string _backupEtaLabel = "";
+    private string _backupCurrentSourceName = "";
 
     public MainViewModel(ISecretStore? secrets = null)
     {
@@ -82,6 +83,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             OnPropertyChanged();
             OnPropertyChanged(nameof(IsSyncTransferMode));
             OnPropertyChanged(nameof(TransferRunAllLabel));
+            OnPropertyChanged(nameof(TransferRunVerb));
             OnPropertyChanged(nameof(TransferModeHelp));
         }
     }
@@ -89,6 +91,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public bool IsSyncTransferMode => Preferences.IsSyncTransferMode;
 
     public string TransferRunAllLabel => IsSyncTransferMode ? "Sync all" : "Backup all";
+
+    /// <summary>Per-source button label (macOS <c>runVerb</c> parity).</summary>
+    public string TransferRunVerb => IsSyncTransferMode ? "Sync" : "Backup";
 
     public string TransferModeHelp => IsSyncTransferMode
         ? "Sync copies and updates, then deletes ciphertext in the vault under each source's Backups/<folder>/ that is missing from the local tree. It never deletes the local source. Prefer Backup unless you intentionally want vault orphans removed."
@@ -150,6 +155,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         get => _backupCurrentPath;
         private set { if (_backupCurrentPath != value) { _backupCurrentPath = value; OnPropertyChanged(); } }
+    }
+
+    /// <summary>Vault folder name of the source currently running (empty when idle).</summary>
+    public string BackupCurrentSourceName
+    {
+        get => _backupCurrentSourceName;
+        private set { if (_backupCurrentSourceName != value) { _backupCurrentSourceName = value; OnPropertyChanged(); } }
     }
 
     public string BackupPhase
@@ -628,10 +640,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
 
     /// <summary>
-    /// Sync all persisted backup sources. Soft-warn was at add time; Sync hard-fails on nested overlap.
-    /// If the list is empty, falls back to the single BackupSource / VaultFolder fields (CLI/desktop one-shot).
+    /// Run Backup/Sync for one source (<paramref name="sourceId"/>) or all persisted sources when null.
+    /// Soft-warn was at add time; Sync hard-fails on nested overlap.
+    /// If the list is empty and <paramref name="sourceId"/> is null, falls back to the single
+    /// BackupSource / VaultFolder fields (CLI/desktop one-shot).
     /// </summary>
-    public async Task SyncAsync(CancellationToken ct = default)
+    public async Task SyncAsync(string? sourceId = null, CancellationToken ct = default)
     {
         if (_session is null)
             throw new InvalidOperationException("unlock vault first");
@@ -645,7 +659,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
 
         var sources = BackupSources.Sources.ToList();
-        if (sources.Count == 0)
+        if (!string.IsNullOrEmpty(sourceId))
+        {
+            var one = sources.FirstOrDefault(s => s.Id == sourceId);
+            if (one is null)
+                throw new InvalidOperationException("That backup folder is no longer in the list.");
+            sources = [one];
+        }
+        else if (sources.Count == 0)
         {
             if (string.IsNullOrWhiteSpace(BackupSource) || !Directory.Exists(BackupSource))
                 throw new InvalidOperationException("add a backup source (or set Source path)");
@@ -696,6 +717,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 linked.Token.ThrowIfCancellationRequested();
                 AppendLog($"{modeVerb.ToLowerInvariant()} source {src.VaultFolderName} -> {src.Path}");
                 BackupPhase = "scanning";
+                BackupCurrentSourceName = src.VaultFolderName;
                 BackupCurrentPath = src.Path;
                 BackupProgressLabel = "Counting local files...";
                 var result = await engine.SyncAsync(
@@ -742,6 +764,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                         BackupSpeedLabel = "";
             BackupEtaLabel = "";
             BackupCurrentPath = "";
+            BackupCurrentSourceName = "";
         }
         catch (OperationCanceledException)
         {
@@ -763,6 +786,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (ReferenceEquals(_backupSyncCts, linked))
                 _backupSyncCts = null;
             linked.Dispose();
+            BackupCurrentSourceName = "";
             OnPropertyChanged(nameof(IsBackupSyncRunning));
             OnPropertyChanged(nameof(IsBackupProgressVisible));
             Busy = false;
@@ -979,6 +1003,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             OnPropertyChanged(nameof(BackupTransferMode));
             OnPropertyChanged(nameof(IsSyncTransferMode));
             OnPropertyChanged(nameof(TransferRunAllLabel));
+            OnPropertyChanged(nameof(TransferRunVerb));
             OnPropertyChanged(nameof(TransferModeHelp));
         AppendLog("reloaded settings from disk");
     }
@@ -994,6 +1019,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         BackupBytesTotal = 0;
         BackupBytesPerSecond = 0;
         BackupCurrentPath = "";
+        BackupCurrentSourceName = "";
         BackupProgressLabel = phase == "scanning" ? "Counting local files..." : "";
         BackupSpeedLabel = "";
         BackupEtaLabel = "";
