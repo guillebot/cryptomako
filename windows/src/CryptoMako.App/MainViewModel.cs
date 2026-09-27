@@ -674,7 +674,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 throw new InvalidOperationException("vault folder name required");
             sources.Add(CreateBackupSourceEntry(BackupSource, VaultFolder.Trim()));
         }
-        else if (global::CryptoMako.Vault.BackupSource.EnsureSourcePrefixedVaultFolders(sources))
+
+        if (sources.Count > 0 &&
+            global::CryptoMako.Vault.BackupSource.EnsureSourcePrefixedVaultFolders(sources))
         {
             // Listed sources still on bare host folder (pre-prefix layout): rewrite + persist.
             foreach (var s in sources)
