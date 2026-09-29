@@ -43,31 +43,36 @@ final class BackupSyncEngine: ObservableObject {
 
     @Published private(set) var state: State = .idle
     @Published private(set) var phase: Phase = .idle
-    @Published private(set) var currentPath: String = ""
     @Published private(set) var currentSourceName: String = ""
-    /// Skipped + uploaded (progress numerator).
-    @Published private(set) var filesDone: Int = 0
-    @Published private(set) var bytesDone: Int64 = 0
-    /// Files discovered so far (progress denominator; freezes when walk finishes).
-    @Published private(set) var filesTotal: Int = 0
-    @Published private(set) var bytesTotal: Int64 = 0
-    /// Eligible files seen during the single walk (same as `filesTotal` while running).
-    @Published private(set) var filesDiscovered: Int = 0
-    @Published private(set) var bytesDiscovered: Int64 = 0
-    /// Files enqueued for remote put (not skipped).
-    @Published private(set) var filesQueued: Int = 0
-    /// Files skipped because unchanged (local index) or already present in the vault.
-    @Published private(set) var filesSkipped: Int = 0
-    /// Completed remote puts (cleartext bytes also in `bytesUploaded`).
-    @Published private(set) var filesUploaded: Int = 0
-    @Published private(set) var bytesUploaded: Int64 = 0
-    /// Vault ciphertext files removed in Sync mode (orphan prune). Always 0 in Backup mode.
-    @Published private(set) var filesDeleted: Int = 0
     /// True after the local enumerator finishes feeding the put streams for the
     /// current source (totals for that source stop growing; queue drains).
     @Published private(set) var walkFinished: Bool = false
+    /// Bumped once per coalesced progress publish so SwiftUI/menu observers
+    /// refresh without one `objectWillChange` per counter field.
+    @Published private(set) var progressEpoch: UInt64 = 0
+
+    /// High-churn Sync metrics — mutated in batches then published via `progressEpoch`.
+    private(set) var currentPath: String = ""
+    /// Skipped + uploaded (progress numerator).
+    private(set) var filesDone: Int = 0
+    private(set) var bytesDone: Int64 = 0
+    /// Files discovered so far (progress denominator; freezes when walk finishes).
+    private(set) var filesTotal: Int = 0
+    private(set) var bytesTotal: Int64 = 0
+    /// Eligible files seen during the single walk (same as `filesTotal` while running).
+    private(set) var filesDiscovered: Int = 0
+    private(set) var bytesDiscovered: Int64 = 0
+    /// Files enqueued for remote put (not skipped).
+    private(set) var filesQueued: Int = 0
+    /// Files skipped because unchanged (local index) or already present in the vault.
+    private(set) var filesSkipped: Int = 0
+    /// Completed remote puts (cleartext bytes also in `bytesUploaded`).
+    private(set) var filesUploaded: Int = 0
+    private(set) var bytesUploaded: Int64 = 0
+    /// Vault ciphertext files removed in Sync mode (orphan prune). Always 0 in Backup mode.
+    private(set) var filesDeleted: Int = 0
     /// Job upload rate (cleartext bytes committed in the put phase only; skips excluded).
-    @Published private(set) var uploadBytesPerSecond: Double = 0
+    private(set) var uploadBytesPerSecond: Double = 0
 
     /// Primary status line for the Backup UI.
     var phaseLabel: String { phase.rawValue }
@@ -114,6 +119,11 @@ final class BackupSyncEngine: ObservableObject {
         }
     }
 
+    /// Single `objectWillChange` for batched counter/path/rate updates.
+    private func publishProgress() {
+        progressEpoch &+= 1
+    }
+
     func cancel() {
         task?.cancel()
         task = nil
@@ -144,6 +154,7 @@ final class BackupSyncEngine: ObservableObject {
         filesDeleted = 0
         walkFinished = false
         uploadBytesPerSecond = 0
+        progressEpoch = 0
         putRateWindowStartedAt = nil
         putRateWindowBytes = 0
         currentPath = ""
@@ -316,8 +327,8 @@ final class BackupSyncEngine: ObservableObject {
         private var lastPathAt = Date.distantPast
         /// How often currentPath may change (walk hot path).
         private let pathInterval: TimeInterval = 1.0
-        /// MainActor publish cadence for counters.
-        private let publishInterval: TimeInterval = 0.75
+        /// MainActor publish cadence for counters (coalesced via progressEpoch).
+        private let publishInterval: TimeInterval = 1.5
 
         struct Snapshot: Sendable {
             let discovered: Int
@@ -396,8 +407,9 @@ final class BackupSyncEngine: ObservableObject {
         private var path: String?
         private var lastFlush = Date.distantPast
         /// Flush every N puts or this many seconds (whichever first).
-        private let putThreshold = 48
-        private let interval: TimeInterval = 0.35
+        /// Paired with progressEpoch so one publish covers the whole batch.
+        private let putThreshold = 96
+        private let interval: TimeInterval = 1.0
 
         struct Batch: Sendable {
             let files: Int
@@ -498,9 +510,10 @@ final class BackupSyncEngine: ObservableObject {
                 if let p = snap.path { self.currentPath = p }
                 // Keep a stable Walking label until the enumerator finishes —
                 // flipping skipping/queuing every flush starved SMB walks via MainActor.
-                if !self.walkFinished {
+                if !self.walkFinished, self.phase != .walking {
                     self.phase = .walking
                 }
+                self.publishProgress()
             }
         }
 
@@ -560,32 +573,63 @@ final class BackupSyncEngine: ObservableObject {
             var files: [String: BackupFileFingerprint]
             /// Puts since last persist (skip path has its own counter).
             var putsSinceSave = 0
+            /// True when `files` changed since the last successful persist.
+            var dirty = false
+            var lastSaveAt = Date.distantPast
+            /// Avoid re-encoding the full fingerprint JSON more than once per gap
+            /// (~64MB / ~458k keys was dominating Sync CPU via JSONEncoder).
+            static let minSaveInterval: TimeInterval = 30
+            static let putPersistEvery = 512
+            static let walkPersistEvery = 5000
+
             init(_ state: BackupSyncState) { self.files = state.files }
             func snapshot() -> BackupSyncState {
                 lock.lock(); defer { lock.unlock() }
                 return BackupSyncState(files: files)
             }
             func set(_ key: String, _ fp: BackupFileFingerprint) {
-                lock.lock(); files[key] = fp; lock.unlock()
+                lock.lock(); files[key] = fp; dirty = true; lock.unlock()
             }
             func get(_ key: String) -> BackupFileFingerprint? {
                 lock.lock(); defer { lock.unlock() }
                 return files[key]
             }
-            func save() { snapshot().save() }
+            /// Persist when dirty. Non-forced saves respect `minSaveInterval`.
+            /// Pass `force: true` on Sync end / cancel / clean shutdown to ignore
+            /// the time gate (still no-ops when nothing changed).
+            func save(force: Bool = false) {
+                lock.lock()
+                let elapsed = Date().timeIntervalSince(lastSaveAt)
+                let should = dirty && (force || elapsed >= Self.minSaveInterval)
+                guard should else {
+                    lock.unlock()
+                    return
+                }
+                dirty = false
+                putsSinceSave = 0
+                lastSaveAt = Date()
+                let snap = BackupSyncState(files: files)
+                lock.unlock()
+                snap.save()
+            }
             /// Persist after successful puts so a crash mid-drain does not
             /// re-upload everything already committed. Returns true when a
-            /// save should run (caller saves outside the lock).
-            func notePutCommittedForPersist(every: Int = 64) -> Bool {
+            /// save should run (caller saves outside the lock). Count threshold
+            /// plus wall-clock gap — avoids JSONEncoder storms on busy Sync.
+            func notePutCommittedForPersist(every: Int = StateBox.putPersistEvery) -> Bool {
                 lock.lock()
                 putsSinceSave += 1
-                let should = putsSinceSave >= every
-                if should { putsSinceSave = 0 }
+                dirty = true
+                let countHit = putsSinceSave >= every
+                let timeOk = Date().timeIntervalSince(lastSaveAt) >= Self.minSaveInterval
+                let should = countHit && timeOk
                 lock.unlock()
                 return should
             }
         }
         let box = StateBox(syncState)
+        // Crash / cancel window: periodic saves are time-gated; always flush on exit.
+        defer { box.save(force: true) }
         let bootstrapRemoteSkip = syncState.files.isEmpty
 
         final class UploadCounter: @unchecked Sendable {
@@ -627,10 +671,11 @@ final class BackupSyncEngine: ObservableObject {
                 self.filesDone = self.filesSkipped + self.filesUploaded
                 self.bytesDone += batch.bytes
                 if let p = batch.path { self.currentPath = p }
-                if self.walkFinished {
+                if self.walkFinished, self.phase != .uploading {
                     self.phase = .uploading
                 }
                 self.notePutCommitted(bytes: batch.bytes)
+                self.publishProgress()
             }
         }
 
@@ -789,7 +834,7 @@ final class BackupSyncEngine: ObservableObject {
                 skipped.bytes += size
                 sinceSave += 1
                 walkUI.noteSkipped(bytes: size)
-                if sinceSave >= 500 {
+                if sinceSave >= StateBox.walkPersistEvery {
                     box.save()
                     sinceSave = 0
                 }
@@ -809,7 +854,7 @@ final class BackupSyncEngine: ObservableObject {
                     skipped.bytes += size
                     sinceSave += 1
                     walkUI.noteSkipped(bytes: size)
-                    if sinceSave >= 500 {
+                    if sinceSave >= StateBox.walkPersistEvery {
                         box.save()
                         sinceSave = 0
                     }
@@ -843,7 +888,7 @@ final class BackupSyncEngine: ObservableObject {
         if let snap = walkUI.take() {
             await applyWalkSnapshot(snap)
         }
-        box.save()
+        box.save(force: true)
         try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
         await MainActor.run {
             self.walkFinished = true
@@ -873,6 +918,7 @@ final class BackupSyncEngine: ObservableObject {
             syncState.save()
             await MainActor.run {
                 self.filesDeleted += deleted
+                self.publishProgress()
             }
             Self.syncLog.info(
                 "sync orphan prune done vaultFolder=\(vaultFolderName, privacy: .public) deleted=\(deleted)"

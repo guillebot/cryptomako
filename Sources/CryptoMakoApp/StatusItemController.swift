@@ -5,15 +5,30 @@ import SwiftUI
 
 /// Menu-bar (status item) presence for CryptoMako.
 @MainActor
-final class StatusItemController {
+final class StatusItemController: NSObject, NSMenuDelegate {
     private let model: VaultAppModel
     private var statusItem: NSStatusItem?
     private var cancellables = Set<AnyCancellable>()
     private var showWindowHandler: () -> Void
 
+    /// Last structural snapshot — full NSMenu rebuild only when these change
+    /// (or when the menu is about to open). Sync counter ticks update chrome only.
+    private struct MenuStructure: Equatable {
+        var vaultStatus: VaultAppModel.Status
+        var detailShown: Bool
+        var isUnlocked: Bool
+        var busy: Bool
+        var syncRunning: Bool
+        var transferInFlight: Int
+        var transferFailed: Int
+    }
+
+    private var lastStructure: MenuStructure?
+
     init(model: VaultAppModel, showWindow: @escaping () -> Void) {
         self.model = model
         self.showWindowHandler = showWindow
+        super.init()
     }
 
     func install() {
@@ -27,20 +42,22 @@ final class StatusItemController {
         statusItem = item
         rebuildMenu()
 
-        let rebuild = { [weak self] in
-            DispatchQueue.main.async {
-                self?.rebuildMenu()
-            }
-        }
+        // Vault model: structural changes (unlock/lock/status) need a full rebuild;
+        // transfer ticks only need tooltip / indicator refresh.
         model.objectWillChange
             .receive(on: RunLoop.main)
-            .sink { _ in rebuild() }
+            .sink { [weak self] _ in
+                self?.handleModelChange()
+            }
             .store(in: &cancellables)
         // BackupSyncEngine is a separate ObservableObject; without this the menu
         // never learns Sync started/stopped and Cancel Sync would not appear.
+        // progressEpoch / counter publishes must NOT rebuild the full NSMenu.
         model.backupSync.objectWillChange
             .receive(on: RunLoop.main)
-            .sink { _ in rebuild() }
+            .sink { [weak self] _ in
+                self?.handleSyncChange()
+            }
             .store(in: &cancellables)
 
         DistributedNotificationCenter.default.addObserver(
@@ -54,10 +71,75 @@ final class StatusItemController {
         }
     }
 
+    private func currentStructure() -> MenuStructure {
+        let detail = model.detail
+        let showDetail = !detail.isEmpty && (model.status == .error || model.status == .connecting)
+        return MenuStructure(
+            vaultStatus: model.status,
+            detailShown: showDetail,
+            isUnlocked: model.isUnlocked,
+            busy: model.busy,
+            syncRunning: model.backupSync.isRunning,
+            transferInFlight: model.transfer.inFlight,
+            transferFailed: model.transfer.failedPuts
+        )
+    }
+
+    private func handleModelChange() {
+        let structure = currentStructure()
+        if structure != lastStructure {
+            rebuildMenu()
+        } else {
+            updateChrome()
+        }
+    }
+
+    private func handleSyncChange() {
+        let structure = currentStructure()
+        if structure.syncRunning != lastStructure?.syncRunning {
+            rebuildMenu()
+        } else {
+            // Walk/Put/progressEpoch ticks — tooltip + lamp only.
+            updateChrome()
+        }
+    }
+
+    /// Cheap status-item updates that avoid tearing down NSMenu on every Sync tick.
+    private func updateChrome() {
+        guard let statusItem else { return }
+        let xfer = model.transfer
+        let sync = model.backupSync
+        var tip = xfer.tooltip + "\n\nVault: \(model.status.rawValue)"
+        if sync.isRunning {
+            let phase = sync.phaseLabel.isEmpty ? "Syncing" : sync.phaseLabel
+            tip += "\nBackup Sync: \(phase) · \(sync.progressPercentLabel)"
+            tip += "\n\(sync.filesDone)/\(max(sync.filesDiscovered, sync.filesDone)) files"
+        }
+        statusItem.button?.toolTip = tip
+        updateStatusItemImage()
+    }
+
+    func menuNeedsUpdate(_ menu: NSMenu) {
+        // Populate in place right before open so transfer lines / Cancel stay
+        // fresh without paying full rebuild cost on every Sync counter tick.
+        populateMenu(menu)
+        lastStructure = currentStructure()
+        updateChrome()
+    }
+
     func rebuildMenu() {
         guard let statusItem else { return }
-        let menu = NSMenu()
+        let menu = statusItem.menu ?? NSMenu()
         menu.autoenablesItems = false
+        menu.delegate = self
+        populateMenu(menu)
+        statusItem.menu = menu
+        lastStructure = currentStructure()
+        updateChrome()
+    }
+
+    private func populateMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
 
         let statusItemMenu = NSMenuItem()
         statusItemMenu.attributedTitle = NSAttributedString(
@@ -177,10 +259,6 @@ final class StatusItemController {
         quitItem.keyEquivalentModifierMask = [.command]
         quitItem.target = self
         menu.addItem(quitItem)
-
-        statusItem.menu = menu
-        statusItem.button?.toolTip = xfer.tooltip + "\n\nVault: \(model.status.rawValue)"
-        updateStatusItemImage()
     }
 
     private func updateStatusItemImage() {
