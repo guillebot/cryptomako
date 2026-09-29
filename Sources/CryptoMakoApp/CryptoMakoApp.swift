@@ -201,6 +201,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 enum BrandIcon {
     private static let cached: NSImage? = load()
     private static let statusBarSize = NSSize(width: 24, height: 24)
+    /// Precomputed once — TIFF + opaque-pixel walk must never run per menu rebuild.
+    private static let cachedTemplateStatusBar: NSImage = makeTemplateStatusBarImage()
 
     static var image: NSImage? { cached }
 
@@ -212,7 +214,7 @@ enum BrandIcon {
     /// Menu-bar icon with an optional colored status badge (non-template so the color stays visible).
     static func statusBarImage(indicatorColor: NSColor?) -> NSImage {
         let size = statusBarSize
-        let base = templateStatusBarImage()
+        let base = cachedTemplateStatusBar
 
         guard let indicatorColor else {
             return base
@@ -261,6 +263,10 @@ enum BrandIcon {
     }
 
     private static func templateStatusBarImage() -> NSImage {
+        cachedTemplateStatusBar
+    }
+
+    private static func makeTemplateStatusBarImage() -> NSImage {
         let size = statusBarSize
         // Prefer the canonical cyan-only menu-bar template (white bucket + padlock).
         if let source = loadNamed("MenuBarTemplate") ?? cached {
