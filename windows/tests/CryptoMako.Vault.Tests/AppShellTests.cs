@@ -260,6 +260,61 @@ public class AppShellTests
     }
 
     [Fact]
+    public async Task MainViewModel_TransferRunVerb_follows_backupTransferMode()
+    {
+        await using var vm = new MainViewModel(secrets: new EnvSecretStore());
+        vm.BackupTransferMode = AppPreferences.BackupTransferModeBackup;
+        Assert.Equal("Backup all", vm.TransferRunAllLabel);
+        Assert.Equal("Backup", vm.TransferRunVerb);
+        vm.BackupTransferMode = AppPreferences.BackupTransferModeSync;
+        Assert.Equal("Sync all", vm.TransferRunAllLabel);
+        Assert.Equal("Sync", vm.TransferRunVerb);
+    }
+
+    [Fact]
+    public async Task MainViewModel_SyncAsync_requires_unlock_before_source_filter()
+    {
+        await using var vm = new MainViewModel(secrets: new EnvSecretStore());
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => vm.SyncAsync("missing-source-id"));
+        Assert.Contains("unlock", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task MainViewModel_MarkBackupSourceFullySynced_only_stamps_matching_source()
+    {
+        var path = Path.Combine(Path.GetTempPath(), "cm-mark-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var store = new BackupSourcesStore();
+            var a = BackupSource.Create(Path.GetTempPath(), "HostA");
+            var b = BackupSource.Create(Path.GetTempPath(), "HostB");
+            store.Sources.Add(a);
+            store.Sources.Add(b);
+            store.SaveToFile(path);
+
+            await using var vm = new MainViewModel(secrets: new EnvSecretStore());
+            // Point VM at our temp store via reload trick: replace BackupSources through disk path.
+            // AppPaths.BackupSourcesPath is fixed; inject by writing default path if needed.
+            // Use reflection to set BackupSources for this unit test.
+            var prop = typeof(MainViewModel).GetProperty(nameof(MainViewModel.BackupSources));
+            Assert.NotNull(prop);
+            var loaded = BackupSourcesStore.LoadFromFile(path);
+            prop!.SetValue(vm, loaded);
+
+            var stamp = DateTimeOffset.Parse("2026-01-15T12:00:00Z");
+            vm.MarkBackupSourceFullySynced(a.Id, stamp);
+
+            Assert.NotNull(loaded.Sources[0].LastFullSyncAt);
+            Assert.Equal(stamp.UtcTicks, loaded.Sources[0].LastFullSyncAt!.Value.UtcTicks);
+            Assert.Null(loaded.Sources[1].LastFullSyncAt);
+        }
+        finally
+        {
+            try { File.Delete(path); } catch { }
+        }
+    }
+
+    [Fact]
     public void S3Settings_ClearSecretKey_drops_reference()
     {
         var s = S3Settings.From("https://s3.example/", "us-east-1", "b", "AKIA", "supersecret", pathStyle: true);

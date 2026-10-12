@@ -42,6 +42,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     private string _backupProgressLabel = "";
     private string _backupSpeedLabel = "";
     private string _backupEtaLabel = "";
+    private string _backupCurrentSourceName = "";
 
     public MainViewModel(ISecretStore? secrets = null)
     {
@@ -82,6 +83,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             OnPropertyChanged();
             OnPropertyChanged(nameof(IsSyncTransferMode));
             OnPropertyChanged(nameof(TransferRunAllLabel));
+            OnPropertyChanged(nameof(TransferRunVerb));
             OnPropertyChanged(nameof(TransferModeHelp));
         }
     }
@@ -89,6 +91,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     public bool IsSyncTransferMode => Preferences.IsSyncTransferMode;
 
     public string TransferRunAllLabel => IsSyncTransferMode ? "Sync all" : "Backup all";
+
+    /// <summary>Per-source button label (macOS <c>runVerb</c> parity).</summary>
+    public string TransferRunVerb => IsSyncTransferMode ? "Sync" : "Backup";
 
     public string TransferModeHelp => IsSyncTransferMode
         ? "Sync copies and updates, then deletes ciphertext in the vault under each source's Backups/<folder>/ that is missing from the local tree. It never deletes the local source. Prefer Backup unless you intentionally want vault orphans removed."
@@ -150,6 +155,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         get => _backupCurrentPath;
         private set { if (_backupCurrentPath != value) { _backupCurrentPath = value; OnPropertyChanged(); } }
+    }
+
+    /// <summary>Vault folder name of the source currently running (empty when idle).</summary>
+    public string BackupCurrentSourceName
+    {
+        get => _backupCurrentSourceName;
+        private set { if (_backupCurrentSourceName != value) { _backupCurrentSourceName = value; OnPropertyChanged(); } }
     }
 
     public string BackupPhase
@@ -628,10 +640,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     }
 
     /// <summary>
-    /// Sync all persisted backup sources. Soft-warn was at add time; Sync hard-fails on nested overlap.
-    /// If the list is empty, falls back to the single BackupSource / VaultFolder fields (CLI/desktop one-shot).
+    /// Run Backup/Sync for one source (<paramref name="sourceId"/>) or all persisted sources when null.
+    /// Soft-warn was at add time; Sync hard-fails on nested overlap.
+    /// If the list is empty and <paramref name="sourceId"/> is null, falls back to the single
+    /// BackupSource / VaultFolder fields (CLI/desktop one-shot).
     /// </summary>
-    public async Task SyncAsync(CancellationToken ct = default)
+    public async Task SyncAsync(string? sourceId = null, CancellationToken ct = default)
     {
         if (_session is null)
             throw new InvalidOperationException("unlock vault first");
@@ -645,7 +659,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
 
         var sources = BackupSources.Sources.ToList();
-        if (sources.Count == 0)
+        if (!string.IsNullOrEmpty(sourceId))
+        {
+            var one = sources.FirstOrDefault(s => s.Id == sourceId);
+            if (one is null)
+                throw new InvalidOperationException("That backup folder is no longer in the list.");
+            sources = [one];
+        }
+        else if (sources.Count == 0)
         {
             if (string.IsNullOrWhiteSpace(BackupSource) || !Directory.Exists(BackupSource))
                 throw new InvalidOperationException("add a backup source (or set Source path)");
@@ -653,7 +674,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 throw new InvalidOperationException("vault folder name required");
             sources.Add(CreateBackupSourceEntry(BackupSource, VaultFolder.Trim()));
         }
-        else if (global::CryptoMako.Vault.BackupSource.EnsureSourcePrefixedVaultFolders(sources))
+
+        if (sources.Count > 0 &&
+            global::CryptoMako.Vault.BackupSource.EnsureSourcePrefixedVaultFolders(sources))
         {
             // Listed sources still on bare host folder (pre-prefix layout): rewrite + persist.
             foreach (var s in sources)
@@ -665,6 +688,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             PersistBackupSources();
         }
 
+        // Remount SMB sources on demand before Sync; fail-closed if unavailable.
+        sources = PrepareBackupSourcesForSync(sources);
         BackupPathOverlap.ThrowIfOverlapping(sources);
 
         Busy = true;
@@ -694,6 +719,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 linked.Token.ThrowIfCancellationRequested();
                 AppendLog($"{modeVerb.ToLowerInvariant()} source {src.VaultFolderName} -> {src.Path}");
                 BackupPhase = "scanning";
+                BackupCurrentSourceName = src.VaultFolderName;
                 BackupCurrentPath = src.Path;
                 BackupProgressLabel = "Counting local files...";
                 var result = await engine.SyncAsync(
@@ -704,6 +730,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                     syncStatePath: AppPaths.SyncStatePath,
                     progress: progress,
                     syncProgress: syncProgress,
+                    isSMB: src.IsSMB,
                     ct: linked.Token);
                 uploaded += result.FilesUploaded;
                 skipped += result.FilesSkipped;
@@ -739,6 +766,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                         BackupSpeedLabel = "";
             BackupEtaLabel = "";
             BackupCurrentPath = "";
+            BackupCurrentSourceName = "";
         }
         catch (OperationCanceledException)
         {
@@ -760,6 +788,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             if (ReferenceEquals(_backupSyncCts, linked))
                 _backupSyncCts = null;
             linked.Dispose();
+            BackupCurrentSourceName = "";
             OnPropertyChanged(nameof(IsBackupSyncRunning));
             OnPropertyChanged(nameof(IsBackupProgressVisible));
             Busy = false;
@@ -809,9 +838,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public void RemoveBackupSource(string id)
     {
+        var removed = BackupSources.Sources.FirstOrDefault(s => s.Id == id);
         var n = BackupSources.Sources.RemoveAll(s => s.Id == id);
         if (n > 0)
         {
+            if (removed is not null && removed.IsSMB)
+            {
+                // Clear CredMan secret only — do not force-unmount shares open elsewhere.
+                SMBBackupMount.DeletePassword(removed, _secrets);
+            }
             PersistBackupSources();
             AppendLog($"removed backup source id={id}");
         }
@@ -830,7 +865,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             BackupSourcesSummary = "(none)";
         else
             BackupSourcesSummary = string.Join("\n",
-                BackupSources.Sources.Select(s => $"• {s.VaultFolderName} ← {s.Path}"));
+                BackupSources.Sources.Select(s =>
+                    (s.IsSMB ? "[SMB] " : "") + s.VaultFolderName + " <- " + s.DisplayLocation));
 
         var overlaps = BackupPathOverlap.FindOverlaps(BackupSources.Sources);
         if (overlaps.Count == 0)
@@ -845,6 +881,76 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         }
     }
 
+
+    /// <summary>
+    /// Mount smb:// (or UNC) via Windows networking, store password in Credential Manager,
+    /// persist SMB metadata (never password) as a Backup source.
+    /// </summary>
+    public string? AddSMBShare(string urlString, string? username, string password, string? vaultFolderName = null)
+    {
+        var normalized = SMBSourceURL.Normalize(urlString);
+        if (BackupSources.Sources.Any(s =>
+                s.IsSMB && string.Equals(s.SmbURL, normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            AppendLog("That SMB share is already in the list: " + normalized);
+            return null;
+        }
+
+        var user = string.IsNullOrWhiteSpace(username) ? null : username.Trim();
+        var mounted = SMBBackupMount.Mount(normalized, user, password ?? "");
+        var src = global::CryptoMako.Vault.BackupSource.CreateSmb(
+            normalized, mounted, user, vaultFolderName);
+        SMBBackupMount.SavePassword(password ?? "", src, _secrets);
+
+        var warn = BackupPathOverlap.SoftWarnOnAdd(BackupSources.Sources, src.Path);
+        BackupSources.Sources.Add(src);
+        PersistBackupSources();
+        if (warn is not null)
+            AppendLog(warn);
+        else
+            AppendLog($"added SMB source {normalized} -> {mounted}");
+        return warn;
+    }
+
+    /// <summary>
+    /// Remount SMB sources and refresh persisted UNC paths before Sync.
+    /// Fail-closed: throws if any SMB share cannot be mounted — never pretend the tree is empty.
+    /// </summary>
+    public List<global::CryptoMako.Vault.BackupSource> PrepareBackupSourcesForSync(
+        IReadOnlyList<global::CryptoMako.Vault.BackupSource> sources)
+    {
+        var prepared = new List<global::CryptoMako.Vault.BackupSource>();
+        var changed = false;
+        foreach (var source in sources)
+        {
+            if (source.IsSMB)
+            {
+                SMBBackupMount.EnsureMounted(source, _secrets);
+                var live = BackupSources.Sources.FirstOrDefault(x => x.Id == source.Id);
+                if (live is not null)
+                {
+                    if (!string.Equals(live.Path, source.Path, StringComparison.OrdinalIgnoreCase)
+                        || !string.Equals(live.SmbURL, source.SmbURL, StringComparison.OrdinalIgnoreCase))
+                    {
+                        live.Path = source.Path;
+                        live.SmbURL = source.SmbURL;
+                        live.Kind = global::CryptoMako.Vault.BackupSource.KindSmb;
+                        changed = true;
+                    }
+                }
+            }
+            else
+            {
+                if (!Directory.Exists(source.Path))
+                    throw new InvalidOperationException(
+                        SMBBackupMount.VolumeUnavailableMessage(source.Path));
+            }
+            prepared.Add(source);
+        }
+        if (changed)
+            PersistBackupSources();
+        return prepared;
+    }
 
     private static global::CryptoMako.Vault.BackupSource CreateBackupSourceEntry(string path, string? vaultFolderName = null) =>
         global::CryptoMako.Vault.BackupSource.Create(path, vaultFolderName);
@@ -899,6 +1005,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
             OnPropertyChanged(nameof(BackupTransferMode));
             OnPropertyChanged(nameof(IsSyncTransferMode));
             OnPropertyChanged(nameof(TransferRunAllLabel));
+            OnPropertyChanged(nameof(TransferRunVerb));
             OnPropertyChanged(nameof(TransferModeHelp));
         AppendLog("reloaded settings from disk");
     }
@@ -914,6 +1021,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         BackupBytesTotal = 0;
         BackupBytesPerSecond = 0;
         BackupCurrentPath = "";
+        BackupCurrentSourceName = "";
         BackupProgressLabel = phase == "scanning" ? "Counting local files..." : "";
         BackupSpeedLabel = "";
         BackupEtaLabel = "";

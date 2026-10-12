@@ -113,10 +113,18 @@ public sealed partial class MainWindow : Window
         ConnectExplorerButton.IsEnabled = unlocked && !explorer;
         DisconnectExplorerButton.IsEnabled = explorer;
 
-        SyncNowButton.IsEnabled = unlocked;
-        RefreshTransferModeUi();
+        SyncNowButton.IsEnabled = unlocked && !_vm.IsBackupSyncRunning;
+        CancelBackupSyncButton.Visibility = _vm.IsBackupSyncRunning ? Visibility.Visible : Visibility.Collapsed;
+        CancelBackupSyncButton.IsEnabled = _vm.IsBackupSyncRunning;
+
+        var syncRunning = _vm.IsBackupSyncRunning;
+        RemoveSelectedBackupSourceButton.IsEnabled = !syncRunning;
+        ClearBackupSourcesButton.IsEnabled = !syncRunning;
+        AddSmbShareButton.IsEnabled = !syncRunning;
+        AddBackupSourceButton.IsEnabled = !syncRunning;
 
         ExplorerPathLink.IsEnabled = explorer;
+        RefreshTransferModeUi();
     }
 
     private void RefreshVaultStatusText()
@@ -425,6 +433,36 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) { VmLog(ex, backupHint: true); }
     }
 
+    private async void OnSyncSource(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!_vm.IsUnlocked || _vm.IsBackupSyncRunning)
+                return;
+            if (sender is not Button { Tag: string sourceId } || string.IsNullOrEmpty(sourceId))
+                return;
+            PushToVm();
+            UiNote(_vm.TransferRunVerb + " starting for one source (" + _vm.BackupTransferMode + ").");
+            await _vm.SyncAsync(sourceId);
+            UiNote(_vm.Status);
+            RefreshStatusStrip();
+        }
+        catch (Exception ex) { VmLog(ex, backupHint: true); }
+    }
+
+    private void OnCancelBackupSync(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            if (!_vm.IsBackupSyncRunning)
+                return;
+            _vm.CancelBackupSync();
+            UiNote("Backup Sync cancel requested.");
+            RefreshStatusStrip();
+        }
+        catch (Exception ex) { VmLog(ex, backupHint: true); }
+    }
+
     private void OnTransferModeClick(object sender, RoutedEventArgs e)
     {
         if (_syncingUi) return;
@@ -460,6 +498,7 @@ public sealed partial class MainWindow : Window
     {
         if (SyncNowButton is not null)
             SyncNowButton.Content = _vm.TransferRunAllLabel;
+        RefreshBackupSourcesListUi();
         if (TransferModeHelpText is not null)
             TransferModeHelpText.Text = _vm.TransferModeHelp;
         if (SettingsTransferModeHelpText is not null)
@@ -502,11 +541,88 @@ public sealed partial class MainWindow : Window
         catch (Exception ex) { VmLog(ex); }
     }
 
+    private async void OnAddSmbShare(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var urlBox = new TextBox
+            {
+                PlaceholderText = "smb://server/share/optional/path or \\\\server\\share\\path",
+                Text = "smb://",
+                Margin = new Thickness(0, 0, 0, 8),
+            };
+            var userBox = new TextBox
+            {
+                PlaceholderText = "Username (optional)",
+                Margin = new Thickness(0, 0, 0, 8),
+            };
+            var passBox = new PasswordBox
+            {
+                PlaceholderText = "Password",
+                Margin = new Thickness(0, 0, 0, 8),
+            };
+            var help = new TextBlock
+            {
+                Text = "CryptoMako uses Windows networking (WNetAddConnection2 / durable UNC, no drive letter). Password is stored in Credential Manager only; the share is remounted on demand before Sync.",
+                TextWrapping = TextWrapping.Wrap,
+                Opacity = 0.8,
+                Margin = new Thickness(0, 0, 0, 12),
+            };
+            var panel = new StackPanel { Spacing = 4 };
+            panel.Children.Add(help);
+            panel.Children.Add(urlBox);
+            panel.Children.Add(userBox);
+            panel.Children.Add(passBox);
+
+            var dialog = new ContentDialog
+            {
+                Title = "Add SMB share",
+                Content = panel,
+                PrimaryButtonText = "Mount & add",
+                CloseButtonText = "Cancel",
+                DefaultButton = ContentDialogButton.Primary,
+                XamlRoot = Content.XamlRoot,
+            };
+
+            var result = await dialog.ShowAsync();
+            if (result != ContentDialogResult.Primary)
+                return;
+
+            var url = urlBox.Text ?? "";
+            var user = userBox.Text;
+            var pass = passBox.Password ?? "";
+            passBox.Password = "";
+            if (string.IsNullOrWhiteSpace(url))
+            {
+                UiNote("SMB URL required.");
+                return;
+            }
+
+            PushToVm();
+            var warn = _vm.AddSMBShare(
+                url,
+                user,
+                pass,
+                string.IsNullOrWhiteSpace(_vm.VaultFolder) ? null : _vm.VaultFolder);
+            RefreshStatusStrip();
+            UiNote(string.IsNullOrEmpty(warn)
+                ? "Added SMB share."
+                : warn);
+        }
+        catch (Exception ex) { VmLog(ex, backupHint: true); }
+    }
+
     private void OnRemoveBackupSource(object sender, RoutedEventArgs e)
     {
         try
         {
-            var id = SelectedBackupSourceId();
+            if (_vm.IsBackupSyncRunning)
+                return;
+            string? id = null;
+            if (sender is Button { Tag: string taggedId })
+                id = taggedId;
+            else
+                id = SelectedBackupSourceId();
             if (id is null)
             {
                 UiNote("Select a backup source to remove.");
@@ -542,41 +658,156 @@ public sealed partial class MainWindow : Window
     private void RefreshBackupSourcesListUi()
     {
         var selectedId = SelectedBackupSourceId();
+        var runVerb = _vm.TransferRunVerb;
+        var syncRunning = _vm.IsBackupSyncRunning;
         BackupSourcesList.Items.Clear();
         foreach (var s in _vm.BackupSources.Sources)
         {
-            var row = new StackPanel
+            var isActive = syncRunning
+                           && string.Equals(_vm.BackupCurrentSourceName, s.VaultFolderName, StringComparison.Ordinal);
+            var row = new Grid
             {
-                Orientation = Orientation.Horizontal,
-                Spacing = 6,
+                ColumnSpacing = 8,
+                Padding = new Thickness(0, 4, 0, 4),
             };
-            row.Children.Add(new TextBlock
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+
+            var info = new StackPanel { Spacing = 2 };
+            var titleRow = new StackPanel { Orientation = Orientation.Horizontal, Spacing = 6 };
+            titleRow.Children.Add(new TextBlock
             {
-                Text = $"{s.VaultFolderName} ← {s.Path}",
-                FontFamily = new FontFamily("Consolas"),
+                Text = s.VaultFolderName,
+                FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
                 VerticalAlignment = VerticalAlignment.Center,
             });
             if (s.LastFullSyncAt is { } at)
             {
-                // Segoe Fluent CheckMark — green tick beside source name (Mac checkmark.circle.fill parity).
                 var check = new FontIcon
                 {
                     Glyph = "\uE73E",
                     FontSize = 12,
                     Foreground = new SolidColorBrush(Color.FromArgb(255, 16, 124, 16)),
                     VerticalAlignment = VerticalAlignment.Center,
-                    Margin = new Thickness(2, 0, 0, 0),
                 };
                 ToolTipService.SetToolTip(check, "Last full sync " + FormatFullSyncAgo(at));
                 AutomationProperties.SetName(check, "Fully synced");
-                row.Children.Add(check);
+                titleRow.Children.Add(check);
             }
+            if (s.IsSMB)
+            {
+                var badge = new TextBlock
+                {
+                    Text = "SMB",
+                    FontSize = 10,
+                    FontWeight = Microsoft.UI.Text.FontWeights.SemiBold,
+                    Foreground = new SolidColorBrush(Color.FromArgb(255, 0, 103, 192)),
+                    VerticalAlignment = VerticalAlignment.Center,
+                    Margin = new Thickness(4, 0, 0, 0),
+                };
+                titleRow.Children.Add(badge);
+            }
+            info.Children.Add(titleRow);
+
+            var loc = s.IsSMB ? s.DisplayLocation : s.Path;
+            info.Children.Add(new TextBlock
+            {
+                Text = loc,
+                FontFamily = new FontFamily("Consolas"),
+                FontSize = 12,
+                Opacity = 0.75,
+                TextWrapping = TextWrapping.Wrap,
+            });
+            if (s.IsSMB && !string.Equals(s.Path, s.DisplayLocation, StringComparison.Ordinal))
+            {
+                info.Children.Add(new TextBlock
+                {
+                    Text = s.Path,
+                    FontFamily = new FontFamily("Consolas"),
+                    FontSize = 11,
+                    Opacity = 0.55,
+                    TextWrapping = TextWrapping.NoWrap,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                });
+            }
+            info.Children.Add(new TextBlock
+            {
+                Text = $"→ Backups/{s.VaultFolderName}/",
+                FontSize = 11,
+                Opacity = 0.55,
+            });
+            Grid.SetColumn(info, 0);
+            row.Children.Add(info);
+
+            if (isActive)
+            {
+                var active = new StackPanel
+                {
+                    Orientation = Orientation.Horizontal,
+                    Spacing = 6,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    MinWidth = 120,
+                };
+                active.Children.Add(new ProgressRing
+                {
+                    Width = 16,
+                    Height = 16,
+                    IsActive = true,
+                });
+                var phase = string.IsNullOrEmpty(_vm.BackupProgressLabel)
+                    ? "Syncing…"
+                    : _vm.BackupProgressLabel;
+                active.Children.Add(new TextBlock
+                {
+                    Text = phase,
+                    FontSize = 12,
+                    Opacity = 0.75,
+                    TextTrimming = TextTrimming.CharacterEllipsis,
+                    MaxWidth = 180,
+                    VerticalAlignment = VerticalAlignment.Center,
+                });
+                Grid.SetColumn(active, 1);
+                row.Children.Add(active);
+            }
+            else
+            {
+                var runButton = new Button
+                {
+                    Content = runVerb,
+                    Tag = s.Id,
+                    VerticalAlignment = VerticalAlignment.Center,
+                    IsEnabled = _vm.IsUnlocked && !syncRunning,
+                };
+                runButton.Click += OnSyncSource;
+                ToolTipService.SetToolTip(runButton, _vm.IsSyncTransferMode
+                    ? $"Sync this folder into Backups/{s.VaultFolderName}/ (puts + delete vault-only files under that folder)"
+                    : $"Backup this folder into Backups/{s.VaultFolderName}/ (put/update only; no vault deletes)");
+                Grid.SetColumn(runButton, 1);
+                row.Children.Add(runButton);
+            }
+
+            var removeButton = new Button
+            {
+                Content = "−",
+                Tag = s.Id,
+                VerticalAlignment = VerticalAlignment.Center,
+                IsEnabled = !syncRunning,
+                FontFamily = new FontFamily("Segoe UI"),
+                FontSize = 16,
+                Padding = new Thickness(8, 0, 8, 0),
+            };
+            removeButton.Click += OnRemoveBackupSource;
+            ToolTipService.SetToolTip(removeButton, "Remove this backup source");
+            Grid.SetColumn(removeButton, 2);
+            row.Children.Add(removeButton);
 
             var item = new ListBoxItem
             {
                 Content = row,
                 Tag = s.Id,
             };
+
             BackupSourcesList.Items.Add(item);
             if (selectedId is not null && selectedId == s.Id)
                 BackupSourcesList.SelectedItem = item;
