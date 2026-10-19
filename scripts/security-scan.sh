@@ -49,7 +49,6 @@ echo "==> osv-scanner"
 osv-scanner scan \
   --config "${root}/osv-scanner.toml" \
   --lockfile "${root}/linux/go.mod" \
-  --lockfile "${root}/Package.resolved" \
   --format table
 
 echo "==> govulncheck (reachable Go issues)"
