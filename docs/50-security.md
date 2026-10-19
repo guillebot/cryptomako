@@ -15,7 +15,7 @@
 
 CI (`.github/workflows/ci.yml`) runs on every push/PR:
 
-- **Trivy** — vulnerability, secret, Dockerfile, and image scan. Does not scan `.build/checkouts/` (transitive SPM trees contain upstream Dockerfiles and benchmark keys that are not shipped).
+- **Trivy** — vulnerability, secret, Dockerfile, and image scan. The image scan fails on HIGH or CRITICAL findings that already have a vendor fix. Does not scan `.build/checkouts/` (transitive SPM trees contain upstream Dockerfiles and benchmark keys that are not shipped).
 - **Grype** — Anchore scanner using NVD and language-ecosystem feeds; fails on HIGH+.
 - **OSV-Scanner** and **govulncheck** — Go vulnerability database, with govulncheck limited to reachable issues.
 - **Gitleaks** — secret scan of the working tree and git history.
