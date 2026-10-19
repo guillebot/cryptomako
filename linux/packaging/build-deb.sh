@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-1.0.0}"
+VERSION="${VERSION:-1.0.2}"
 if [[ -n "${ARCH:-}" ]]; then
   :
 elif command -v dpkg >/dev/null 2>&1; then
@@ -29,7 +29,7 @@ case "$ARCH" in
   *) echo "unsupported ARCH=$ARCH (use amd64 or arm64)" >&2; exit 1 ;;
 esac
 export GOOS=linux
-go build -trimpath -ldflags="-s -w" -o "$ROOT/cryptomako" .
+go build -trimpath -ldflags="-s -w -X github.com/guillebot/cryptomako/linux/cmd.Version=${VERSION}" -o "$ROOT/cryptomako" .
 
 if command -v dpkg-deb >/dev/null 2>&1; then
   STAGE="$(mktemp -d)"
