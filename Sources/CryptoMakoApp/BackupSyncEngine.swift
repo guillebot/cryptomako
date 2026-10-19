@@ -18,6 +18,76 @@ import OSLog
 /// - **sync**: same puts, then delete remote ciphertext under `Backups/<folder>/`
 ///   that is missing from the local tree (ObjectStore delete, fail-closed). Never
 ///   deletes the local source. Scope is that source’s vault folder only.
+/// Caps queued uploads. `acquire` suspends the walk; each dequeued job releases one slot.
+private final class UploadSlots: @unchecked Sendable {
+    private let lock = NSLock()
+    private var available: Int
+    private var waiters: [CheckedContinuation<Void, Error>] = []
+    private var cancelled = false
+
+    init(limit: Int) {
+        available = max(1, limit)
+    }
+
+    func acquire() async throws {
+        try Task.checkCancellation()
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            throw CancellationError()
+        }
+        if available > 0 {
+            available -= 1
+            lock.unlock()
+            return
+        }
+        lock.unlock()
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            lock.lock()
+            if cancelled {
+                lock.unlock()
+                continuation.resume(throwing: CancellationError())
+                return
+            }
+            if available > 0 {
+                available -= 1
+                lock.unlock()
+                continuation.resume()
+                return
+            }
+            waiters.append(continuation)
+            lock.unlock()
+        }
+    }
+
+    func release() {
+        lock.lock()
+        if cancelled {
+            lock.unlock()
+            return
+        }
+        if !waiters.isEmpty {
+            let continuation = waiters.removeFirst()
+            lock.unlock()
+            continuation.resume()
+            return
+        }
+        available += 1
+        lock.unlock()
+    }
+
+    func cancel() {
+        lock.lock()
+        cancelled = true
+        let pending = waiters
+        waiters.removeAll()
+        lock.unlock()
+        for continuation in pending {
+            continuation.resume(throwing: CancellationError())
+        }
+    }
+}
+
 @MainActor
 final class BackupSyncEngine: ObservableObject {
     enum State: Equatable {
@@ -159,11 +229,13 @@ final class BackupSyncEngine: ObservableObject {
         putRateWindowBytes = 0
         currentPath = ""
         currentSourceName = sources.first?.vaultFolderName ?? ""
+        let transferRunID = TransferMetrics.beginRun()
 
         // Detached: do not inherit @MainActor for the long upload pipeline
         // (MainActor inheritance serialized prep LIST/UI hops and starved PUT scheduling).
         task = Task.detached { [weak self] in
             guard let self else { return }
+            defer { TransferMetrics.endRun(transferRunID) }
             do {
                 let excludes = BackupSyncExcludesStore.load()
                 let bandwidthLimiter = UploadBandwidthLimiter.fromPreferences(AppPreferences.load())
@@ -198,14 +270,16 @@ final class BackupSyncEngine: ObservableObject {
                         throw SyncError.missingSource(source.path)
                     }
                     try self.assertSourceStillPresent(path: root.path, isSMB: isSMB)
-                    Self.syncLog.info("ensureDirectoryPath start path=\(vaultRoot, privacy: .public)")
+                    Self.syncLog.info("ensureDirectoryPath start path=\(vaultRoot, privacy: .private(mask: .hash))")
                     let leafDirId = try await session.ensureDirectoryPath(vaultRoot)
-                    Self.syncLog.info("ensureDirectoryPath done path=\(vaultRoot, privacy: .public)")
+                    Self.syncLog.info("ensureDirectoryPath done path=\(vaultRoot, privacy: .private(mask: .hash))")
                     let transferMode = AppPreferences.load().backupTransferMode
                     let result = try await self.uploadTree(
                         localRoot: root,
                         parentDirId: leafDirId,
                         session: session,
+                        sourceID: source.id,
+                        transferRunID: transferRunID,
                         vaultFolderName: source.vaultFolderName,
                         syncState: &syncState,
                         excludes: excludes,
@@ -252,6 +326,9 @@ final class BackupSyncEngine: ObservableObject {
     /// Cleartext files larger than this share limited upload slots so we never
     /// hold several multi-GB ciphertext streams at once (file puts stream UNSIGNED-PAYLOAD).
     nonisolated private static let largeFileBytes: Int64 = 32 * 1024 * 1024
+    /// Maximum discovered files waiting for a put worker. The walk waits here
+    /// instead of retaining an unbounded path list for a multi-million-file tree.
+    nonisolated private static let maxQueuedUploads = 512
     /// Prefer medium+ files on a dedicated pool so millions of tiny puts cannot
     /// monopolize every worker (was burying useful MB-scale uploads).
     nonisolated private static let mediumFileBytes: Int64 = 256 * 1024
@@ -450,6 +527,8 @@ final class BackupSyncEngine: ObservableObject {
         localRoot: URL,
         parentDirId: String,
         session: VaultSession,
+        sourceID: String,
+        transferRunID: UUID,
         vaultFolderName: String,
         syncState: inout BackupSyncState,
         excludes: BackupSyncExcludes,
@@ -536,25 +615,16 @@ final class BackupSyncEngine: ObservableObject {
         }
         defer { walkPublishTask.cancel() }
 
-        // Three priority streams: large / medium / small. Walk yields without
-        // awaiting MinIO so the buffers fill from local disk; put drainers
-        // resolve vault dirs and PUT. Each stream has exactly ONE consumer that
-        // spawns a bounded TaskGroup (limit = Settings workers for that tier).
-        // Previous design ran N `for await` workers on the same AsyncStream —
-        // AsyncStream is single-consumer, so put concurrency collapsed (~1)
-        // despite small/medium/large worker knobs.
-        let (largeStream, largeCont) = AsyncStream.makeStream(
-            of: PendingUpload.self,
-            bufferingPolicy: .unbounded
-        )
-        let (mediumStream, mediumCont) = AsyncStream.makeStream(
-            of: PendingUpload.self,
-            bufferingPolicy: .unbounded
-        )
-        let (smallStream, smallCont) = AsyncStream.makeStream(
-            of: PendingUpload.self,
-            bufferingPolicy: .unbounded
-        )
+        // Three priority streams: large / medium / small. The walk waits once
+        // 512 jobs are queued, so a huge tree cannot accumulate every path in
+        // memory. Each stream has exactly ONE consumer that spawns a bounded
+        // TaskGroup (limit = Settings workers for that tier). AsyncStream is
+        // single-consumer, so N `for await` workers on one stream would not
+        // create N concurrent puts.
+        let uploadSlots = UploadSlots(limit: Self.maxQueuedUploads)
+        let (largeStream, largeCont) = AsyncStream.makeStream(of: PendingUpload.self)
+        let (mediumStream, mediumCont) = AsyncStream.makeStream(of: PendingUpload.self)
+        let (smallStream, smallCont) = AsyncStream.makeStream(of: PendingUpload.self)
         let vaultFolder = vaultFolderName
         let largeThreshold = Self.largeFileBytes
         let mediumThreshold = Self.mediumFileBytes
@@ -689,7 +759,10 @@ final class BackupSyncEngine: ObservableObject {
                 _ = try await session.createOrOverwriteFile(
                     parentDirId: parentId,
                     cleartextName: job.fileURL.lastPathComponent,
-                    contentsURL: job.fileURL
+                    contentsURL: job.fileURL,
+                    diagnosticPath: job.relativePath,
+                    diagnosticSourceID: sourceID,
+                    diagnosticRunID: transferRunID
                 )
                 // Pace Sync puts only (Finder File Provider uses a different path).
                 if let limiter = bandwidthLimiter {
@@ -720,7 +793,7 @@ final class BackupSyncEngine: ObservableObject {
                 if Self.isIsolatablePutTransportFailure(error) {
                     let detail = error.localizedDescription
                     Self.syncLog.error(
-                        "put isolated transport failure path=\(job.relativePath, privacy: .public) err=\(detail, privacy: .public)"
+                        "put isolated transport failure path=\(job.relativePath, privacy: .private(mask: .hash)) err=\(detail, privacy: .private(mask: .hash))"
                     )
                     putFailures.note(path: job.relativePath, detail: detail)
                     return
@@ -741,6 +814,7 @@ final class BackupSyncEngine: ObservableObject {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 var inFlight = 0
                 for await job in stream {
+                    uploadSlots.release()
                     try Task.checkCancellation()
                     if inFlight >= limit {
                         try await group.next()
@@ -757,6 +831,7 @@ final class BackupSyncEngine: ObservableObject {
         }
 
         async let uploadResult: Count = {
+            defer { uploadSlots.cancel() }
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
                     try await drainTier(stream: smallStream, limit: smallWorkers, label: "small")
@@ -871,6 +946,11 @@ final class BackupSyncEngine: ObservableObject {
                 size: size,
                 contentModification: mtime
             )
+            do {
+                try await uploadSlots.acquire()
+            } catch {
+                break
+            }
             if size >= largeThreshold {
                 largeCont.yield(job)
             } else if size >= mediumThreshold {
@@ -906,7 +986,7 @@ final class BackupSyncEngine: ObservableObject {
                 self.currentPath = "Comparing vault Backups/\(vaultFolderName)/ to local tree…"
             }
             Self.syncLog.info(
-                "sync orphan prune start vaultFolder=\(vaultFolderName, privacy: .public) localFiles=\(localFiles.count)"
+                "sync orphan prune start vaultFolder=\(vaultFolderName, privacy: .private(mask: .hash)) localFiles=\(localFiles.count)"
             )
             let deleted = try await deleteVaultOrphans(
                 session: session,
@@ -921,7 +1001,7 @@ final class BackupSyncEngine: ObservableObject {
                 self.publishProgress()
             }
             Self.syncLog.info(
-                "sync orphan prune done vaultFolder=\(vaultFolderName, privacy: .public) deleted=\(deleted)"
+                "sync orphan prune done vaultFolder=\(vaultFolderName, privacy: .private(mask: .hash)) deleted=\(deleted)"
             )
             try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
         } else {

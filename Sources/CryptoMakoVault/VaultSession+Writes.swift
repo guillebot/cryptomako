@@ -44,7 +44,10 @@ extension VaultSession {
         }
 
         let idData = Data(childDirId.utf8)
-        TransferMetrics.beginPut(name: name + "/")
+        let transferToken = TransferMetrics.beginPut(
+            name: name + "/",
+            operation: "Create directory"
+        )
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 if prepared.shortened {
@@ -59,9 +62,9 @@ extension VaultSession {
                 group.addTask { try await self.store.putObject(key: idKey, data: payload) }
                 try await group.waitForAll()
             }
-            TransferMetrics.endPutSuccess(bytes: Int64(idData.count * 2))
+            TransferMetrics.endPutSuccess(token: transferToken, bytes: Int64(idData.count * 2))
         } catch {
-            TransferMetrics.endPutFailure(error.localizedDescription)
+            TransferMetrics.endPutFailure(token: transferToken, error: error)
             throw error
         }
 
@@ -82,7 +85,10 @@ extension VaultSession {
     public func createOrOverwriteFile(
         parentDirId: String,
         cleartextName: String,
-        contentsURL: URL
+        contentsURL: URL,
+        diagnosticPath: String? = nil,
+        diagnosticSourceID: String? = nil,
+        diagnosticRunID: UUID? = nil
     ) async throws -> VaultNode {
         let name = cleartextName.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !name.isEmpty, !name.contains("/") else {
@@ -96,7 +102,11 @@ extension VaultSession {
 
         // inFlight before encrypt: Sync can encrypt for seconds with zero PUT
         // bytes; beginPut-after-encrypt made TransferMetrics look frozen/stale.
-        TransferMetrics.beginPut(name: name)
+        let transferToken = TransferMetrics.beginPut(
+            name: diagnosticPath ?? name,
+            sourceID: diagnosticSourceID,
+            runID: diagnosticRunID
+        )
         do {
             // Fast name/dir-id work on the shared cryptor; content encrypt on a private
             // worker so Backup Sync can encrypt many files in parallel (was the main
@@ -135,7 +145,7 @@ extension VaultSession {
                 try await store.putObject(key: ciphertextKey, from: cipherURL)
                 displayCipherName = prepared.encName
             }
-            TransferMetrics.endPutSuccess(bytes: cipherSize)
+            TransferMetrics.endPutSuccess(token: transferToken, bytes: cipherSize)
             // Local ciphertext size is authoritative; skip remote HEAD (extra RTT).
             return VaultNode(
                 cleartextName: name,
@@ -148,7 +158,7 @@ extension VaultSession {
                 eTag: nil
             )
         } catch {
-            TransferMetrics.endPutFailure(error.localizedDescription)
+            TransferMetrics.endPutFailure(token: transferToken, error: error)
             throw error
         }
     }

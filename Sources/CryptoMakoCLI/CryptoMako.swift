@@ -119,7 +119,7 @@ func openSession(_ opts: ConnectionOptions) async throws -> OpenedVault {
         let proxyPassword = try? CredentialStore.readSharedOrLocal(
             account: AppIdentifiers.proxyPasswordAccount
         )
-        store = S3ObjectStore(
+        store = try S3ObjectStore(
             settings: S3Settings(
                 endpoint: config.endpoint,
                 region: config.region,

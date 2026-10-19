@@ -29,12 +29,12 @@ final class S3ObjectStoreTests: XCTestCase {
     private var session: URLSession!
     private var store: S3ObjectStore!
 
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
+        try super.setUpWithError()
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [MockURLProtocol.self]
         session = URLSession(configuration: config)
-        store = S3ObjectStore(
+        store = try S3ObjectStore(
             settings: S3Settings(
                 endpoint: URL(string: "http://127.0.0.1:9000")!,
                 region: "us-east-1",
@@ -50,6 +50,44 @@ final class S3ObjectStoreTests: XCTestCase {
     override func tearDown() {
         MockURLProtocol.handler = nil
         super.tearDown()
+    }
+
+    func testProductionInitRejectsPlainHTTP() {
+        XCTAssertThrowsError(
+            try S3ObjectStore(
+                settings: S3Settings(
+                    endpoint: URL(string: "http://127.0.0.1:9000")!,
+                    region: "us-east-1",
+                    bucket: "b",
+                    accessKey: "k",
+                    secretKey: "s"
+                )
+            )
+        ) { error in
+            guard case ObjectStoreError.transport(let message) = error else {
+                return XCTFail("expected transport error")
+            }
+            XCTAssertEqual(message, "S3 endpoint must use https://")
+        }
+    }
+
+    func testProductionInitRejectsUserinfo() {
+        XCTAssertThrowsError(
+            try S3ObjectStore(
+                settings: S3Settings(
+                    endpoint: URL(string: "https://key:secret@minio.example")!,
+                    region: "us-east-1",
+                    bucket: "b",
+                    accessKey: "k",
+                    secretKey: "s"
+                )
+            )
+        ) { error in
+            guard case ObjectStoreError.transport(let message) = error else {
+                return XCTFail("expected transport error")
+            }
+            XCTAssertEqual(message, "S3 endpoint must not include userinfo")
+        }
     }
 
     func testGetObjectReturnsBodyOn200() async throws {

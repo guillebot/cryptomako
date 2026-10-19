@@ -1,5 +1,53 @@
 import Foundation
 
+public struct TransferFailure: Codable, Equatable, Identifiable, Sendable {
+    public enum Status: String, Codable, Sendable {
+        case unresolved
+        case resolved
+    }
+
+    public var id: UUID
+    public var runID: UUID?
+    public var sourceID: String?
+    public var path: String
+    public var timestamp: Date
+    public var category: String
+    public var operation: String
+    public var attempts: Int
+    public var retryable: Bool
+    public var status: Status
+    public var resolvedAt: Date?
+    public var message: String
+
+    public init(
+        id: UUID = UUID(),
+        runID: UUID?,
+        sourceID: String?,
+        path: String,
+        timestamp: Date = Date(),
+        category: String,
+        operation: String,
+        attempts: Int,
+        retryable: Bool,
+        status: Status = .unresolved,
+        resolvedAt: Date? = nil,
+        message: String
+    ) {
+        self.id = id
+        self.runID = runID
+        self.sourceID = sourceID
+        self.path = path
+        self.timestamp = timestamp
+        self.category = category
+        self.operation = operation
+        self.attempts = attempts
+        self.retryable = retryable
+        self.status = status
+        self.resolvedAt = resolvedAt
+        self.message = message
+    }
+}
+
 /// Cross-process transfer stats (host app ↔ File Provider) via the App Group.
 ///
 /// Counts **remote** ObjectStore commits only (S3 put/get/delete). Local CloudStorage
@@ -17,6 +65,45 @@ public struct TransferSnapshot: Codable, Equatable, Sendable {
     /// Exponentially-smoothed upload rate from recent puts (bytes/sec).
     public var uploadBytesPerSecond: Double
     public var updatedAt: Date
+    /// Bounded, local-only diagnostics. Cleartext paths never need to enter OSLog.
+    public var failureHistory: [TransferFailure]
+    public var latestRunID: UUID?
+    public var latestRunStartedAt: Date?
+    public var activeRunID: UUID?
+
+    public init(
+        inFlight: Int,
+        completedPuts: Int,
+        failedPuts: Int,
+        completedDeletes: Int,
+        bytesUploaded: Int64,
+        bytesDownloaded: Int64,
+        currentName: String?,
+        lastError: String?,
+        lastRemoteCommitAt: Date?,
+        uploadBytesPerSecond: Double,
+        updatedAt: Date,
+        failureHistory: [TransferFailure] = [],
+        latestRunID: UUID? = nil,
+        latestRunStartedAt: Date? = nil,
+        activeRunID: UUID? = nil
+    ) {
+        self.inFlight = inFlight
+        self.completedPuts = completedPuts
+        self.failedPuts = failedPuts
+        self.completedDeletes = completedDeletes
+        self.bytesUploaded = bytesUploaded
+        self.bytesDownloaded = bytesDownloaded
+        self.currentName = currentName
+        self.lastError = lastError
+        self.lastRemoteCommitAt = lastRemoteCommitAt
+        self.uploadBytesPerSecond = uploadBytesPerSecond
+        self.updatedAt = updatedAt
+        self.failureHistory = failureHistory
+        self.latestRunID = latestRunID
+        self.latestRunStartedAt = latestRunStartedAt
+        self.activeRunID = activeRunID
+    }
 
     public static let empty = TransferSnapshot(
         inFlight: 0,
@@ -29,8 +116,21 @@ public struct TransferSnapshot: Codable, Equatable, Sendable {
         lastError: nil,
         lastRemoteCommitAt: nil,
         uploadBytesPerSecond: 0,
-        updatedAt: Date(timeIntervalSince1970: 0)
+        updatedAt: Date(timeIntervalSince1970: 0),
+        failureHistory: [],
+        latestRunID: nil,
+        latestRunStartedAt: nil,
+        activeRunID: nil
     )
+
+    public var unresolvedFailures: [TransferFailure] {
+        failureHistory.filter { $0.status == .unresolved }
+    }
+
+    public var currentRunUnresolvedFailures: [TransferFailure] {
+        guard let latestRunID else { return [] }
+        return failureHistory.filter { $0.runID == latestRunID && $0.status == .unresolved }
+    }
 
     public var tooltipLines: [String] {
         var lines = ["CryptoMako — remote transfers"]
@@ -58,6 +158,33 @@ public struct TransferSnapshot: Codable, Equatable, Sendable {
     }
 
     public var tooltip: String { tooltipLines.joined(separator: "\n") }
+
+    private enum CodingKeys: String, CodingKey {
+        case inFlight, completedPuts, failedPuts, completedDeletes
+        case bytesUploaded, bytesDownloaded, currentName, lastError
+        case lastRemoteCommitAt, uploadBytesPerSecond, updatedAt
+        case failureHistory, latestRunID, latestRunStartedAt, activeRunID
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        inFlight = try c.decodeIfPresent(Int.self, forKey: .inFlight) ?? 0
+        completedPuts = try c.decodeIfPresent(Int.self, forKey: .completedPuts) ?? 0
+        failedPuts = try c.decodeIfPresent(Int.self, forKey: .failedPuts) ?? 0
+        completedDeletes = try c.decodeIfPresent(Int.self, forKey: .completedDeletes) ?? 0
+        bytesUploaded = try c.decodeIfPresent(Int64.self, forKey: .bytesUploaded) ?? 0
+        bytesDownloaded = try c.decodeIfPresent(Int64.self, forKey: .bytesDownloaded) ?? 0
+        currentName = try c.decodeIfPresent(String.self, forKey: .currentName)
+        lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
+        lastRemoteCommitAt = try c.decodeIfPresent(Date.self, forKey: .lastRemoteCommitAt)
+        uploadBytesPerSecond = try c.decodeIfPresent(Double.self, forKey: .uploadBytesPerSecond) ?? 0
+        updatedAt = try c.decodeIfPresent(Date.self, forKey: .updatedAt)
+            ?? Date(timeIntervalSince1970: 0)
+        failureHistory = try c.decodeIfPresent([TransferFailure].self, forKey: .failureHistory) ?? []
+        latestRunID = try c.decodeIfPresent(UUID.self, forKey: .latestRunID)
+        latestRunStartedAt = try c.decodeIfPresent(Date.self, forKey: .latestRunStartedAt)
+        activeRunID = try c.decodeIfPresent(UUID.self, forKey: .activeRunID)
+    }
 
     /// Human size for Sync / transfer UI (decimal SI units: 1000-based KB/MB/GB/TB).
     /// At or above 1000 GB (1e12 bytes) shows TB with 2 decimal places so large
@@ -114,6 +241,14 @@ public enum TransferMetrics {
     private static var memory: TransferSnapshot?
     private static var persistPending = false
     private static var notifyPending = false
+    private static let maxFailureHistory = 200
+    private struct PendingPut {
+        let path: String
+        let sourceID: String?
+        let runID: UUID?
+        let operation: String
+    }
+    private static var pendingPuts: [UUID: PendingPut] = [:]
     private static let persistQueue = DispatchQueue(label: "net.gschimmel.cryptomako.transfer-metrics.persist")
 
     private static var fileURL: URL? {
@@ -150,6 +285,42 @@ public enum TransferMetrics {
         DistributedNotificationCenter.default().post(name: didChangeNotification, object: nil)
     }
 
+    @discardableResult
+    public static func beginRun() -> UUID {
+        let id = UUID()
+        mutate { snap in
+            var s = snap
+            s.latestRunID = id
+            s.latestRunStartedAt = Date()
+            s.activeRunID = id
+            s.updatedAt = Date()
+            return s
+        }
+        return id
+    }
+
+    public static func endRun(_ id: UUID) {
+        mutate { snap in
+            var s = snap
+            if s.activeRunID == id { s.activeRunID = nil }
+            s.updatedAt = Date()
+            return s
+        }
+    }
+
+    public static func clearFailureHistory() {
+        mutate { snap in
+            var s = snap
+            s.failedPuts = 0
+            s.lastError = nil
+            s.failureHistory = []
+            s.latestRunID = nil
+            s.latestRunStartedAt = nil
+            s.updatedAt = Date()
+            return s
+        }
+    }
+
     /// Poll until no remote puts are in flight (or timeout). Used before disconnect
     /// so Lock/Unmount drain MinIO uploads instead of abandoning them mid-flight.
     @discardableResult
@@ -172,7 +343,22 @@ public enum TransferMetrics {
         return load().inFlight == 0
     }
 
-    public static func beginPut(name: String) {
+    @discardableResult
+    public static func beginPut(
+        name: String,
+        sourceID: String? = nil,
+        runID: UUID? = nil,
+        operation: String = "Upload"
+    ) -> UUID {
+        let token = UUID()
+        lock.lock()
+        pendingPuts[token] = PendingPut(
+            path: name,
+            sourceID: sourceID,
+            runID: runID,
+            operation: operation
+        )
+        lock.unlock()
         mutate { snap in
             var s = snap
             s.inFlight += 1
@@ -187,11 +373,13 @@ public enum TransferMetrics {
             rateWindowBytes = 0
         }
         lock.unlock()
+        return token
     }
 
-    public static func endPutSuccess(bytes: Int64) {
+    public static func endPutSuccess(token: UUID, bytes: Int64) {
         var rate = 0.0
         lock.lock()
+        let pending = pendingPuts.removeValue(forKey: token)
         rateWindowBytes += max(0, bytes)
         if let started = rateWindowStartedAt {
             let dt = Date().timeIntervalSince(started)
@@ -217,20 +405,84 @@ public enum TransferMetrics {
                     ? rate
                     : (s.uploadBytesPerSecond * 0.7 + rate * 0.3)
             }
+            // Source IDs make Backup paths unambiguous. Finder writes currently
+            // provide only a basename, so do not auto-resolve an unrelated item
+            // with the same name in another directory.
+            if let pending, pending.sourceID != nil {
+                let resolvedAt = Date()
+                for index in s.failureHistory.indices
+                where s.failureHistory[index].status == .unresolved
+                    && s.failureHistory[index].path == pending.path
+                    && s.failureHistory[index].sourceID == pending.sourceID
+                {
+                    s.failureHistory[index].status = .resolved
+                    s.failureHistory[index].resolvedAt = resolvedAt
+                }
+            }
             return s
         }
     }
 
-    public static func endPutFailure(_ message: String) {
+    public static func endPutFailure(token: UUID, error: Error) {
+        lock.lock()
+        let pending = pendingPuts.removeValue(forKey: token)
+        lock.unlock()
+        let detail = classify(error)
         mutate { snap in
             var s = snap
             s.inFlight = max(0, s.inFlight - 1)
             s.failedPuts += 1
-            s.lastError = String(message.prefix(160))
+            s.lastError = detail.message
+            let fallback = PendingPut(
+                path: s.currentName ?? "Unknown item",
+                sourceID: nil,
+                runID: s.activeRunID,
+                operation: "Upload"
+            )
+            let context = pending ?? fallback
+            s.failureHistory.append(TransferFailure(
+                runID: context.runID,
+                sourceID: context.sourceID,
+                path: context.path,
+                category: detail.category,
+                operation: context.operation,
+                attempts: detail.attempts,
+                retryable: detail.retryable,
+                message: detail.message
+            ))
+            if s.failureHistory.count > maxFailureHistory {
+                s.failureHistory.removeFirst(s.failureHistory.count - maxFailureHistory)
+            }
             s.updatedAt = Date()
             if s.inFlight == 0 { s.currentName = nil }
             return s
         }
+    }
+
+    private static func classify(_ error: Error) -> (
+        category: String,
+        attempts: Int,
+        retryable: Bool,
+        message: String
+    ) {
+        let message = String(error.localizedDescription.prefix(240))
+        let lower = message.lowercased()
+        if lower.contains("access denied") || lower.contains("http 401") || lower.contains("http 403") {
+            return ("Authentication", 1, false, message)
+        }
+        if lower.contains("timed out") || lower.contains("network")
+            || lower.contains("not connected") || lower.contains("connection")
+            || lower.contains("nsurlerrordomain")
+        {
+            return ("Network", 5, true, message)
+        }
+        if lower.contains("encrypt") || lower.contains("cipher") || lower.contains("vault") {
+            return ("Vault", 0, false, message)
+        }
+        if lower.contains("file") || lower.contains("volume") || lower.contains("permission") {
+            return ("Local source", 0, true, message)
+        }
+        return ("Other", 1, true, message)
     }
 
     public static func recordDeleteSuccess() {

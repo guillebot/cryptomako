@@ -77,13 +77,13 @@ enum SMBBackupMount {
             let kept = URL(fileURLWithPath: source.path, isDirectory: true)
             source.bookmarkData = makeBookmark(for: kept) ?? source.bookmarkData
             source.smbURL = smb
-            log.info("SMB remounted \(smb, privacy: .public); kept path \(kept.path, privacy: .public)")
+            log.info("SMB remounted \(smb, privacy: .private(mask: .hash)); kept path \(kept.path, privacy: .private(mask: .hash))")
             return kept
         }
         source.path = mounted.path
         source.smbURL = smb
         source.bookmarkData = makeBookmark(for: mounted) ?? source.bookmarkData
-        log.info("SMB mounted \(smb, privacy: .public) → \(mounted.path, privacy: .public)")
+        log.info("SMB mounted \(smb, privacy: .private(mask: .hash)) → \(mounted.path, privacy: .private(mask: .hash))")
         return mounted
     }
 
@@ -98,7 +98,7 @@ enum SMBBackupMount {
         let normalized = try SMBSourceURL.normalize(smbURLString)
 
         if let existing = findExistingMount(forSMBURL: normalized) {
-            log.info("SMB already mounted \(normalized, privacy: .public) → \(existing.path, privacy: .public)")
+            log.info("SMB already mounted \(normalized, privacy: .private(mask: .hash)) → \(existing.path, privacy: .private(mask: .hash))")
             return existing
         }
 
@@ -115,7 +115,7 @@ enum SMBBackupMount {
             )
         } catch {
             lastError = error
-            log.info("NetFS NoUI mount failed: \(error.localizedDescription, privacy: .public)")
+            log.info("NetFS NoUI mount failed: \(error.localizedDescription, privacy: .private(mask: .hash))")
         }
 
         if allowSystemUI {
@@ -129,7 +129,7 @@ enum SMBBackupMount {
                 )
             } catch {
                 lastError = error
-                log.info("NetFS AllowUI mount failed: \(error.localizedDescription, privacy: .public)")
+                log.info("NetFS AllowUI mount failed: \(error.localizedDescription, privacy: .private(mask: .hash))")
             }
 
             // 3) Open smb:// via Finder/system Connect UI, then poll /Volumes (bounded timeout).
@@ -140,7 +140,7 @@ enum SMBBackupMount {
                 )
             } catch {
                 lastError = error
-                log.info("System connect poll failed: \(error.localizedDescription, privacy: .public)")
+                log.info("System connect poll failed: \(error.localizedDescription, privacy: .private(mask: .hash))")
             }
         }
 
@@ -354,7 +354,7 @@ enum SMBBackupMount {
         }
 
         let openURL = connectURL(normalized: normalized, username: username)
-        log.info("Opening system SMB connect UI for \(openURL.absoluteString, privacy: .public)")
+        log.info("Opening system SMB connect UI for \(openURL.absoluteString, privacy: .private(mask: .hash))")
         let opened = NSWorkspace.shared.open(openURL)
         if !opened {
             throw MountError.mountFailed(
@@ -365,7 +365,7 @@ enum SMBBackupMount {
         let deadline = Date().addingTimeInterval(systemConnectPollTimeout)
         while Date() < deadline {
             if let existing = findExistingMount(forSMBURL: normalized) {
-                log.info("System connect mounted \(normalized, privacy: .public) → \(existing.path, privacy: .public)")
+                log.info("System connect mounted \(normalized, privacy: .private(mask: .hash)) → \(existing.path, privacy: .private(mask: .hash))")
                 return existing
             }
             Thread.sleep(forTimeInterval: systemConnectPollInterval)

@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import Darwin
 import OSLog
+import os
 
 public struct S3Settings: Sendable {
     public var endpoint: URL
@@ -40,17 +41,19 @@ public final class S3ObjectStore: ObjectStore {
     /// that single flow to ~1 Mbps. Separate sessions → separate TCP connections
     /// so Backup Sync concurrency can actually fill the uplink.
     private let sessions: [URLSession]
-    private let sessionPickLock = NSLock()
-    private var sessionPick: Int = 0
+    private let sessionPick = OSAllocatedUnfairLock(initialState: 0)
 
     /// - Parameter configureSession: Optional mutator for each pooled
     ///   `URLSessionConfiguration` (e.g. apply app-group proxy preferences).
     ///   Invoked before the session is created; not used when `session` is injected.
+    /// - Parameter session: An injected session may use plain HTTP for unit tests.
+    ///   Production sessions require `https` and reject URL userinfo.
     public init(
         settings: S3Settings,
         session: URLSession? = nil,
         configureSession: ((URLSessionConfiguration) -> Void)? = nil
-    ) {
+    ) throws {
+        try Self.validateEndpoint(settings.endpoint, allowPlainHTTP: session != nil)
         self.settings = settings
         if let session {
             self.sessions = [session]
@@ -77,11 +80,28 @@ public final class S3ObjectStore: ObjectStore {
     }
 
     private func nextSession() -> URLSession {
-        sessionPickLock.lock()
-        defer { sessionPickLock.unlock() }
-        let s = sessions[sessionPick % sessions.count]
-        sessionPick &+= 1
-        return s
+        let index = sessionPick.withLock { state -> Int in
+            let current = state
+            state &+= 1
+            return current
+        }
+        return sessions[index % sessions.count]
+    }
+
+    /// Production traffic is HTTPS only. Plain HTTP exists solely so tests can
+    /// inject a `URLProtocol` session; credentials in the URL are never accepted.
+    private static func validateEndpoint(_ endpoint: URL, allowPlainHTTP: Bool) throws {
+        if endpoint.user != nil || endpoint.password != nil {
+            throw ObjectStoreError.transport("S3 endpoint must not include userinfo")
+        }
+        switch endpoint.scheme?.lowercased() {
+        case "https":
+            return
+        case "http" where allowPlainHTTP:
+            return
+        default:
+            throw ObjectStoreError.transport("S3 endpoint must use https://")
+        }
     }
 
     /// Kept for symmetry with the previous NIO-backed client; `URLSession` needs no teardown.
@@ -210,7 +230,7 @@ public final class S3ObjectStore: ObjectStore {
             do {
                 try await operation()
                 if attempt > 1 {
-                    Self.putLog.info("S3 PUT succeeded after retry key=\(key, privacy: .public) attempts=\(attempt)")
+                    Self.putLog.info("S3 PUT succeeded after retry key=\(key, privacy: .private(mask: .hash)) attempts=\(attempt)")
                 }
                 return
             } catch is CancellationError {
@@ -229,7 +249,7 @@ public final class S3ObjectStore: ObjectStore {
                 if willRetry {
                     let delay = putBackoffNanoseconds(attempt: attempt)
                     Self.putLog.warning(
-                        "S3 PUT transient failure key=\(key, privacy: .public) attempt=\(attempt)/\(Self.maxPutAttempts) error=\(self.describe(error), privacy: .public) backoffMs=\(delay / 1_000_000)"
+                        "S3 PUT transient failure key=\(key, privacy: .private(mask: .hash)) attempt=\(attempt)/\(Self.maxPutAttempts) error=\(self.describe(error), privacy: .private(mask: .hash)) backoffMs=\(delay / 1_000_000)"
                     )
                     try await Task.sleep(nanoseconds: delay)
                     continue

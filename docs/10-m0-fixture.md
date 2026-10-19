@@ -61,6 +61,8 @@ Defaults:
 | Password | `cryptomako-minio-dev` |
 | Bucket | `cryptomako-poc` |
 
+CryptoMako refuses that plain HTTP API. Put HTTPS in front of MinIO before unlocking.
+
 ## Create the vault
 
 Preferred for this repo: generate a format-8 fixture with the CLI (password is gitignored):

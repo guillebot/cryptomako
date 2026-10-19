@@ -219,7 +219,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             progress.completedUnitCount = progress.totalUnitCount
         }, onError: { error in
             // Fail closed: never report a local-only success.
-            log.error("createItem failed (no remote commit): \(error.localizedDescription, privacy: .public)")
+            log.error("createItem failed (no remote commit): \(error.localizedDescription, privacy: .private(mask: .hash))")
             completionHandler(nil, [], false, error)
         })
     }
@@ -234,13 +234,13 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         completionHandler: @escaping (NSFileProviderItem?, NSFileProviderItemFields, Bool, Error?) -> Void
     ) -> Progress {
         log.info(
-            "modifyItem name=\(item.filename, privacy: .public) fields=\(String(describing: changedFields), privacy: .public) parent=\(item.parentItemIdentifier.rawValue, privacy: .public)"
+            "modifyItem name=\(item.filename, privacy: .private(mask: .hash)) fields=\(String(describing: changedFields), privacy: .public) parent=\(item.parentItemIdentifier.rawValue, privacy: .private(mask: .hash))"
         )
         // Defensive: even without .allowsTrashing, some paths still reparent to trash.
         // Treat as permanent remote delete (product: fail-closed MinIO delete, no soft trash).
         // Huge folders need runLongDelete heartbeat or Finder aborts with -36.
         if changedFields.contains(.parentItemIdentifier), Self.isTrashIdentifier(item.parentItemIdentifier) {
-            log.info("trash via modifyItem name=\(item.filename, privacy: .public) id=\(item.itemIdentifier.rawValue, privacy: .public)")
+            log.info("trash via modifyItem name=\(item.filename, privacy: .private(mask: .hash)) id=\(item.itemIdentifier.rawValue, privacy: .private(mask: .hash))")
             return runLongDelete(label: "Deleting \(item.filename) from CryptoMako vault") { [index] progress in
                 let session = try await index.session()
                 guard let parsed = ItemID.parse(item.itemIdentifier) else {
@@ -255,7 +255,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
                 await index.invalidateListing()
                 completionHandler(nil, [], false, nil)
             } onError: { error in
-                log.error("trash delete failed: \(error.localizedDescription, privacy: .public)")
+                log.error("trash delete failed: \(error.localizedDescription, privacy: .private(mask: .hash))")
                 completionHandler(nil, [], false, error)
             }
         }
@@ -290,7 +290,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             // Rename / move not implemented — fail closed (never pretend success).
             if changedFields.contains(.filename) || changedFields.contains(.parentItemIdentifier) {
                 log.error(
-                    "modifyItem unsupported fields: \(String(describing: changedFields), privacy: .public) parent=\(item.parentItemIdentifier.rawValue, privacy: .public) name=\(item.filename, privacy: .public)"
+                    "modifyItem unsupported fields: \(String(describing: changedFields), privacy: .public) parent=\(item.parentItemIdentifier.rawValue, privacy: .private(mask: .hash)) name=\(item.filename, privacy: .private(mask: .hash))"
                 )
                 throw NSError(
                     domain: NSCocoaErrorDomain,
@@ -302,7 +302,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             completionHandler(item, [], false, nil)
             progress.completedUnitCount = progress.totalUnitCount
         }, onError: { error in
-            log.error("modifyItem failed (no remote commit): \(error.localizedDescription, privacy: .public)")
+            log.error("modifyItem failed (no remote commit): \(error.localizedDescription, privacy: .private(mask: .hash))")
             completionHandler(nil, [], false, error)
         })
     }
@@ -316,7 +316,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     ) -> Progress {
         // Large vault folders (photo libraries) need a live Progress heartbeat or
         // Finder kills the provider with Error -36 before remote deletes finish.
-        log.info("deleteItem id=\(identifier.rawValue, privacy: .public)")
+        log.info("deleteItem id=\(identifier.rawValue, privacy: .private(mask: .hash))")
         return runLongDelete(label: "Deleting from CryptoMako vault") { [index] progress in
             let session = try await index.session()
             guard let parsed = ItemID.parse(identifier) else {
@@ -331,7 +331,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             await index.invalidateListing()
             completionHandler(nil)
         } onError: { error in
-            log.error("deleteItem failed: \(error.localizedDescription, privacy: .public)")
+            log.error("deleteItem failed: \(error.localizedDescription, privacy: .private(mask: .hash))")
             completionHandler(error)
         }
     }
@@ -407,7 +407,7 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
             if let real = siblings.first(where: { $0.dirId == dirId }) {
                 return real
             }
-            log.error("resolveDirectory miss id=\(dirId, privacy: .public) parent=\(knownParent, privacy: .public)")
+            log.error("resolveDirectory miss id=\(dirId, privacy: .private(mask: .hash)) parent=\(knownParent, privacy: .private(mask: .hash))")
         }
         guard let info = try await index.directoryInfo(dirId: dirId, hintParent: knownParent) else {
             throw NSFileProviderError(.noSuchItem)

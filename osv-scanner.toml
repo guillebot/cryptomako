@@ -1,0 +1,6 @@
+# Same accepted exception as .trivyignore. govulncheck on 2026-10-19 reports
+# this openpgp issue in the module graph and not in called code. CryptoMako
+# imports only golang.org/x/crypto/scrypt.
+[[IgnoredVulns]]
+id = "GO-2026-5932"
+reason = "unreachable openpgp paths; linux imports only golang.org/x/crypto/scrypt"

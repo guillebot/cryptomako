@@ -50,7 +50,30 @@ final class VaultSettingsTests: XCTestCase {
         XCTAssertEqual(settings.localVaultPath, "")
         XCTAssertFalse(settings.isLocal)
         XCTAssertEqual(settings.storageMode, .s3)
+        XCTAssertFalse(settings.isComplete)
+        XCTAssertEqual(settings.s3EndpointProblem, "Endpoint must use https://.")
+    }
+
+    func testHTTPSEndpointIsComplete() {
+        let settings = VaultSettings(
+            storageMode: .s3,
+            endpoint: "https://minio.example:9000",
+            bucket: "b",
+            accessKey: "k"
+        )
+        XCTAssertNil(settings.s3EndpointProblem)
         XCTAssertTrue(settings.isComplete)
+    }
+
+    func testEndpointRejectsUserinfo() {
+        let settings = VaultSettings(
+            storageMode: .s3,
+            endpoint: "https://key:secret@minio.example:9000",
+            bucket: "b",
+            accessKey: "k"
+        )
+        XCTAssertEqual(settings.s3EndpointProblem, "Endpoint must not include a username or password.")
+        XCTAssertFalse(settings.isComplete)
     }
 
     func testLocalPathIsCompleteWithoutS3() {
@@ -119,5 +142,105 @@ final class UploadBandwidthLimiterTests: XCTestCase {
         prefs.limitSyncUploadBandwidth = false
         prefs.syncUploadCapMbps = 100
         XCTAssertNil(UploadBandwidthLimiter.fromPreferences(prefs))
+    }
+}
+
+final class TransferMetricsTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        TransferMetrics.reset()
+    }
+
+    override func tearDown() {
+        TransferMetrics.reset()
+        super.tearDown()
+    }
+
+    func testLegacySnapshotDecodesWithoutFailureHistory() throws {
+        let json = """
+        {
+          "inFlight": 0,
+          "completedPuts": 3,
+          "failedPuts": 2,
+          "completedDeletes": 0,
+          "bytesUploaded": 42,
+          "bytesDownloaded": 0,
+          "uploadBytesPerSecond": 0,
+          "updatedAt": 0
+        }
+        """
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let snapshot = try decoder.decode(TransferSnapshot.self, from: Data(json.utf8))
+        XCTAssertEqual(snapshot.failedPuts, 2)
+        XCTAssertTrue(snapshot.failureHistory.isEmpty)
+        XCTAssertNil(snapshot.latestRunID)
+    }
+
+    func testFailureIsTrackedAndLaterSuccessResolvesIt() {
+        let runID = TransferMetrics.beginRun()
+        let failedToken = TransferMetrics.beginPut(
+            name: "albums/photo.jpg",
+            sourceID: "source-1",
+            runID: runID
+        )
+        TransferMetrics.endPutFailure(
+            token: failedToken,
+            error: NSError(
+                domain: NSURLErrorDomain,
+                code: NSURLErrorTimedOut,
+                userInfo: [NSLocalizedDescriptionKey: "The request timed out."]
+            )
+        )
+
+        var snapshot = TransferMetrics.load()
+        XCTAssertEqual(snapshot.currentRunUnresolvedFailures.count, 1)
+        XCTAssertEqual(snapshot.currentRunUnresolvedFailures.first?.path, "albums/photo.jpg")
+        XCTAssertEqual(snapshot.currentRunUnresolvedFailures.first?.category, "Network")
+        XCTAssertEqual(snapshot.currentRunUnresolvedFailures.first?.attempts, 5)
+        XCTAssertEqual(snapshot.currentRunUnresolvedFailures.first?.retryable, true)
+
+        let retryToken = TransferMetrics.beginPut(
+            name: "albums/photo.jpg",
+            sourceID: "source-1",
+            runID: UUID()
+        )
+        TransferMetrics.endPutSuccess(token: retryToken, bytes: 123)
+        snapshot = TransferMetrics.load()
+        XCTAssertTrue(snapshot.unresolvedFailures.isEmpty)
+        XCTAssertEqual(snapshot.failureHistory.first?.status, .resolved)
+        XCTAssertNotNil(snapshot.failureHistory.first?.resolvedAt)
+    }
+
+    func testClearFailureHistoryPreservesSuccessfulCounters() {
+        let token = TransferMetrics.beginPut(name: "photo.jpg")
+        TransferMetrics.endPutSuccess(token: token, bytes: 10)
+        let failed = TransferMetrics.beginPut(name: "bad.jpg")
+        TransferMetrics.endPutFailure(
+            token: failed,
+            error: NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost)
+        )
+
+        TransferMetrics.clearFailureHistory()
+        let snapshot = TransferMetrics.load()
+        XCTAssertEqual(snapshot.completedPuts, 1)
+        XCTAssertEqual(snapshot.bytesUploaded, 10)
+        XCTAssertEqual(snapshot.failedPuts, 0)
+        XCTAssertTrue(snapshot.failureHistory.isEmpty)
+    }
+
+    func testFailureHistoryIsBounded() {
+        for index in 0..<205 {
+            let token = TransferMetrics.beginPut(name: "file-\(index)")
+            TransferMetrics.endPutFailure(
+                token: token,
+                error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut)
+            )
+        }
+        let snapshot = TransferMetrics.load()
+        XCTAssertEqual(snapshot.failedPuts, 205)
+        XCTAssertEqual(snapshot.failureHistory.count, 200)
+        XCTAssertEqual(snapshot.failureHistory.first?.path, "file-5")
+        XCTAssertEqual(snapshot.failureHistory.last?.path, "file-204")
     }
 }

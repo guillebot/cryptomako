@@ -72,7 +72,7 @@ actor VaultIndex {
 
     private func unlock() async throws -> VaultSession {
         guard let settings = VaultSettings.load() else {
-            log.error("no settings at \(VaultSettings.cliConfigURL.path, privacy: .public)")
+            log.error("no settings at \(VaultSettings.cliConfigURL.path, privacy: .private(mask: .hash))")
             throw NSFileProviderError(.notAuthenticated)
         }
         let password = try vaultPassword()
@@ -99,7 +99,7 @@ actor VaultIndex {
         let proxyPassword = try? CredentialStore.readSharedOrLocal(
             account: AppIdentifiers.proxyPasswordAccount
         )
-        let store = S3ObjectStore(
+        let store = try S3ObjectStore(
             settings: S3Settings(
                 endpoint: endpoint,
                 region: settings.region,
@@ -120,7 +120,7 @@ actor VaultIndex {
         do {
             return try await VaultSession.unlock(location: location, passphrase: password, store: store)
         } catch {
-            log.error("S3 unlock failed: \(error.localizedDescription, privacy: .public)")
+            log.error("S3 unlock failed: \(error.localizedDescription, privacy: .private(mask: .hash))")
             throw NSFileProviderError(.notAuthenticated)
         }
     }

@@ -31,7 +31,7 @@ final class ConnectionConfigLoaderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: dir) }
         let configURL = dir.appendingPathComponent("poc.json")
         let json = """
-        {"endpoint":"http://file:9000","region":"eu-west-1","bucket":"from-file","prefix":"p/","accessKey":"file-key"}
+        {"endpoint":"https://file:9000","region":"eu-west-1","bucket":"from-file","prefix":"p/","accessKey":"file-key"}
         """
         try json.write(to: configURL, atomically: true, encoding: .utf8)
 
@@ -45,7 +45,7 @@ final class ConnectionConfigLoaderTests: XCTestCase {
                 "CRYPTOMAKO_SECRET_KEY": "secret",
             ]
         )
-        XCTAssertEqual(config.endpoint.absoluteString, "http://file:9000")
+        XCTAssertEqual(config.endpoint.absoluteString, "https://file:9000")
         XCTAssertEqual(config.region, "eu-west-1")
         XCTAssertEqual(config.bucket, "override-bucket")
         XCTAssertEqual(config.prefix, "p/")
@@ -57,7 +57,7 @@ final class ConnectionConfigLoaderTests: XCTestCase {
     func testVirtualHostedDisablesPathStyle() throws {
         let config = try ConnectionConfigLoader.resolve(
             ConnectionRequest(
-                endpoint: "http://127.0.0.1:9000",
+                endpoint: "https://127.0.0.1:9000",
                 bucket: "b",
                 accessKey: "k",
                 virtualHosted: true
@@ -68,6 +68,34 @@ final class ConnectionConfigLoaderTests: XCTestCase {
             ]
         )
         XCTAssertFalse(config.pathStyle)
+    }
+
+    func testRejectsPlainHTTP() {
+        XCTAssertThrowsError(
+            try ConnectionConfigLoader.resolve(
+                ConnectionRequest(endpoint: "http://127.0.0.1:9000", bucket: "b", accessKey: "k"),
+                environment: [
+                    "CRYPTOMAKO_PASSWORD": "pass",
+                    "CRYPTOMAKO_SECRET_KEY": "secret",
+                ]
+            )
+        ) { error in
+            XCTAssertEqual(error as? ConnectionConfigError, .invalid("endpoint must be HTTPS"))
+        }
+    }
+
+    func testRejectsEndpointUserinfo() {
+        XCTAssertThrowsError(
+            try ConnectionConfigLoader.resolve(
+                ConnectionRequest(endpoint: "https://key:secret@minio.example", bucket: "b", accessKey: "k"),
+                environment: [
+                    "CRYPTOMAKO_PASSWORD": "pass",
+                    "CRYPTOMAKO_SECRET_KEY": "secret",
+                ]
+            )
+        ) { error in
+            XCTAssertEqual(error as? ConnectionConfigError, .invalid("endpoint must not include userinfo"))
+        }
     }
 }
 
