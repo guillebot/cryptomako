@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Local security gate. Install once:
 #   brew install trivy grype syft gitleaks osv-scanner gosec
-#   go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+#   go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
 # CI also runs NuGet audit, CodeQL, and the Linux image scan.
 set -euo pipefail
 
