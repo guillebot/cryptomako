@@ -26,7 +26,7 @@ jobs:
           set -euo pipefail
           go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
           go install github.com/google/osv-scanner/cmd/osv-scanner@v1.9.2
-          go install github.com/gitleaks/gitleaks/v8@v8.30.1
+          go install github.com/zricethezav/gitleaks/v8@v8.30.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Resolve Swift packages
