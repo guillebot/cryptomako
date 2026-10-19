@@ -32,7 +32,7 @@ final class VaultEnumerator: NSObject, NSFileProviderEnumerator {
                 // Refresh listing from S3, but keep DirectoryIndex parent map via children().
                 await index.invalidateListing()
                 let nodes = try await index.children(of: dirId)
-                log.info("enumerate dirId=\(self.dirId, privacy: .public) count=\(nodes.count)")
+                log.info("enumerate dirId=\(self.dirId, privacy: .private(mask: .hash)) count=\(nodes.count)")
                 var items: [NSFileProviderItem] = []
                 for node in nodes {
                     switch node.kind {
@@ -57,7 +57,7 @@ final class VaultEnumerator: NSObject, NSFileProviderEnumerator {
                 observer.didEnumerate(items)
                 observer.finishEnumerating(upTo: nil)
             } catch {
-                log.error("enumerate failed dirId=\(self.dirId, privacy: .public): \(error.localizedDescription, privacy: .public)")
+                log.error("enumerate failed dirId=\(self.dirId, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private(mask: .hash))")
                 observer.finishEnumeratingWithError(error)
             }
         }
@@ -97,7 +97,7 @@ final class VaultEnumerator: NSObject, NSFileProviderEnumerator {
                 observer.finishEnumeratingChanges(upTo: Self.makeAnchor(), moreComing: false)
             } catch {
                 log.error(
-                    "enumerateChanges failed dirId=\(self.dirId, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                    "enumerateChanges failed dirId=\(self.dirId, privacy: .private(mask: .hash)): \(error.localizedDescription, privacy: .private(mask: .hash))"
                 )
                 observer.finishEnumeratingWithError(error)
             }

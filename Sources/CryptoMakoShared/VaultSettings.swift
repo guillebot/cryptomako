@@ -47,11 +47,26 @@ public struct VaultSettings: Codable, Sendable, Equatable {
         storageMode == .local
     }
 
+    /// Why the S3 endpoint cannot be used. Nil for a valid `https` URL with no userinfo.
+    public var s3EndpointProblem: String? {
+        guard !isLocal else { return nil }
+        guard let url = URL(string: endpoint), let scheme = url.scheme?.lowercased(), !scheme.isEmpty else {
+            return "Endpoint must be an https:// URL."
+        }
+        if url.user != nil || url.password != nil {
+            return "Endpoint must not include a username or password."
+        }
+        if scheme != "https" {
+            return "Endpoint must use https://."
+        }
+        return nil
+    }
+
     public var isComplete: Bool {
         if isLocal {
             return !localVaultPath.isEmpty
         }
-        return !endpoint.isEmpty && !bucket.isEmpty && !accessKey.isEmpty && URL(string: endpoint) != nil
+        return s3EndpointProblem == nil && !bucket.isEmpty && !accessKey.isEmpty
     }
 
     /// Prefix used for object keys: empty (bucket root) or guaranteed trailing `/`.

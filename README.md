@@ -147,7 +147,8 @@ swift build
 swift run cryptomako --help
 swift test
 make ci
-make security   # Trivy + Grype
+make security   # Trivy, Grype, OSV, govulncheck, Gitleaks, Gosec
+git config core.hooksPath .githooks   # once per clone; pre-push runs the gate
 
 # Local vault, no S3:
 swift run cryptomako fixture

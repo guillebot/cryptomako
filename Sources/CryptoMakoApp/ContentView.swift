@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var deleteRootName = "backupsfotosfamilia"
     @State private var confirmDeleteRoot = false
+    @State private var showTransferFailures = false
     @EnvironmentObject private var model: VaultAppModel
 
     var body: some View {
@@ -181,12 +182,30 @@ struct ContentView: View {
             }
             Spacer(minLength: 0)
             if x.failedPuts > 0 {
-                Text("\(x.failedPuts) failed")
+                let currentFailures = x.currentRunUnresolvedFailures.count
+                let unresolvedFailures = x.unresolvedFailures.count
+                Button {
+                    showTransferFailures = true
+                } label: {
+                    Text(
+                        currentFailures > 0
+                            ? "\(currentFailures) need retry"
+                            : (unresolvedFailures > 0
+                                ? "\(unresolvedFailures) unresolved"
+                                : "\(x.failedPuts) historical failures")
+                    )
                     .foregroundStyle(.red)
+                }
+                .buttonStyle(.plain)
+                .help("Show failed transfer details")
             }
         }
         .font(.caption)
         .help(x.tooltip)
+        .sheet(isPresented: $showTransferFailures) {
+            TransferFailureSheet()
+                .environmentObject(model)
+        }
     }
 
     private var sessionBanner: some View {
@@ -343,6 +362,115 @@ struct ContentView: View {
                 .lineLimit(2)
         }
         .frame(minHeight: 0, maxHeight: .infinity, alignment: .top)
+    }
+}
+
+private struct TransferFailureSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var model: VaultAppModel
+
+    private var failures: [TransferFailure] {
+        model.transfer.failureHistory.sorted { $0.timestamp > $1.timestamp }
+    }
+
+    private var retryableSourceCount: Int {
+        Set(
+            model.transfer.currentRunUnresolvedFailures
+                .filter(\.retryable)
+                .compactMap(\.sourceID)
+        ).count
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Transfer failures")
+                        .font(.title2.weight(.semibold))
+                    if let started = model.transfer.latestRunStartedAt {
+                        Text("Latest run started \(started.formatted(date: .abbreviated, time: .standard))")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+            }
+
+            if failures.isEmpty {
+                if model.transfer.failedPuts > 0 {
+                    ContentUnavailableView(
+                        "Legacy failure count",
+                        systemImage: "exclamationmark.triangle",
+                        description: Text(
+                            "\(model.transfer.failedPuts) failures predate detailed history. Clear history to remove the old count."
+                        )
+                    )
+                } else {
+                    ContentUnavailableView(
+                        "No transfer failures",
+                        systemImage: "checkmark.circle",
+                        description: Text("Detailed failures from future Backup runs will appear here.")
+                    )
+                }
+            } else {
+                HStack(spacing: 14) {
+                    Text("\(model.transfer.currentRunUnresolvedFailures.count) unresolved in latest run")
+                    Text("\(model.transfer.unresolvedFailures.count) unresolved in history")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                List(failures) { failure in
+                    VStack(alignment: .leading, spacing: 5) {
+                        HStack {
+                            Text(failure.path)
+                                .font(.system(.body, design: .monospaced))
+                                .lineLimit(2)
+                                .truncationMode(.middle)
+                                .textSelection(.enabled)
+                            Spacer()
+                            Text(failure.status == .resolved ? "Resolved" : (failure.retryable ? "Retryable" : "Needs attention"))
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(
+                                    failure.status == .resolved
+                                        ? Color.green
+                                        : (failure.retryable ? Color.orange : Color.red)
+                                )
+                        }
+                        Text(
+                            "\(failure.timestamp.formatted(date: .abbreviated, time: .standard)) · \(failure.category) · \(failure.operation) · \(failure.attempts) attempt\(failure.attempts == 1 ? "" : "s")"
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        Text(failure.message)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(3)
+                            .textSelection(.enabled)
+                    }
+                    .padding(.vertical, 4)
+                }
+                .frame(minHeight: 260)
+            }
+
+            HStack {
+                Button("Retry failed") {
+                    model.retryFailedTransfers()
+                    dismiss()
+                }
+                .disabled(retryableSourceCount == 0 || model.backupSync.isRunning)
+                .help("Rerun affected Backup sources; unchanged files are skipped")
+                Spacer()
+                Button("Clear history", role: .destructive) {
+                    model.clearTransferFailureHistory()
+                }
+                .disabled(model.transfer.failedPuts == 0 && failures.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 700, minHeight: 420)
     }
 }
 

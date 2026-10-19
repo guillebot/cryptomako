@@ -42,5 +42,6 @@ Copy a Cryptomator vault into ${BUCKET}/family/ then:
 
   export CRYPTOMAKO_SECRET_KEY=${ROOT_PASS}
   export CRYPTOMAKO_PASSWORD='your-vault-password'
-  swift run cryptomako unlock --endpoint http://127.0.0.1:${API_PORT} --bucket ${BUCKET} --prefix family/ --access-key ${ROOT_USER}
+  # CryptoMako refuses plain HTTP. Terminate TLS before this endpoint.
+  swift run cryptomako unlock --endpoint https://127.0.0.1:${API_PORT} --bucket ${BUCKET} --prefix family/ --access-key ${ROOT_USER}
 EOF

@@ -431,7 +431,8 @@ final class VaultAppModel: ObservableObject {
         } else {
             guard snapshotSettings.isComplete, let endpoint = URL(string: snapshotSettings.endpoint) else {
                 status = .error
-                detail = "Endpoint, bucket, and access key are required (or choose a local vault)."
+                detail = snapshotSettings.s3EndpointProblem
+                    ?? "Endpoint, bucket, and access key are required (or choose a local vault)."
                 return
             }
             guard !snapshotSecret.isEmpty else {
@@ -443,7 +444,8 @@ final class VaultAppModel: ObservableObject {
             let proxyPassword = try? CredentialStore.readSharedOrLocal(
                 account: AppIdentifiers.proxyPasswordAccount
             )
-            store = S3ObjectStore(
+            do {
+                store = try S3ObjectStore(
                 settings: S3Settings(
                     endpoint: endpoint,
                     region: snapshotSettings.region,
@@ -453,7 +455,12 @@ final class VaultAppModel: ObservableObject {
                     pathStyle: true
                 ),
                 configureSession: { netPrefs.applyProxy(to: $0, password: proxyPassword) }
-            )
+                )
+            } catch {
+                status = .error
+                detail = error.localizedDescription
+                return
+            }
             location = VaultLocation(
                 endpoint: endpoint,
                 region: snapshotSettings.region,
@@ -583,6 +590,25 @@ final class VaultAppModel: ObservableObject {
     func resetTransferMetrics() {
         TransferMetrics.reset()
         refreshTransfers()
+    }
+
+    func clearTransferFailureHistory() {
+        TransferMetrics.clearFailureHistory()
+        refreshTransfers()
+    }
+
+    func retryFailedTransfers() {
+        refreshTransfers()
+        let sourceIDs = Set(
+            transfer.currentRunUnresolvedFailures
+                .filter(\.retryable)
+                .compactMap(\.sourceID)
+        )
+        guard !sourceIDs.isEmpty else {
+            detail = "No retryable Backup failures are associated with a current source."
+            return
+        }
+        startBackupSync(sourceIDs: sourceIDs)
     }
 
 
@@ -830,17 +856,21 @@ final class VaultAppModel: ObservableObject {
     }
 
     func startBackupSync(sourceID: String? = nil) {
+        startBackupSync(sourceIDs: sourceID.map { Set([$0]) })
+    }
+
+    private func startBackupSync(sourceIDs: Set<String>?) {
         guard isUnlocked, let session = activeSession else {
             detail = "Unlock the vault before syncing backups."
             return
         }
         let selected: [BackupSource]
-        if let sourceID {
-            guard let one = backupSources.first(where: { $0.id == sourceID }) else {
-                detail = "That backup folder is no longer in the list."
+        if let sourceIDs {
+            selected = backupSources.filter { sourceIDs.contains($0.id) }
+            guard !selected.isEmpty else {
+                detail = "The affected backup folders are no longer in the list."
                 return
             }
-            selected = [one]
         } else {
             guard !backupSources.isEmpty else {
                 detail = "Add at least one folder to back up."

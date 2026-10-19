@@ -3,8 +3,9 @@
 #
 # Prerequisites (do these once before running):
 #   1. Install Developer ID Application cert from Apple portal (CSR:
-#      release/CryptoMako_DeveloperID.certSigningRequest). Import the .cer into
-#      login keychain so codesign / Xcode export can see it.
+#      release/CryptoMako_DeveloperID.certSigningRequest). Import the .cer and
+#      the Developer ID private key into the login keychain. Keep the private
+#      key out of this repository (for example ~/Library/Application Support/CryptoMako/signing).
 #   2. App Store Connect API key for notarization (preferred), e.g.:
 #        export APP_STORE_CONNECT_API_KEY_ID=...
 #        export APP_STORE_CONNECT_ISSUER_ID=...

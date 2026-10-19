@@ -139,6 +139,12 @@ public enum ConnectionConfigLoader {
         guard let secretKey = environment[request.secretKeyEnv], !secretKey.isEmpty else {
             throw ConnectionConfigError.missing("env \(request.secretKeyEnv)")
         }
+        if endpoint.user != nil || endpoint.password != nil {
+            throw ConnectionConfigError.invalid("endpoint must not include userinfo")
+        }
+        guard endpoint.scheme?.lowercased() == "https" else {
+            throw ConnectionConfigError.invalid("endpoint must be HTTPS")
+        }
 
         return ConnectionConfig(
             endpoint: endpoint,

@@ -24,6 +24,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  security:
+    uses: ./.github/workflows/security.yml
+    permissions:
+      contents: read
+      security-events: write
+
   resolve:
     runs-on: ubuntu-latest
     outputs:
@@ -46,7 +52,7 @@ jobs:
           echo "Resolved tag=$TAG version=$VER"
 
   linux-deb:
-    needs: resolve
+    needs: [resolve, security]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -56,7 +62,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27.x"
+          go-version: "1.27.2"
           cache-dependency-path: linux/go.sum
 
       - name: Build .deb
@@ -77,7 +83,7 @@ jobs:
           gh release upload "$TAG" "${deb[@]}" --clobber --repo "${{ github.repository }}"
 
   windows-win-x64:
-    needs: resolve
+    needs: [resolve, security]
     runs-on: windows-latest
     defaults:
       run:

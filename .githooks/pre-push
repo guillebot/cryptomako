@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# Fail closed: a push does not proceed when the security gate cannot pass.
+set -euo pipefail
+root="$(cd "$(dirname "$0")/.." && pwd)"
+exec "${root}/scripts/security-scan.sh"

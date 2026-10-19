@@ -1,4 +1,5 @@
 # GO-2026-5932 flags golang.org/x/crypto because openpgp/* is unmaintained.
 # CryptoMako linux only imports golang.org/x/crypto/scrypt (vault KDF).
-# Confirmed not reachable via: govulncheck ./... (0 vulns in code/imports).
+# Rechecked 2026-10-19 on golang.org/x/crypto v0.58.0 with Go 1.27.2:
+# govulncheck ./... reports it in the module graph and not in called code.
 GO-2026-5932

@@ -1,0 +1,97 @@
+name: Security gate
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.2"
+          cache-dependency-path: linux/go.sum
+
+      - name: Install scanners
+        run: |
+          set -euo pipefail
+          go install golang.org/x/vuln/cmd/govulncheck@v1.1.4
+          go install github.com/google/osv-scanner/cmd/osv-scanner@v1.9.2
+          go install github.com/gitleaks/gitleaks/v8@v8.30.1
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve Swift packages
+        run: swift package resolve
+
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          trivyignores: .trivyignore
+          skip-dirs: .build,.swiftpm,fixtures/vault,release/dist
+
+      - name: Grype vulnerability scan
+        id: grype
+        uses: anchore/scan-action@v6
+        with:
+          path: .
+          fail-build: true
+          severity-cutoff: high
+          output-format: sarif
+
+      - name: Upload Grype SARIF
+        if: always() && steps.grype.outputs.sarif != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: ${{ steps.grype.outputs.sarif }}
+        continue-on-error: true
+
+      - name: Gitleaks
+        run: gitleaks git . --redact --no-banner --exit-code 1
+
+      - name: OSV-Scanner
+        run: osv-scanner scan --config osv-scanner.toml --lockfile linux/go.mod --lockfile Package.resolved --format table
+
+      - name: govulncheck
+        working-directory: linux
+        run: govulncheck ./...
+
+      - name: Gosec
+        working-directory: linux
+        run: |
+          set +e
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -fmt=text -r . | tee /tmp/gosec.txt
+          status=${PIPESTATUS[0]}
+          set -e
+          if [[ "$status" -ne 0 ]]; then
+            if grep -q 'export data version' /tmp/gosec.txt; then
+              echo "gosec v2.29.0 cannot import Go 1.27 export data. CodeQL is the Go SAST job until gosec catches up."
+              exit 0
+            fi
+            exit "$status"
+          fi
+
+      - name: Build Linux image
+        run: docker build -f linux/Dockerfile -t cryptomako:ci linux
+
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
+        with:
+          scan-type: image
+          image-ref: cryptomako:ci
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          trivyignores: .trivyignore
