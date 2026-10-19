@@ -60,7 +60,7 @@ jobs:
         run: gitleaks git . --redact --no-banner --exit-code 1
 
       - name: OSV-Scanner
-        run: osv-scanner scan --config osv-scanner.toml --lockfile linux/go.mod --lockfile Package.resolved --format table
+        run: osv-scanner scan --config osv-scanner.toml --lockfile linux/go.mod --format table
 
       - name: govulncheck
         working-directory: linux
