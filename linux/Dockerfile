@@ -7,7 +7,8 @@ COPY . .
 RUN CGO_ENABLED=0 go build -o /out/cryptomako .
 
 FROM debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
-RUN apt-get update && apt-get install -y --no-install-recommends fuse3 ca-certificates \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+  && apt-get install -y --no-install-recommends fuse3 ca-certificates \
   && rm -rf /var/lib/apt/lists/* \
   && useradd --create-home --uid 10001 --shell /usr/sbin/nologin cryptomako
 COPY --from=build /out/cryptomako /usr/local/bin/cryptomako
