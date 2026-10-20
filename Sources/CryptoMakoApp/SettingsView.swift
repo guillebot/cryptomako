@@ -26,13 +26,14 @@ struct SettingsView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Settings")
                         .font(.title2.weight(.semibold))
-                    Text("Network, Backup/Sync mode, Sync workers & bandwidth, path excludes, and About. Vault endpoint / bucket / password stay on the Vault tab. Changes save automatically.")
+                    Text("Text size, network, Backup/Sync mode, Sync workers & bandwidth, path excludes, and About. Vault endpoint / bucket / password stay on the Vault tab. Changes save automatically.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
                     aboutSection
                         .id(VaultAppModel.SettingsSection.about)
+                    appearanceSection
                     networkSection
                         .id(VaultAppModel.SettingsSection.network)
                     transferModeSection
@@ -84,6 +85,28 @@ struct SettingsView: View {
                 guard ready else { return }
                 persistProxyPassword()
             }
+        }
+    }
+
+    // MARK: - Appearance
+
+    private var appearanceSection: some View {
+        GroupBox("Appearance") {
+            VStack(alignment: .leading, spacing: 8) {
+                Picker("Text size", selection: $prefs.textSize) {
+                    Text("Compact").tag(AppPreferences.TextSize.compact)
+                    Text("Standard").tag(AppPreferences.TextSize.standard)
+                    Text("Large").tag(AppPreferences.TextSize.large)
+                    Text("Extra Large").tag(AppPreferences.TextSize.extraLarge)
+                }
+                .pickerStyle(.segmented)
+                Text("Standard is a step larger than the previous text. Compact is the old size. The window updates as soon as you choose.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -431,6 +454,7 @@ struct SettingsView: View {
 
     private func reloadFromDisk() {
         prefs = AppPreferences.load()
+        model.textSize = prefs.textSize
         excludes = BackupSyncExcludesStore.load()
         enabledDefaultDirs = Set(excludes.directoryNames).intersection(BackupSyncExcludes.defaultDirectoryNames)
         proxyPassword = (try? CredentialStore.readSharedOrLocal(
@@ -452,6 +476,7 @@ struct SettingsView: View {
 
     private func persistPrefs() {
         prefs.clampSyncWorkers()
+        model.textSize = prefs.textSize
         do {
             try prefs.save()
             if prefs.proxyMode != .custom {

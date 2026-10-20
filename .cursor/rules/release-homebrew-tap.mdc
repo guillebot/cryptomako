@@ -1,0 +1,15 @@
+---
+description: Update the Homebrew tap whenever CryptoMako gets a new GitHub release
+alwaysApply: true
+---
+
+# Homebrew tap on every release
+
+When a CryptoMako version is published to GitHub Releases, update the cask in https://github.com/guillebot/homebrew-cryptomako in the same turn. Do this for every version, including patch releases.
+
+1. Hash the published DMG, not a local rebuild: `shasum -a 256` of `https://github.com/guillebot/cryptomako/releases/download/v<version>/CryptoMako-<version>.dmg`.
+2. In the tap (`homebrew-cryptomako/Casks/cryptomako.rb`, or a fresh clone), set `version` and `sha256`. Leave the `url` template as `CryptoMako-#{version}.dmg`.
+3. Commit on the tap's `main` (`cask: CryptoMako <version>`) and push `guillebot/homebrew-cryptomako`.
+4. Do not commit the tap checkout inside the CryptoMako repo.
+
+The cask `livecheck` uses `:github_latest`, so `brew upgrade --cask cryptomako` follows that push.

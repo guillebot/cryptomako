@@ -23,6 +23,7 @@ struct ContentView: View {
                 .tag(VaultAppModel.MainTab.settings)
         }
         .frame(minWidth: 620, minHeight: 360)
+        .dynamicTypeSize(model.textSize.dynamicTypeSize)
         .onAppear {
             // AppDelegate already called load() at launch. Only reconcile Finder lamp here.
             Task { await model.refreshMountState() }
@@ -126,9 +127,9 @@ struct ContentView: View {
             ZStack {
                 Circle()
                     .fill(lamp.color.opacity(0.18))
-                    .frame(width: 28, height: 28)
+                    .frame(width: 32, height: 32)
                 Image(systemName: symbol)
-                    .font(.system(size: 12, weight: .semibold))
+                    .font(.body.weight(.semibold))
                     .foregroundStyle(lamp.color)
             }
             VStack(alignment: .leading, spacing: 0) {
@@ -211,7 +212,7 @@ struct ContentView: View {
     private var sessionBanner: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "person.crop.circle.fill")
-                .font(.system(size: 28))
+                .font(.title)
                 .foregroundStyle(.teal)
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.sessionUser)
@@ -860,6 +861,18 @@ struct BackupView: View {
     }
 }
 
+
+extension AppPreferences.TextSize {
+    /// Compact is the previous size. Standard is one step up, about 1–2 points.
+    var dynamicTypeSize: DynamicTypeSize {
+        switch self {
+        case .compact: .large
+        case .standard: .xLarge
+        case .large: .xxLarge
+        case .extraLarge: .xxxLarge
+        }
+    }
+}
 
 // MARK: - Relative “ago” for last full sync tick
 

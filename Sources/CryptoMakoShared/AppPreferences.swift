@@ -17,6 +17,15 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         case sync
     }
 
+    /// Window text size. `standard` is one Dynamic Type step above the old default
+    /// (about 1–2 points). Older preference files decode as `standard`.
+    public enum TextSize: String, Codable, Sendable, CaseIterable, Hashable {
+        case compact
+        case standard
+        case large
+        case extraLarge
+    }
+
     public var proxyMode: ProxyMode
     public var proxyHost: String
     public var proxyPort: Int
@@ -37,6 +46,9 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     /// Concurrent Backup Sync puts for large files (memory-bound).
     public var syncLargePutConcurrency: Int
 
+    /// Prefs key `textSize`. Default `.standard`.
+    public var textSize: TextSize
+
     public init(
         proxyMode: ProxyMode = .system,
         proxyHost: String = "",
@@ -47,7 +59,8 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         syncUploadCapMbps: Double = 50,
         syncSmallPutConcurrency: Int = 96,
         syncMediumPutConcurrency: Int = 32,
-        syncLargePutConcurrency: Int = 4
+        syncLargePutConcurrency: Int = 4,
+        textSize: TextSize = .standard
     ) {
         self.proxyMode = proxyMode
         self.proxyHost = proxyHost
@@ -59,6 +72,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         self.syncSmallPutConcurrency = syncSmallPutConcurrency
         self.syncMediumPutConcurrency = syncMediumPutConcurrency
         self.syncLargePutConcurrency = syncLargePutConcurrency
+        self.textSize = textSize
     }
 
     public static let `default` = AppPreferences()
@@ -68,6 +82,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         case backupTransferMode
         case limitSyncUploadBandwidth, syncUploadCapMbps
         case syncSmallPutConcurrency, syncMediumPutConcurrency, syncLargePutConcurrency
+        case textSize
     }
 
     public init(from decoder: Decoder) throws {
@@ -82,6 +97,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         syncSmallPutConcurrency = try c.decodeIfPresent(Int.self, forKey: .syncSmallPutConcurrency) ?? 96
         syncMediumPutConcurrency = try c.decodeIfPresent(Int.self, forKey: .syncMediumPutConcurrency) ?? 32
         syncLargePutConcurrency = try c.decodeIfPresent(Int.self, forKey: .syncLargePutConcurrency) ?? 4
+        textSize = try c.decodeIfPresent(TextSize.self, forKey: .textSize) ?? .standard
     }
 
     /// Clamp worker knobs to safe ranges (fail-closed: never zero / never unbounded).
