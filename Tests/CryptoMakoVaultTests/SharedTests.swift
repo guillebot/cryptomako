@@ -244,3 +244,19 @@ final class TransferMetricsTests: XCTestCase {
         XCTAssertEqual(snapshot.failureHistory.last?.path, "file-204")
     }
 }
+
+final class AppPreferencesTextSizeTests: XCTestCase {
+    func testMissingTextSizeDecodesAsStandard() throws {
+        let prefs = try JSONDecoder().decode(AppPreferences.self, from: Data(#"{"proxyMode":"direct"}"#.utf8))
+        XCTAssertEqual(prefs.textSize, .standard)
+        XCTAssertEqual(prefs.proxyMode, .direct)
+    }
+
+    func testTextSizeRoundTrip() throws {
+        var prefs = AppPreferences()
+        prefs.textSize = .extraLarge
+        let data = try JSONEncoder().encode(prefs)
+        let decoded = try JSONDecoder().decode(AppPreferences.self, from: data)
+        XCTAssertEqual(decoded.textSize, .extraLarge)
+    }
+}

@@ -106,6 +106,8 @@ final class VaultAppModel: ObservableObject {
     }
 
     @Published var selectedTab: MainTab = .vault
+    /// Window text size. Standard is already a step larger than the previous UI.
+    @Published var textSize: AppPreferences.TextSize = AppPreferences.load().textSize
     @Published var settingsFocus: SettingsSection? = nil
 
     func openSettings(section: SettingsSection? = nil) {
