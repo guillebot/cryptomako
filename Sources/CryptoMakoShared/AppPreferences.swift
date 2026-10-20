@@ -24,6 +24,17 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         case standard
         case large
         case extraLarge
+
+        /// Points added to macOS text styles. Compact is the previous size.
+        /// Standard is two points larger. macOS ignores SwiftUI Dynamic Type.
+        public var pointAdjustment: Int {
+            switch self {
+            case .compact: 0
+            case .standard: 2
+            case .large: 4
+            case .extraLarge: 6
+            }
+        }
     }
 
     public var proxyMode: ProxyMode

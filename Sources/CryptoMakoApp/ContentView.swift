@@ -23,7 +23,8 @@ struct ContentView: View {
                 .tag(VaultAppModel.MainTab.settings)
         }
         .frame(minWidth: 620, minHeight: 360)
-        .dynamicTypeSize(model.textSize.dynamicTypeSize)
+        .environment(\.textPointAdjustment, model.textSize.pointAdjustment)
+        .font(.system(size: CGFloat(13 + model.textSize.pointAdjustment)))
         .onAppear {
             // AppDelegate already called load() at launch. Only reconcile Finder lamp here.
             Task { await model.refreshMountState() }
@@ -46,7 +47,7 @@ struct ContentView: View {
                 }
                 controls
                 Text(model.detail)
-                    .font(.caption)
+                    .appFont(.caption)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -71,10 +72,10 @@ struct ContentView: View {
                 .shadow(color: .black.opacity(0.18), radius: 4, y: 2)
             VStack(alignment: .leading, spacing: 6) {
                 HStack(alignment: .center, spacing: 10) {
-                    Text("CryptoMako").font(.title)
+                    Text("CryptoMako").appFont(.title)
                     Spacer()
                     Text(model.status.rawValue)
-                        .font(.headline)
+                        .appFont(.headline)
                         .foregroundStyle(model.status.color)
                     if model.isUnlocked {
                         Button("Lock") { model.lock() }
@@ -87,7 +88,7 @@ struct ContentView: View {
                 }
                 if model.isUnlocked {
                     Text("Signed in as \(model.sessionUser)")
-                        .font(.subheadline.weight(.medium))
+                        .appFont(.subheadline, weight: .medium)
                 } else {
                     Text("A Cryptomator format-8 vault, decrypted in-process.")
                         .foregroundStyle(.secondary)
@@ -129,14 +130,14 @@ struct ContentView: View {
                     .fill(lamp.color.opacity(0.18))
                     .frame(width: 32, height: 32)
                 Image(systemName: symbol)
-                    .font(.body.weight(.semibold))
+                    .appFont(.body, weight: .semibold)
                     .foregroundStyle(lamp.color)
             }
             VStack(alignment: .leading, spacing: 0) {
                 Text(title)
-                    .font(.caption.weight(.semibold))
+                    .appFont(.caption, weight: .semibold)
                 Text(subtitle)
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .foregroundStyle(.secondary)
             }
         }
@@ -149,7 +150,7 @@ struct ContentView: View {
             Image(systemName: "wifi.slash")
                 .foregroundStyle(.red)
             Text(model.connectivityBanner)
-                .font(.callout)
+                .appFont(.callout)
                 .foregroundStyle(.red)
                 .textSelection(.enabled)
             Spacer(minLength: 0)
@@ -201,7 +202,7 @@ struct ContentView: View {
                 .help("Show failed transfer details")
             }
         }
-        .font(.caption)
+        .appFont(.caption)
         .help(x.tooltip)
         .sheet(isPresented: $showTransferFailures) {
             TransferFailureSheet()
@@ -212,13 +213,13 @@ struct ContentView: View {
     private var sessionBanner: some View {
         HStack(alignment: .top, spacing: 12) {
             Image(systemName: "person.crop.circle.fill")
-                .font(.title)
+                .appFont(.title)
                 .foregroundStyle(.teal)
             VStack(alignment: .leading, spacing: 4) {
                 Text(model.sessionUser)
-                    .font(.headline)
+                    .appFont(.headline)
                 Text(model.sessionLocation)
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
@@ -252,7 +253,7 @@ struct ContentView: View {
                     Button("Choose…") { model.chooseLocalVault() }
                     Text("Directory that contains vault.cryptomator")
                         .foregroundStyle(.secondary)
-                        .font(.caption)
+                        .appFont(.caption)
                 }
             } else {
                 TextField("Endpoint", text: $model.settings.endpoint)
@@ -260,11 +261,11 @@ struct ContentView: View {
                 TextField("Bucket", text: $model.settings.bucket)
                 TextField("Vault prefix (folder with vault.cryptomator)", text: $model.settings.prefix)
                 Text("Object key the app will fetch: \(model.settings.vaultObjectKeyPreview)")
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 Text("Leave prefix empty only if vault.cryptomator is at the bucket root. Non-empty values get a trailing slash on save.")
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .foregroundStyle(.secondary)
                 TextField("Access key", text: $model.settings.accessKey)
                 SecureField("Secret key", text: $model.secretKey)
@@ -298,7 +299,7 @@ struct ContentView: View {
             Spacer()
             if model.bundledApp {
                 Text(model.isMounted ? "Finder: Mounted" : (model.isUnlocked ? "Finder: Mounting…" : "Finder: Off"))
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(model.isMounted ? Color.green : Color.secondary)
                 Menu("Finder") {
                     Button("Mount") { Task { await model.mount() } }
@@ -317,17 +318,17 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Vault listing (S3 / local ciphertext)")
-                    .font(.caption.weight(.semibold))
+                    .appFont(.caption, weight: .semibold)
                 Spacer()
                 if !model.listingLines.isEmpty {
                     Text("\(model.listingEntryCount) entries")
-                        .font(.caption2)
+                        .appFont(.caption2)
                         .foregroundStyle(.secondary)
                 }
             }
             ScrollView {
                 Text(model.listingText)
-                    .font(.system(.body, design: .monospaced))
+                    .appFont(.body, design: .monospaced)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .textSelection(.enabled)
                     .padding(4)
@@ -358,7 +359,7 @@ struct ContentView: View {
             .help("Use this for huge folders like backupsfotosfamilia — Finder Trash hits Error -36 while remote deletes run.")
 
             Text("Finder mount is for viewing and small transfers. Use the Backup tab for bulk folder sync.")
-                .font(.caption2)
+                .appFont(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
         }
@@ -387,10 +388,10 @@ private struct TransferFailureSheet: View {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Transfer failures")
-                        .font(.title2.weight(.semibold))
+                        .appFont(.title2, weight: .semibold)
                     if let started = model.transfer.latestRunStartedAt {
                         Text("Latest run started \(started.formatted(date: .abbreviated, time: .standard))")
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -420,20 +421,20 @@ private struct TransferFailureSheet: View {
                     Text("\(model.transfer.currentRunUnresolvedFailures.count) unresolved in latest run")
                     Text("\(model.transfer.unresolvedFailures.count) unresolved in history")
                 }
-                .font(.caption)
+                .appFont(.caption)
                 .foregroundStyle(.secondary)
 
                 List(failures) { failure in
                     VStack(alignment: .leading, spacing: 5) {
                         HStack {
                             Text(failure.path)
-                                .font(.system(.body, design: .monospaced))
+                                .appFont(.body, design: .monospaced)
                                 .lineLimit(2)
                                 .truncationMode(.middle)
                                 .textSelection(.enabled)
                             Spacer()
                             Text(failure.status == .resolved ? "Resolved" : (failure.retryable ? "Retryable" : "Needs attention"))
-                                .font(.caption.weight(.semibold))
+                                .appFont(.caption, weight: .semibold)
                                 .foregroundStyle(
                                     failure.status == .resolved
                                         ? Color.green
@@ -443,10 +444,10 @@ private struct TransferFailureSheet: View {
                         Text(
                             "\(failure.timestamp.formatted(date: .abbreviated, time: .standard)) · \(failure.category) · \(failure.operation) · \(failure.attempts) attempt\(failure.attempts == 1 ? "" : "s")"
                         )
-                        .font(.caption)
+                        .appFont(.caption)
                         .foregroundStyle(.secondary)
                         Text(failure.message)
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                             .lineLimit(3)
                             .textSelection(.enabled)
@@ -504,9 +505,9 @@ struct BackupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Backup")
-                .font(.title2.weight(.semibold))
+                .appFont(.title2, weight: .semibold)
             Text("Pick local folders or add an explicit SMB share (smb://…). Transfer uses bounded parallel remote puts (many small files, one large at a time) so it does not fill CloudStorage like rclone-into-Finder did. SMB uses macOS mounts under /Volumes — remount-on-demand before a run; fail-closed if the share drops. Never deletes files on the source.")
-                .font(.callout)
+                .appFont(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -523,12 +524,12 @@ struct BackupView: View {
 
                     if transferMode == .backup {
                         Text("Backup copies and updates into the vault. It never deletes the local source, and it does not remove vault files that are missing locally.")
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     } else {
                         Text("Sync copies and updates, then deletes ciphertext in the vault under each source’s Backups/<folder>/ that is missing from the local tree. It never deletes the local source. Prefer Backup unless you intentionally want vault orphans removed.")
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -538,13 +539,13 @@ struct BackupView: View {
 
             GroupBox("Sync volume (macFUSE — optional)") {
                 Text("Not required for Backup / Sync. Use the direct put path when FUSE is blocked by policy; data still lands in vault Backups/ and shows in the Finder CryptoMako mount after refresh.")
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
 
                 VStack(alignment: .leading, spacing: 8) {
                     Text(model.fuseMount.statusSummary)
-                        .font(.caption)
+                        .appFont(.caption)
                         .textSelection(.enabled)
                     HStack {
                         Button(model.fuseMount.isMounted ? "Mounted" : "Mount sync volume") {
@@ -565,7 +566,7 @@ struct BackupView: View {
                     if model.backupSources.isEmpty {
                         Text("No folders yet.")
                             .foregroundStyle(.secondary)
-                            .font(.callout)
+                            .appFont(.callout)
                     } else {
                         ScrollView {
                         ForEach(model.backupSources) { source in
@@ -573,7 +574,7 @@ struct BackupView: View {
                                 VStack(alignment: .leading, spacing: 2) {
                                     HStack(spacing: 6) {
                                         Text(source.vaultFolderName)
-                                            .font(.body.weight(.medium))
+                                            .appFont(.body, weight: .medium)
                                         if let at = source.lastFullSyncAt {
                                             Image(systemName: "checkmark.circle.fill")
                                                 .foregroundStyle(.green)
@@ -583,7 +584,7 @@ struct BackupView: View {
                                         }
                                         if source.isSMB {
                                             Text("SMB")
-                                                .font(.caption2.weight(.semibold))
+                                                .appFont(.caption2, weight: .semibold)
                                                 .padding(.horizontal, 6)
                                                 .padding(.vertical, 1)
                                                 .background(Color.accentColor.opacity(0.15))
@@ -592,19 +593,19 @@ struct BackupView: View {
                                         }
                                     }
                                     Text(source.displayLocation)
-                                        .font(.caption)
+                                        .appFont(.caption)
                                         .foregroundStyle(.secondary)
                                         .lineLimit(2)
                                         .textSelection(.enabled)
                                     if source.isSMB, source.path != source.displayLocation {
                                         Text(source.path)
-                                            .font(.caption2)
+                                            .appFont(.caption2)
                                             .foregroundStyle(.tertiary)
                                             .lineLimit(1)
                                             .textSelection(.enabled)
                                     }
                                     Text("→ Backups/\(source.vaultFolderName)/")
-                                        .font(.caption2)
+                                        .appFont(.caption2)
                                         .foregroundStyle(.tertiary)
                                 }
                                 Spacer(minLength: 8)
@@ -613,7 +614,7 @@ struct BackupView: View {
                                         ProgressView()
                                             .controlSize(.small)
                                         Text(syncEngine.phaseLabel.isEmpty ? "Syncing…" : syncEngine.phaseLabel)
-                                            .font(.caption)
+                                            .appFont(.caption)
                                             .foregroundStyle(.secondary)
                                             .lineLimit(1)
                                     }
@@ -681,7 +682,7 @@ struct BackupView: View {
                 GroupBox("rclone output") {
                     ScrollView {
                         Text(model.rcloneLog)
-                            .font(.system(.caption2, design: .monospaced))
+                            .appFont(.caption2, design: .monospaced)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .textSelection(.enabled)
                     }
@@ -692,7 +693,7 @@ struct BackupView: View {
             GroupBox("Related settings") {
                 VStack(alignment: .leading, spacing: 6) {
                     Text("Bandwidth cap, put-worker concurrency, and path excludes live in Settings.")
-                        .font(.caption2)
+                        .appFont(.caption2)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     HStack(spacing: 10) {
@@ -707,7 +708,7 @@ struct BackupView: View {
             }
 
             Text("Finder File Provider stays the viewer. Bulk transfer uses direct puts or rclone→\(FuseMountController.preferredMountURL.path). Source folders are never deleted.")
-                .font(.caption2)
+                .appFont(.caption2)
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
 
@@ -733,9 +734,9 @@ struct BackupView: View {
     private var addSMBSheet: some View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Add SMB share")
-                .font(.title3.weight(.semibold))
+                .appFont(.title3, weight: .semibold)
             Text("CryptoMako uses macOS mounting under /Volumes (NetFS / system Connect to Server — no embedded SMB client). Password is stored in Keychain; remount-on-demand before Sync. macOS may prompt to connect or for Local Network access. After mount you can use the share root or pick a subfolder.")
-                .font(.callout)
+                .appFont(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             TextField("smb://server/share/optional/path", text: $smbURLText)
@@ -746,7 +747,7 @@ struct BackupView: View {
                 .textFieldStyle(.roundedBorder)
             if !smbFormError.isEmpty {
                 Text(smbFormError)
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -799,7 +800,7 @@ struct BackupView: View {
                     ProgressView(value: engine.progressFraction) {
                         HStack {
                             Text("\(engine.phaseLabel.isEmpty ? "Syncing…" : engine.phaseLabel) · \(engine.progressPercentLabel)")
-                                .font(.body.weight(.semibold))
+                                .appFont(.body, weight: .semibold)
                             Spacer()
                             Text("\(engine.filesDone)/\(max(engine.filesDiscovered, engine.filesDone)) files · \(TransferSnapshot.formatBytes(engine.bytesDone))/\(TransferSnapshot.formatBytes(max(engine.bytesDiscovered, engine.bytesDone)))")
                                 .foregroundStyle(.secondary)
@@ -814,26 +815,26 @@ struct BackupView: View {
                             Text("Vault deleted \(engine.filesDeleted)")
                         }
                     }
-                    .font(.caption)
+                    .appFont(.caption)
                     .foregroundStyle(.secondary)
                     if !engine.walkFinished {
                         Text("% uses files discovered so far (grows while walking; may move slightly).")
-                            .font(.caption2)
+                            .appFont(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                     if engine.uploadBytesPerSecond > 0 {
                         Text("Job bandwidth: \(TransferSnapshot.formatRate(engine.uploadBytesPerSecond))")
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                     }
                     if !engine.currentSourceName.isEmpty {
                         Text("Folder: \(engine.currentSourceName)")
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                     }
                     if !engine.currentPath.isEmpty {
                         Text(engine.currentPath)
-                            .font(.caption)
+                            .appFont(.caption)
                             .lineLimit(2)
                             .truncationMode(.middle)
                             .foregroundStyle(.secondary)
@@ -861,18 +862,6 @@ struct BackupView: View {
     }
 }
 
-
-extension AppPreferences.TextSize {
-    /// Compact is the previous size. Standard is one step up, about 1–2 points.
-    var dynamicTypeSize: DynamicTypeSize {
-        switch self {
-        case .compact: .large
-        case .standard: .xLarge
-        case .large: .xxLarge
-        case .extraLarge: .xxxLarge
-        }
-    }
-}
 
 // MARK: - Relative “ago” for last full sync tick
 
