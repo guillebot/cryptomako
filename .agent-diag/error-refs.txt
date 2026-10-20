@@ -1,0 +1,70 @@
+Sources/CryptoMakoFileProvider/FileProviderExtension.swift:185:                let node = try await session.createOrOverwriteFile(
+Sources/CryptoMakoFileProvider/FileProviderExtension.swift:195:            let node = try await session.createOrOverwriteFile(
+Sources/CryptoMakoFileProvider/FileProviderExtension.swift:263:                let node = try await session.createOrOverwriteFile(
+Sources/CryptoMakoS3/S3ObjectStore.swift:109:            throw ObjectStoreError.transport("HEAD returned a non-HTTP response")
+Sources/CryptoMakoS3/S3ObjectStore.swift:123:            throw ObjectStoreError.transport(describe(error))
+Sources/CryptoMakoS3/S3ObjectStore.swift:196:            throw ObjectStoreError.transport(describe(error))
+Sources/CryptoMakoS3/S3ObjectStore.swift:211:            throw ObjectStoreError.transport("bad endpoint")
+Sources/CryptoMakoS3/S3ObjectStore.swift:217:                throw ObjectStoreError.transport("bad endpoint host")
+Sources/CryptoMakoS3/S3ObjectStore.swift:227:            throw ObjectStoreError.transport("bad request URL")
+Sources/CryptoMakoS3/S3ObjectStore.swift:250:            throw ObjectStoreError.transport(describe(error))
+Sources/CryptoMakoS3/S3ObjectStore.swift:260:            throw ObjectStoreError.notFound(key)
+Sources/CryptoMakoS3/S3ObjectStore.swift:263:            throw ObjectStoreError.transport("access denied for \(key) (HTTP 403) \(detail)")
+Sources/CryptoMakoS3/S3ObjectStore.swift:266:            throw ObjectStoreError.transport("HTTP \(http.statusCode) for \(key) \(detail)")
+Sources/CryptoMakoApp/ContentView.swift:183:            if x.failedPuts > 0 {
+Sources/CryptoMakoApp/ContentView.swift:184:                Text("\(x.failedPuts) failed")
+Sources/CryptoMakoApp/VaultAppModel.swift:607:            : (fuseMount.lastError ?? "Mounting sync volume…")
+Sources/CryptoMakoApp/VaultAppModel.swift:650:                await MainActor.run { self?.detail = self?.fuseMount.lastError ?? "FUSE mount did not come up" }
+Sources/CryptoMakoVault/VaultSession+Writes.swift:82:    public func createOrOverwriteFile(
+Sources/CryptoMakoS3/DirectoryObjectStore.swift:15:            throw ObjectStoreError.notFound(key)
+Sources/CryptoMakoS3/DirectoryObjectStore.swift:23:            throw ObjectStoreError.notFound(key)
+Sources/CryptoMakoS3/DirectoryObjectStore.swift:35:            throw ObjectStoreError.notFound(key)
+Sources/CryptoMakoS3/DirectoryObjectStore.swift:73:            throw ObjectStoreError.notFound(key)
+Sources/CryptoMakoS3/ListObjectsParser.swift:29:            throw ObjectStoreError.transport("malformed ListObjectsV2 response")
+Sources/CryptoMakoApp/FuseMountController.swift:18:    @Published private(set) var lastError: String?
+Sources/CryptoMakoApp/FuseMountController.swift:29:        if let lastError { parts.append(lastError) }
+Sources/CryptoMakoApp/FuseMountController.swift:35:            lastError = "Install macFUSE from https://macfuse.github.io"
+Sources/CryptoMakoApp/FuseMountController.swift:66:                self?.lastError = nil
+Sources/CryptoMakoApp/FuseMountController.swift:78:                self?.lastError = err ?? "FUSE mount failed"
+Sources/CryptoMakoApp/VaultFuseDelegate.swift:183:            try await $0.createOrOverwriteFile(
+Sources/CryptoMakoVault/VaultSession.swift:85:        } catch ObjectStoreError.notFound {
+Sources/CryptoMakoVault/VaultSession.swift:108:        } catch ObjectStoreError.notFound {
+Sources/CryptoMakoVault/VaultSession.swift:218:        } catch ObjectStoreError.notFound {
+Sources/CryptoMakoS3/SafePath.swift:10:            throw ObjectStoreError.transport("invalid object key")
+Sources/CryptoMakoS3/SafePath.swift:16:            throw ObjectStoreError.transport("invalid object key")
+Sources/CryptoMakoVault/VaultError.swift:17:    case store(ObjectStoreError)
+Sources/CryptoMakoS3/ObjectStore.swift:53:public enum ObjectStoreError: Error, LocalizedError {
+Sources/CryptoMakoS3/ObjectStore.swift:55:    case transport(String)
+Sources/CryptoMakoS3/ObjectStore.swift:61:        case .transport(let message):
+Sources/CryptoMakoApp/BackupSyncEngine.swift:625:            _ = try await session.createOrOverwriteFile(
+Sources/CryptoMakoApp/SMBBackupMount.swift:108:        var lastError: Error?
+Sources/CryptoMakoApp/SMBBackupMount.swift:117:            lastError = error
+Sources/CryptoMakoApp/SMBBackupMount.swift:131:                lastError = error
+Sources/CryptoMakoApp/SMBBackupMount.swift:142:                lastError = error
+Sources/CryptoMakoApp/SMBBackupMount.swift:147:        if let lastError {
+Sources/CryptoMakoApp/SMBBackupMount.swift:148:            throw lastError
+Sources/CryptoMakoApp/StatusItemController.swift:143:            xfer.failedPuts > 0 ? "Failed: \(xfer.failedPuts)" : nil,
+Sources/CryptoMakoShared/TransferMetrics.swift:10:    public var failedPuts: Int
+Sources/CryptoMakoShared/TransferMetrics.swift:15:    public var lastError: String?
+Sources/CryptoMakoShared/TransferMetrics.swift:24:        failedPuts: 0,
+Sources/CryptoMakoShared/TransferMetrics.swift:29:        lastError: nil,
+Sources/CryptoMakoShared/TransferMetrics.swift:47:        if failedPuts > 0 {
+Sources/CryptoMakoShared/TransferMetrics.swift:48:            lines.append("Failed puts: \(failedPuts)")
+Sources/CryptoMakoShared/TransferMetrics.swift:54:        if let lastError, !lastError.isEmpty {
+Sources/CryptoMakoShared/TransferMetrics.swift:55:            lines.append("Last error: \(lastError)")
+Sources/CryptoMakoShared/TransferMetrics.swift:180:            s.lastError = nil
+Sources/CryptoMakoShared/TransferMetrics.swift:228:            s.failedPuts += 1
+Sources/CryptoMakoShared/TransferMetrics.swift:229:            s.lastError = String(message.prefix(160))
+Sources/CryptoMakoVault/VaultSession+Writes.swift:7:    /// Creates a directory in the vault. Durable only after remote `putObject` of `dir.c9r` + `dirid.c9r`.
+Sources/CryptoMakoVault/VaultSession+Writes.swift:53:                    group.addTask { try await self.store.putObject(key: nameKey, data: nameData) }
+Sources/CryptoMakoVault/VaultSession+Writes.swift:58:                group.addTask { try await self.store.putObject(key: markerKey, data: payload) }
+Sources/CryptoMakoVault/VaultSession+Writes.swift:59:                group.addTask { try await self.store.putObject(key: idKey, data: payload) }
+Sources/CryptoMakoVault/VaultSession+Writes.swift:82:    public func createOrOverwriteFile(
+Sources/CryptoMakoVault/VaultSession+Writes.swift:129:                    group.addTask { try await self.store.putObject(key: nameKey, data: nameData) }
+Sources/CryptoMakoVault/VaultSession+Writes.swift:130:                    group.addTask { try await self.store.putObject(key: contentKey, from: contentURL) }
+Sources/CryptoMakoVault/VaultSession+Writes.swift:135:                try await store.putObject(key: ciphertextKey, from: cipherURL)
+Sources/CryptoMakoApp/VaultFuseDelegate.swift:183:            try await $0.createOrOverwriteFile(
+Sources/CryptoMakoApp/BackupSyncEngine.swift:625:            _ = try await session.createOrOverwriteFile(
+Sources/CryptoMakoApp/SMBBackupMount.swift:25:                return "Timed out waiting for SMB mount: \(s). Complete the system Connect dialog (or mount in Finder), check Local Network privacy for CryptoMako, then retry."
+Sources/CryptoMakoApp/SMBBackupMount.swift:27:                return "SMB source unavailable: \(s). Mount the share and retry Sync (fail-closed — nothing was treated as an empty tree)."
+Sources/CryptoMakoApp/SMBBackupMount.swift:400:                text += ". If this is EPERM: check Local Network privacy for CryptoMako; the system Connect UI may appear on retry."

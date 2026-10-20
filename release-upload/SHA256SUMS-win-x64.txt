@@ -1,0 +1,2 @@
+6ffb45d9af0fb0f4024dbe53b9aeaff7ac0399aa5f71a56e28c5f35fbfa30933  CryptoMako-1.0.0-win-x64-cli.zip
+977f5c8fff5239df8896ba4abe69795c7139bcb03748e11bcb96f177a3b41e23  CryptoMako-1.0.0-win-x64-desktop.zip
