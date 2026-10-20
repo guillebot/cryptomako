@@ -258,5 +258,13 @@ final class AppPreferencesTextSizeTests: XCTestCase {
         let data = try JSONEncoder().encode(prefs)
         let decoded = try JSONDecoder().decode(AppPreferences.self, from: data)
         XCTAssertEqual(decoded.textSize, .extraLarge)
+        XCTAssertEqual(decoded.textSize.pointAdjustment, 6)
+    }
+
+    func testTextSizePointAdjustments() {
+        XCTAssertEqual(AppPreferences.TextSize.compact.pointAdjustment, 0)
+        XCTAssertEqual(AppPreferences.TextSize.standard.pointAdjustment, 2)
+        XCTAssertEqual(AppPreferences.TextSize.large.pointAdjustment, 4)
+        XCTAssertEqual(AppPreferences.TextSize.extraLarge.pointAdjustment, 6)
     }
 }

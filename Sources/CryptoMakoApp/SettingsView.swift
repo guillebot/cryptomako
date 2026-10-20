@@ -25,9 +25,9 @@ struct SettingsView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     Text("Settings")
-                        .font(.title2.weight(.semibold))
+                        .appFont(.title2, weight: .semibold)
                     Text("Text size, network, Backup/Sync mode, Sync workers & bandwidth, path excludes, and About. Vault endpoint / bucket / password stay on the Vault tab. Changes save automatically.")
-                        .font(.callout)
+                        .appFont(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
 
@@ -47,13 +47,13 @@ struct SettingsView: View {
 
                     if !statusMessage.isEmpty {
                         Text(statusMessage)
-                            .font(.caption)
+                            .appFont(.caption)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                     }
 
                     Text("Proxy changes apply after Unlock / reconnect (URLSession pools are built at unlock). Bandwidth, workers, and excludes apply to the next Sync run.")
-                        .font(.caption2)
+                        .appFont(.caption2)
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -100,8 +100,8 @@ struct SettingsView: View {
                     Text("Extra Large").tag(AppPreferences.TextSize.extraLarge)
                 }
                 .pickerStyle(.segmented)
-                Text("Standard is a step larger than the previous text. Compact is the old size. The window updates as soon as you choose.")
-                    .font(.caption)
+                Text("Standard is 2 points larger than Compact. Large and Extra Large add 2 points more each. The window updates as soon as you choose.")
+                    .appFont(.caption)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -122,13 +122,13 @@ struct SettingsView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                     VStack(alignment: .leading, spacing: 2) {
                         Text("CryptoMako")
-                            .font(.headline)
+                            .appFont(.headline)
                         Text("Version \(AppVersion.displayString)")
-                            .font(.callout)
+                            .appFont(.callout)
                             .foregroundStyle(.secondary)
                             .textSelection(.enabled)
                         Text("AGPLv3 · github.com/guillebot/cryptomako")
-                            .font(.caption2)
+                            .appFont(.caption2)
                             .foregroundStyle(.tertiary)
                     }
                     Spacer(minLength: 0)
@@ -160,7 +160,7 @@ struct SettingsView: View {
                 }
 
                 Text("Update checks use the public GitHub Releases API. Private repos or no published release show a clear message — never crashes.")
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -177,7 +177,7 @@ struct SettingsView: View {
             // proposes unbounded widths and clips/scatters controls off-screen.
             VStack(alignment: .leading, spacing: 10) {
                 Text("Proxy mode")
-                    .font(.caption.weight(.semibold))
+                    .appFont(.caption, weight: .semibold)
                 Picker("Proxy mode", selection: $prefs.proxyMode) {
                     Text("System").tag(AppPreferences.ProxyMode.system)
                     Text("Direct").tag(AppPreferences.ProxyMode.direct)
@@ -200,7 +200,7 @@ struct SettingsView: View {
                 }
 
                 Text(proxyHelp)
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -235,17 +235,17 @@ struct SettingsView: View {
 
                 if prefs.backupTransferMode == .backup {
                     Text("Backup (default): copy/update source → vault. Never deletes the local source. Does not remove vault files missing from source.")
-                        .font(.caption)
+                        .appFont(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 } else {
                     Text("Sync: copy/update, then delete vault ciphertext under Backups/<folder>/ that is missing from the local source. Never deletes the local source. Prefer Backup unless you want vault orphans removed.")
-                        .font(.caption)
+                        .appFont(.caption)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 Text("Prefs key backupTransferMode (\"backup\" | \"sync\"). Applies on the next run.")
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .foregroundStyle(.tertiary)
             }
             .padding(4)
@@ -272,7 +272,7 @@ struct SettingsView: View {
                     }
                 }
                 Text("Applies only to Backup Sync puts (token-bucket pacing). Finder File Provider transfers are unchanged. Takes effect on the next Sync run.")
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -313,9 +313,9 @@ struct SettingsView: View {
                     prefs.syncMediumPutConcurrency = 32
                     prefs.syncLargePutConcurrency = 4
                 }
-                .font(.caption)
+                .appFont(.caption)
                 Text("Surfaces the BackupSyncEngine put pools. Higher small/medium counts fill a home uplink; keep large low to avoid multi-GB streams. Applies on the next Sync run.")
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -343,7 +343,7 @@ struct SettingsView: View {
                     .labelsHidden()
             }
             Text(help)
-                .font(.caption2)
+                .appFont(.caption2)
                 .foregroundStyle(.tertiary)
         }
     }
@@ -354,7 +354,7 @@ struct SettingsView: View {
         GroupBox("Backup Sync excludes") {
             VStack(alignment: .leading, spacing: 10) {
                 Text("Directory names (skip entire trees)")
-                    .font(.caption.weight(.semibold))
+                    .appFont(.caption, weight: .semibold)
                 FlowChips(
                     items: defaultDirCatalog,
                     isOn: { enabledDefaultDirs.contains($0) },
@@ -372,7 +372,7 @@ struct SettingsView: View {
                 let customDirs = excludes.directoryNames.subtracting(BackupSyncExcludes.defaultDirectoryNames).sorted()
                 if !customDirs.isEmpty {
                     Text("Custom directories")
-                        .font(.caption.weight(.semibold))
+                        .appFont(.caption, weight: .semibold)
                     ForEach(customDirs, id: \.self) { name in
                         HStack {
                             Text(name)
@@ -397,7 +397,7 @@ struct SettingsView: View {
                 Divider()
 
                 Text("File names")
-                    .font(.caption.weight(.semibold))
+                    .appFont(.caption, weight: .semibold)
                 FlowChips(
                     items: defaultFileCatalog,
                     isOn: { excludes.fileNames.contains($0) },
@@ -411,7 +411,7 @@ struct SettingsView: View {
                 )
 
                 Text("Extensions (no dot)")
-                    .font(.caption.weight(.semibold))
+                    .appFont(.caption, weight: .semibold)
                 FlowChips(
                     items: defaultExtCatalog,
                     isOn: { excludes.fileExtensions.contains($0) },
@@ -425,7 +425,7 @@ struct SettingsView: View {
                 )
 
                 Text("Applies to the next Sync run (scan + upload). Already-queued Sync keeps its snapshot.")
-                    .font(.caption2)
+                    .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -536,7 +536,7 @@ private struct FlowChips: View {
                     set: { _ in toggle(item) }
                 ))
                 .toggleStyle(.checkbox)
-                .font(.caption)
+                .appFont(.caption)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .lineLimit(1)
             }
