@@ -150,6 +150,12 @@ final class BackupSyncEngine: ObservableObject {
     nonisolated private static let syncLog = Logger(subsystem: "net.gschimmel.cryptomako", category: "backup-sync")
 
     private var task: Task<Void, Never>?
+    /// Identifies the in-flight run so a cancelled previous task cannot mark the new one failed.
+    private var runToken: UInt64 = 0
+    /// True from the moment a run starts until the click that started it has finished.
+    /// The Backup button is removed and a Cancel button appears in that same click;
+    /// AppKit delivers that as cancel, which would stop the run immediately.
+    private var suppressCancel = false
     private var putRateWindowStartedAt: Date?
     private var putRateWindowBytes: Int64 = 0
 
@@ -195,6 +201,8 @@ final class BackupSyncEngine: ObservableObject {
     }
 
     func cancel() {
+        // The click that starts a run also synthesizes a cancel. Ignore that one.
+        guard !suppressCancel else { return }
         task?.cancel()
         task = nil
         if isRunning {
@@ -208,7 +216,11 @@ final class BackupSyncEngine: ObservableObject {
     ///   Multi-source jobs fire once per completed source; earlier sources keep their stamp if a
     ///   later source fails or the job is cancelled.
     func sync(sources: [BackupSource], session: VaultSession, onSourceCompleted: ((String) -> Void)? = nil) {
-        cancel()
+        task?.cancel()
+        task = nil
+        runToken &+= 1
+        let token = runToken
+        suppressCancel = true
         state = .running
         phase = .preparing
         filesDone = 0
@@ -297,6 +309,7 @@ final class BackupSyncEngine: ObservableObject {
                     }
                 }
                 await MainActor.run {
+                    guard self.runToken == token else { return }
                     self.phase = .finishing
                     self.filesDone = self.filesSkipped + self.filesUploaded
                     self.currentPath = ""
@@ -306,15 +319,22 @@ final class BackupSyncEngine: ObservableObject {
                 }
             } catch is CancellationError {
                 await MainActor.run {
+                    guard self.runToken == token else { return }
                     self.state = .failed("Cancelled")
                     self.phase = .idle
                 }
             } catch {
                 await MainActor.run {
+                    guard self.runToken == token else { return }
                     self.state = .failed(error.localizedDescription)
                     self.phase = .idle
                 }
             }
+        }
+        Task { @MainActor [weak self] in
+            await Task.yield()
+            guard let self, self.runToken == token else { return }
+            self.suppressCancel = false
         }
     }
 

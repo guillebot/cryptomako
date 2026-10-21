@@ -618,16 +618,15 @@ struct BackupView: View {
                                             .foregroundStyle(.secondary)
                                             .lineLimit(1)
                                     }
-                                    .frame(minWidth: 120, alignment: .trailing)
-                                } else {
-                                    Button(runVerb) {
-                                        model.startBackupSync(sourceID: source.id)
-                                    }
-                                    .disabled(!model.isUnlocked || syncEngine.isRunning)
-                                    .help(transferMode == .sync
-                                          ? "Sync this folder into Backups/\(source.vaultFolderName)/ (puts + delete vault-only files under that folder)"
-                                          : "Backup this folder into Backups/\(source.vaultFolderName)/ (put/update only; no vault deletes)")
+                                    .frame(minWidth: 88, alignment: .trailing)
                                 }
+                                Button(runVerb) {
+                                    model.startBackupSync(sourceID: source.id)
+                                }
+                                .disabled(!model.isUnlocked || syncEngine.isRunning)
+                                .help(transferMode == .sync
+                                      ? "Sync this folder into Backups/\(source.vaultFolderName)/ (puts + delete vault-only files under that folder)"
+                                      : "Backup this folder into Backups/\(source.vaultFolderName)/ (put/update only; no vault deletes)")
                                 Button(role: .destructive) {
                                     model.removeBackupSource(source.id)
                                 } label: {
@@ -658,7 +657,6 @@ struct BackupView: View {
                         Spacer()
                         if syncEngine.isRunning {
                             Button("Cancel", role: .destructive) { model.cancelBackupSync() }
-                                .keyboardShortcut(.cancelAction)
                                 .help("Stop the in-progress transfer (vault data already uploaded is kept; source is never deleted)")
                         }
                         Button(runAllLabel) { model.startBackupSync() }
@@ -728,6 +726,7 @@ struct BackupView: View {
                 model.detail = "Could not save transfer mode: \(error.localizedDescription)"
             }
         }
+        .onExitCommand(perform: syncEngine.isRunning ? { model.cancelBackupSync() } : nil)
     }
 
     @ViewBuilder
@@ -840,8 +839,7 @@ struct BackupView: View {
                             .foregroundStyle(.secondary)
                     }
                     Button("Cancel", role: .destructive) { model.cancelBackupSync() }
-                        .keyboardShortcut(.cancelAction)
-                        .help("Stop the in-progress transfer (vault uploads kept; source never deleted)")
+                        .help("Stop the in-progress transfer (vault uploads kept; source never deleted). Escape also cancels.")
                 case .finished(let files, let bytes):
                     if engine.filesDeleted > 0 {
                         Text("Finished — \(files) files, \(TransferSnapshot.formatBytes(bytes)) processed; removed \(engine.filesDeleted) vault-only item(s). Source untouched.")
