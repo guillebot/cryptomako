@@ -22,7 +22,7 @@ struct ContentView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape") }
                 .tag(VaultAppModel.MainTab.settings)
         }
-        .frame(minWidth: 620, minHeight: 360)
+        .frame(minWidth: 620, minHeight: 560)
         .environment(\.textPointAdjustment, model.textSize.pointAdjustment)
         .font(.system(size: CGFloat(13 + model.textSize.pointAdjustment)))
         .onAppear {
@@ -638,9 +638,9 @@ struct BackupView: View {
                             Divider()
                         }
                         }
-                        // Cap height so the Add/Cancel/Sync row stays on-screen (was .infinity
-                        // and pushed Cancel below the visible Backup pane).
-                        .frame(minHeight: 0, maxHeight: 220)
+                        // Grow with the window so several sources stay visible without scrolling.
+                        // Add/Cancel/Backup-all stay outside this ScrollView (intrinsic height).
+                        .frame(minHeight: 280, maxHeight: .infinity)
                     }
                     HStack {
                         Button("Add folders…") { model.addBackupFolder() }
@@ -671,7 +671,10 @@ struct BackupView: View {
                     }
                 }
                 .padding(4)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             }
+            .frame(minHeight: 340, maxHeight: .infinity)
+            .layoutPriority(1)
             .sheet(isPresented: $showAddSMB) {
                 addSMBSheet
             }

@@ -565,10 +565,37 @@ final class BackupSyncEngine: ObservableObject {
             .contentModificationDateKey,
         ]
         try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+        // Mid-walk probes are wall-clock throttled — per-N-file volume metadata on SMB
+        // turned multi-million-file walks into hour-long probe storms.
+        var reachabilityGate = BackupWalkReachabilityGate()
+        reachabilityGate.markProbed()
+        /// Fail-closed: enumerator I/O errors (SMB disconnect, etc.) must not produce
+        /// a silent partial tree — Sync prune would then delete vault orphans incorrectly.
+        final class EnumerationErrorBox: @unchecked Sendable {
+            let lock = NSLock()
+            var firstError: Error?
+            var count = 0
+            func note(_ error: Error) {
+                lock.lock()
+                if firstError == nil { firstError = error }
+                count += 1
+                lock.unlock()
+            }
+            func snapshot() -> (count: Int, first: Error?) {
+                lock.lock(); defer { lock.unlock() }
+                return (count, firstError)
+            }
+        }
+        let enumerationErrors = EnumerationErrorBox()
         guard let enumerator = fm.enumerator(
             at: localRoot,
             includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            errorHandler: { _, error in
+                enumerationErrors.note(error)
+                // Stop immediately — continuing after a disconnect can yield an empty/partial tree.
+                return false
+            }
         ) else {
             if isSMB || SMBBackupMount.looksLikeNetworkVolume(localRoot) {
                 throw SyncError.volumeLost(localRoot.path)
@@ -883,14 +910,11 @@ final class BackupSyncEngine: ObservableObject {
 
         // Single local walk: disk only. Unchanged → skip. New/changed → enqueue
         // without waiting for MinIO (dir resolve happens in put workers).
-        var sinceVolumeCheck = 0
         // Cache root path once — avoid per-file standardizedFileURL (SMB-expensive).
         let rootPath = localRoot.path
         for case let fileURL as URL in enumerator {
             try Task.checkCancellation()
-            sinceVolumeCheck += 1
-            if sinceVolumeCheck >= 200 {
-                sinceVolumeCheck = 0
+            if reachabilityGate.shouldProbe() {
                 try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
             }
             let values: URLResourceValues
@@ -989,7 +1013,17 @@ final class BackupSyncEngine: ObservableObject {
             await applyWalkSnapshot(snap)
         }
         box.save(force: true)
+        // Mandatory post-enumeration probe (not gated) — never treat a disconnected
+        // share as an empty-tree success before uploads finish or Sync prune runs.
         try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+        let enumSnap = enumerationErrors.snapshot()
+        if enumSnap.count > 0 {
+            let detail = enumSnap.first.map { $0.localizedDescription } ?? "unknown"
+            Self.syncLog.error(
+                "enumeration aborted errors=\(enumSnap.count) detail=\(detail, privacy: .private(mask: .hash))"
+            )
+            throw SyncError.enumerationFailed(localRoot.path)
+        }
         await MainActor.run {
             self.walkFinished = true
             self.phase = .uploading
@@ -1001,6 +1035,8 @@ final class BackupSyncEngine: ObservableObject {
         syncState = box.snapshot()
 
         if transferMode == .sync {
+            // Mandatory pre-prune probe — fail closed before deleting vault orphans.
+            try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
             await MainActor.run {
                 self.phase = .pruning
                 self.currentPath = "Comparing vault Backups/\(vaultFolderName)/ to local tree…"
@@ -1023,7 +1059,6 @@ final class BackupSyncEngine: ObservableObject {
             Self.syncLog.info(
                 "sync orphan prune done vaultFolder=\(vaultFolderName, privacy: .private(mask: .hash)) deleted=\(deleted)"
             )
-            try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
         } else {
             syncState.save()
         }
@@ -1139,6 +1174,9 @@ final class BackupSyncEngine: ObservableObject {
         case missingSource(String)
         case missingParent(String)
         case volumeLost(String)
+        /// Enumerator reported I/O errors (e.g. SMB disconnect). Tree may be partial —
+        /// abort before Sync prune can treat unseen locals as vault orphans.
+        case enumerationFailed(String)
         /// One or more file puts failed after S3 retries; siblings were not cancelled.
         case putFailures(count: Int, detail: String?)
         var errorDescription: String? {
@@ -1149,6 +1187,8 @@ final class BackupSyncEngine: ObservableObject {
                 return "Parent folder not registered for \(p)"
             case .volumeLost(let p):
                 return "Backup source volume disappeared during Sync: \(p). Sync stopped fail-closed (no wipe / no silent empty-tree success)."
+            case .enumerationFailed(let p):
+                return "Could not finish reading backup source \(p). Sync stopped fail-closed (incomplete tree — nothing pruned)."
             case .putFailures(let count, let detail):
                 let suffix = detail.map { " Last: \($0)" } ?? ""
                 return "\(count) file(s) failed to upload after retries (network). Other files completed; retry Sync for the rest.\(suffix)"
