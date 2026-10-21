@@ -1,0 +1,134 @@
+From 517b8d00f7a781b20b45c26e980e87dfd96384a0 Mon Sep 17 00:00:00 2001
+From: Guillermo Schimmel <gschimmel@gmail.com>
+Date: Fri, 25 Sep 2026 09:04:17 -0300
+Subject: [PATCH] fix(windows): Explorer partial FETCH freeze + Sync 100%
+ rounding
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Do not skip S3 ListNodes on FETCH_PLACEHOLDERS merely because one local
+child exists — that permanently freezes a partial placeholder populate.
+Floor the Backup Sync percent label below 100 while files/bytes remain.
+---
+ windows/src/CryptoMako.App/MainViewModel.cs   | 23 ++++++++++++++--
+ .../CryptoMako.CfApi/CloudFilesProvider.cs    | 12 ++++-----
+ .../BackupProgressFormatTests.cs              | 27 +++++++++++++++++--
+ 3 files changed, 51 insertions(+), 11 deletions(-)
+
+diff --git a/windows/src/CryptoMako.App/MainViewModel.cs b/windows/src/CryptoMako.App/MainViewModel.cs
+index c385e86..9292fd7 100644
+--- a/windows/src/CryptoMako.App/MainViewModel.cs
++++ b/windows/src/CryptoMako.App/MainViewModel.cs
+@@ -914,7 +914,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
+         BackupBytesPerSecond = u.BytesPerSecond;
+         BackupCurrentPath = u.CurrentPath ?? "";
+         // Counting has no known total - keep bar at 0 (Percent would be 100 if Done==Total).
+-        BackupProgressPercent = u.Phase == "scanning" ? 0 : u.Percent;
++        BackupProgressPercent = u.Phase == "scanning" ? 0 : DisplayProgressPercent(u);
+         BackupProgressLabel = BuildBackupProgressLabel(u);
+         BackupSpeedLabel = u.BytesPerSecond > 0 ? FormatRate(u.BytesPerSecond) : "";
+         BackupEtaLabel = u.Phase == "scanning"
+@@ -923,6 +923,25 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
+         OnPropertyChanged(nameof(IsBackupProgressVisible));
+     }
+ 
++
++    /// <summary>
++    /// UI percent for the progress label. Floor to avoid "{0:0}%" rounding 99.5+ to 100
++    /// while files/bytes still remain; only show 100 when the engine reports completion.
++    /// </summary>
++    public static double DisplayProgressPercent(BackupSyncProgressUpdate u)
++    {
++        if (u.Phase is "done" or "pruning")
++            return 100;
++        var p = u.Percent;
++        if (p >= 100)
++        {
++            var filesRemain = Math.Max(u.FilesScanned, u.FilesTotal) > u.FilesDone;
++            var bytesRemain = u.BytesTotal > 0 && u.BytesDone < u.BytesTotal;
++            if (filesRemain || bytesRemain)
++                return 99;
++        }
++        return Math.Min(99, Math.Floor(p));
++    }
+     /// <summary>Pure label builder (unit-tested). Scanning checked before percent format.</summary>
+     public static string BuildBackupProgressLabel(BackupSyncProgressUpdate u)
+     {
+@@ -955,7 +974,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
+             return string.Format(
+                 CultureInfo.InvariantCulture,
+                 "{0:0}% - {1}/{2} files - {3}/{4}",
+-                u.Percent,
++                DisplayProgressPercent(u),
+                 u.FilesDone,
+                 totalFiles,
+                 FormatBytes(u.BytesDone),
+diff --git a/windows/src/CryptoMako.CfApi/CloudFilesProvider.cs b/windows/src/CryptoMako.CfApi/CloudFilesProvider.cs
+index 0442e14..f27b520 100644
+--- a/windows/src/CryptoMako.CfApi/CloudFilesProvider.cs
++++ b/windows/src/CryptoMako.CfApi/CloudFilesProvider.cs
+@@ -963,15 +963,13 @@ public sealed class CloudFilesProvider : IDisposable, IExplorerViewer
+         // not a vault path. ResolveVaultPathFromCallback must reject that or we would seed wrongly.
+         var dirPath = provider?.ResolveVaultPathFromCallback(info) ?? "/";
+ 
+-        // Fast path: when the directory already has children on disk, ACK immediately without an
+-        // S3 ListNodes round-trip. Explorer right-click / property / verb queries re-enter FETCH
+-        // and used to block the shell for seconds waiting on network I/O before TRANSFER ACK.
+-        var alreadyPopulated = provider is not null && DirectoryHasLocalChildren(provider, dirPath);
+-
++        // Always re-list + CreatePlaceholders for missing children. Skipping S3 whenever ANY
++        // local child exists permanently freezes a partial populate (e.g. only "go/" seeded
++        // under Users/guill while Desktop/Dev/Documents still exist in the vault).
++        // CreatePlaceholders is best-effort for names that already exist on disk.
+         try
+         {
+-            if (!alreadyPopulated
+-                && provider?.Session is not null
++            if (provider?.Session is not null
+                 && provider.GetStatus().Registered
+                 && TryListImmediatePlaceholders(provider.Session, dirPath, out var children, pattern)
+                 && children.Count > 0)
+diff --git a/windows/tests/CryptoMako.Vault.Tests/BackupProgressFormatTests.cs b/windows/tests/CryptoMako.Vault.Tests/BackupProgressFormatTests.cs
+index ab8ef44..c036c73 100644
+--- a/windows/tests/CryptoMako.Vault.Tests/BackupProgressFormatTests.cs
++++ b/windows/tests/CryptoMako.Vault.Tests/BackupProgressFormatTests.cs
+@@ -1,4 +1,4 @@
+-﻿using CryptoMako.App;
++using CryptoMako.App;
+ using CryptoMako.Vault;
+ using Xunit;
+ 
+@@ -114,5 +114,28 @@ public class BackupProgressFormatTests
+         Assert.StartsWith("50%", label);
+         Assert.Contains("1/4 files", label);
+     }
+-}
+ 
++    [Fact]
++    public void DisplayProgressPercent_floors_below_100_when_files_remain()
++    {
++        var u = new BackupSyncProgressUpdate
++        {
++            Phase = "uploading",
++            FilesDone = 30000,
++            FilesTotal = 35000,
++            FilesScanned = 35000,
++            BytesDone = 9_910_000_000,
++            BytesTotal = 9_940_000_000,
++        };
++        // Raw Percent ~99.7 would round to 100% with "{0:0}%"; display must stay <=99.
++        Assert.True(u.Percent >= 99.5);
++        Assert.Equal(99, MainViewModel.DisplayProgressPercent(u));
++    }
++
++    [Fact]
++    public void DisplayProgressPercent_100_when_done_phase()
++    {
++        var u = new BackupSyncProgressUpdate { Phase = "done", FilesDone = 1, FilesTotal = 1, BytesDone = 1, BytesTotal = 1 };
++        Assert.Equal(100, MainViewModel.DisplayProgressPercent(u));
++    }
++}
+-- 
+2.55.0.windows.3
+
