@@ -18,14 +18,16 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27.2"
+          # Patch toolchain for GO-2026-6809 (crypto/x509). go.mod stays go 1.27.2.
+          go-version: "1.27.3"
           cache-dependency-path: linux/go.sum
 
       - name: Install scanners
         run: |
           set -euo pipefail
           go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
-          go install github.com/google/osv-scanner/cmd/osv-scanner@v1.9.2
+          # v1.9.2 panics on Go 1.27 (x/tools@v0.27 SSA KeyValueExpr) during call analysis.
+          go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.0
           go install github.com/zricethezav/gitleaks/v8@v8.30.1
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 

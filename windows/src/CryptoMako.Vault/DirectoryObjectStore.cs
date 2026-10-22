@@ -112,6 +112,70 @@ public sealed class DirectoryObjectStore : IObjectStore
         if (!candidate.Equals(Root, StringComparison.OrdinalIgnoreCase)
             && !candidate.StartsWith(rootFull, StringComparison.OrdinalIgnoreCase))
             throw new ObjectStoreException("invalid object key");
+        // Reject symlink / junction escape outside the vault root (macOS SafePath).
+        AssertInsideRoot(candidate);
         return candidate;
+    }
+
+    private void AssertInsideRoot(string candidate)
+    {
+        var rootReal = EvalPath(Root);
+        var rootPrefix = rootReal.EndsWith(Path.DirectorySeparatorChar)
+            ? rootReal
+            : rootReal + Path.DirectorySeparatorChar;
+
+        string rel;
+        try
+        {
+            rel = Path.GetRelativePath(Root, candidate);
+        }
+        catch (ArgumentException)
+        {
+            throw new ObjectStoreException("invalid object key");
+        }
+        if (rel == ".." || rel.StartsWith(".." + Path.DirectorySeparatorChar, StringComparison.Ordinal)
+            || rel.StartsWith("../", StringComparison.Ordinal))
+            throw new ObjectStoreException("invalid object key");
+
+        // Walk each segment, resolving reparse points so a symlink under the vault
+        // cannot point a key at a path outside Root (macOS SafePath parity).
+        var cur = rootReal;
+        foreach (var part in rel.Replace('/', Path.DirectorySeparatorChar)
+                     .Split(Path.DirectorySeparatorChar, StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (part == "." || part == "..")
+                throw new ObjectStoreException("invalid object key");
+            var next = Path.Combine(cur, part);
+            cur = (Directory.Exists(next) || File.Exists(next))
+                ? EvalPath(next)
+                : Path.GetFullPath(next);
+            if (!cur.Equals(rootReal, StringComparison.OrdinalIgnoreCase)
+                && !cur.StartsWith(rootPrefix, StringComparison.OrdinalIgnoreCase))
+                throw new ObjectStoreException("invalid object key");
+        }
+    }
+
+    private static string EvalPath(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                var target = Directory.ResolveLinkTarget(path, returnFinalTarget: true);
+                if (target is not null)
+                    return Path.GetFullPath(target.FullName);
+            }
+            else if (File.Exists(path))
+            {
+                var target = File.ResolveLinkTarget(path, returnFinalTarget: true);
+                if (target is not null)
+                    return Path.GetFullPath(target.FullName);
+            }
+        }
+        catch (IOException)
+        {
+            // Fall through.
+        }
+        return Path.GetFullPath(path);
     }
 }

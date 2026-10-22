@@ -344,6 +344,53 @@ public class BackupSyncTests
     }
 
     [Fact]
+    public async Task SyncMode_keeps_excluded_present_files_from_orphan_prune()
+    {
+        // H1: .DS_Store present on disk stays in prune allow-set and is not uploaded.
+        var vaultDir = Path.Combine(Path.GetTempPath(), "cm-vault-ex-" + Guid.NewGuid().ToString("N"));
+        var sourceDir = Path.Combine(Path.GetTempPath(), "cm-src-ex-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(sourceDir);
+        await File.WriteAllTextAsync(Path.Combine(sourceDir, "keep.txt"), "keep\n");
+        await File.WriteAllTextAsync(Path.Combine(sourceDir, ".DS_Store"), "meta\n");
+
+        try
+        {
+            var fixture = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "..", "fixtures", "vault"));
+            Assert.True(Directory.Exists(fixture));
+            var pass = File.ReadAllText(Path.GetFullPath(Path.Combine(fixture, "..", "PASSWORD"))).TrimEnd('\n', '\r');
+            CopyDir(fixture, vaultDir);
+            await using var session = VaultSession.UnlockLocal(vaultDir, pass);
+
+            var leaf = await session.EnsureDirectoryPathAsync("Backups/ExcludePresent");
+            await session.PutFileAsync(leaf, "keep.txt", Encoding.UTF8.GetBytes("keep\n"));
+            await session.PutFileAsync(leaf, ".DS_Store", Encoding.UTF8.GetBytes("meta\n"));
+            await session.PutFileAsync(leaf, "gone.txt", Encoding.UTF8.GetBytes("gone\n"));
+
+            var prefs = new AppPreferences
+            {
+                BackupTransferMode = AppPreferences.BackupTransferModeSync,
+                SyncSmallPutConcurrency = 2,
+                SyncMediumPutConcurrency = 1,
+                SyncLargePutConcurrency = 1,
+            };
+            var engine = new BackupSyncEngine();
+            var statePath = Path.Combine(Path.GetTempPath(), "cm-state-ex-" + Guid.NewGuid().ToString("N") + ".json");
+            var result = await engine.SyncAsync(session, sourceDir, "ExcludePresent", prefs, syncStatePath: statePath);
+
+            Assert.True(result.FilesDeleted >= 1, $"expected gone.txt prune, deleted={result.FilesDeleted}");
+            var listing = await session.ListAsync("/Backups/ExcludePresent", recursive: true);
+            Assert.Contains(listing, x => x.Contains("keep.txt", StringComparison.Ordinal));
+            Assert.Contains(listing, x => x.Contains(".DS_Store", StringComparison.Ordinal));
+            Assert.DoesNotContain(listing, x => x.Contains("gone.txt", StringComparison.Ordinal));
+        }
+        finally
+        {
+            try { Directory.Delete(sourceDir, true); } catch { /* ignore */ }
+            try { Directory.Delete(vaultDir, true); } catch { /* ignore */ }
+        }
+    }
+
+    [Fact]
     public async Task SyncMode_deletes_vault_orphans_under_dest_only_never_source()
     {
         var vaultDir = Path.Combine(Path.GetTempPath(), "cm-vault-syn-" + Guid.NewGuid().ToString("N"));

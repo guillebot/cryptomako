@@ -142,12 +142,13 @@ public sealed class BackupSyncEngine
                 syncProgress?.Report(new BackupSyncProgressUpdate
                 {
                     Phase = "uploading",
-                    FilesDone = skippedBaseline + uploaded,
-                    FilesTotal = filesScannedTotal,
+                    WalkFinished = true,
+                    FilesDone = uploaded,
+                    FilesTotal = filesTotal,
                     FilesSkipped = skippedBaseline,
                     FilesScanned = filesScannedTotal,
-                    BytesDone = skippedBytesBaseline + bytes,
-                    BytesTotal = bytesScannedTotal,
+                    BytesDone = bytes,
+                    BytesTotal = bytesTotal,
                     BytesScanned = bytesScannedTotal,
                     BytesPerSecond = emaRate,
                     CurrentPath = job.RelativePath,
@@ -199,12 +200,13 @@ public sealed class BackupSyncEngine
                     update = new BackupSyncProgressUpdate
                     {
                         Phase = "uploading",
-                        FilesDone = skippedBaseline + uploaded,
-                        FilesTotal = filesScannedTotal,
+                        WalkFinished = true,
+                        FilesDone = uploaded,
+                        FilesTotal = filesTotal,
                         FilesSkipped = skippedBaseline,
                         FilesScanned = filesScannedTotal,
-                        BytesDone = skippedBytesBaseline + bytes,
-                        BytesTotal = bytesScannedTotal,
+                        BytesDone = bytes,
+                        BytesTotal = bytesTotal,
                         BytesScanned = bytesScannedTotal,
                         BytesPerSecond = emaRate,
                         CurrentPath = job.RelativePath,
@@ -218,40 +220,41 @@ public sealed class BackupSyncEngine
         syncProgress?.Report(new BackupSyncProgressUpdate
         {
             Phase = "scanning",
+            WalkFinished = false,
             CurrentPath = localRoot,
         });
         // Offload the sync walk so Progress<T> callbacks can marshal to the UI thread.
         var (jobs, skipped, skippedBytes, localFiles) = await Task.Run(
-            () => CollectJobs(localRoot, excludes, syncState, vaultFolderName, syncProgress, ct),
+            () => CollectJobs(localRoot, excludes, syncState, vaultFolderName, isSyncMode, syncProgress, ct),
             ct).ConfigureAwait(false);
         filesTotal = jobs.Count;
         bytesTotal = jobs.Sum(j => j.Size);
         var filesScanned = jobs.Count + skipped;
         var bytesScanned = bytesTotal + skippedBytes;
-        // Baselines for worker closures: progress denominator = all scanned regular files.
+        // Baselines: percent denominator is bytes/files still to upload (skips excluded).
         skippedBaseline = skipped;
         skippedBytesBaseline = skippedBytes;
         filesScannedTotal = filesScanned;
         bytesScannedTotal = bytesScanned;
-        if (filesScanned == 0)
-            throw new InvalidOperationException(
-                "No regular files found under backup source: " + localRoot);
+        // Empty to-upload set is OK (all skipped / only excluded present). CollectJobs
+        // already rejects a tree with zero regular files on disk.
         string startMsg;
         if (filesTotal == 0)
             startMsg = $"All {skipped} files up-to-date";
         else if (skipped > 0)
-            startMsg = $"Starting upload... ({skipped} already up-to-date)";
+            startMsg = $"Scan complete — {filesTotal} files, {FormatBytes(bytesTotal)} to upload ({skipped} up-to-date)";
         else
-            startMsg = "Starting upload...";
+            startMsg = $"Scan complete — {filesTotal} files, {FormatBytes(bytesTotal)} to upload";
         syncProgress?.Report(new BackupSyncProgressUpdate
         {
             Phase = filesTotal == 0 ? "done" : "uploading",
-            FilesDone = skipped,
-            FilesTotal = filesScanned,
+            WalkFinished = true,
+            FilesDone = 0,
+            FilesTotal = filesTotal,
             FilesSkipped = skipped,
             FilesScanned = filesScanned,
-            BytesDone = filesTotal == 0 ? bytesScanned : skippedBytes,
-            BytesTotal = bytesScanned,
+            BytesDone = 0,
+            BytesTotal = bytesTotal,
             BytesScanned = bytesScanned,
             CurrentPath = startMsg,
         });
@@ -292,12 +295,13 @@ public sealed class BackupSyncEngine
             syncProgress?.Report(new BackupSyncProgressUpdate
             {
                 Phase = "pruning",
-                FilesDone = skipped + uploaded,
-                FilesTotal = filesScanned,
+                WalkFinished = true,
+                FilesDone = uploaded,
+                FilesTotal = filesTotal,
                 FilesSkipped = skipped,
                 FilesScanned = filesScanned,
-                BytesDone = skippedBytes + bytes,
-                BytesTotal = bytesScanned,
+                BytesDone = bytes,
+                BytesTotal = bytesTotal,
                 BytesScanned = bytesScanned,
                 CurrentPath = $"Comparing vault {vaultRoot}/ to local tree…",
             });
@@ -312,12 +316,13 @@ public sealed class BackupSyncEngine
             syncProgress?.Report(new BackupSyncProgressUpdate
             {
                 Phase = "pruning",
-                FilesDone = skipped + uploaded,
-                FilesTotal = filesScanned,
+                WalkFinished = true,
+                FilesDone = uploaded,
+                FilesTotal = filesTotal,
                 FilesSkipped = skipped,
                 FilesScanned = filesScanned,
-                BytesDone = skippedBytes + bytes,
-                BytesTotal = bytesScanned,
+                BytesDone = bytes,
+                BytesTotal = bytesTotal,
                 BytesScanned = bytesScanned,
                 FilesDeleted = filesDeleted,
                 CurrentPath = filesDeleted == 0
@@ -340,10 +345,20 @@ public sealed class BackupSyncEngine
         };
     }
 
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024) return $"{bytes} B";
+        double v = bytes;
+        string[] units = ["KB", "MB", "GB", "TB"];
+        var u = -1;
+        do { v /= 1024; u++; } while (v >= 1024 && u < units.Length - 1);
+        return $"{v:0.##} {units[u]}";
+    }
+
     /// <summary>
     /// Sync mode only: delete remote ciphertext under this source's vault folder that
-    /// has no matching eligible local file. Never touches the local source tree.
-    /// Fail-closed: ObjectStore/<see cref="VaultSession"/> delete errors abort the run.
+    /// has no matching local path present on disk (including excluded/hidden).
+    /// Never touches the local source tree. Fail-closed.
     /// Scope is <c>Backups/&lt;folder&gt;/</c> only (leafDirId); never vault root.
     /// </summary>
     private static async Task<int> DeleteVaultOrphansAsync(
@@ -428,6 +443,7 @@ public sealed class BackupSyncEngine
         BackupSyncExcludes excludes,
         BackupSyncState syncState,
         string vaultFolderName,
+        bool isSyncMode,
         IProgress<BackupSyncProgressUpdate>? syncProgress = null,
         CancellationToken ct = default)
     {
@@ -437,37 +453,43 @@ public sealed class BackupSyncEngine
         long skippedBytes = 0;
         var scanned = 0;
         long scannedBytes = 0;
+        var presentRegularFiles = 0;
         var sinceUi = 0;
         var lastUi = System.Diagnostics.Stopwatch.StartNew();
-        var rootFull = localRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        // Default SearchOption.AllDirectories follows dir junctions and aborts the whole
-        // walk on the first UnauthorizedAccessException (e.g. C:\Users\...\Application Data
-        // under a home-folder Backup source) - UI stuck at "Counting... 1 files".
-        // Keep default Hidden|System skip AND skip ReparsePoint so junctions are not entered.
+        var rootFull = Path.GetFullPath(localRoot)
+            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        // IgnoreInaccessible + skip ReparsePoint: home-folder junctions must not abort
+        // the walk. Sync mode includes Hidden so present excluded/hidden files are
+        // retained for orphan prune (not uploaded). Backup skips Hidden at enum time.
+        var attrsToSkip = FileAttributes.System | FileAttributes.ReparsePoint;
+        if (!isSyncMode)
+            attrsToSkip |= FileAttributes.Hidden;
         var enumOpts = new EnumerationOptions
         {
             RecurseSubdirectories = true,
             IgnoreInaccessible = true,
-            AttributesToSkip = FileAttributes.Hidden | FileAttributes.System | FileAttributes.ReparsePoint,
+            AttributesToSkip = attrsToSkip,
             ReturnSpecialDirectories = false,
         };
         foreach (var path in Directory.EnumerateFiles(localRoot, "*", enumOpts))
         {
             ct.ThrowIfCancellationRequested();
-            var rel = Path.GetRelativePath(rootFull, path).Replace('\\', '/');
-            var parts = rel.Split('/');
-            var hide = false;
-            for (var i = 0; i < parts.Length; i++)
+            string rel;
+            try
             {
-                if (parts[i].StartsWith('.')) { hide = true; break; }
-                if (i < parts.Length - 1 && excludes.ShouldSkipDirectory(parts[i])) { hide = true; break; }
+                rel = BackupRelativePath.Make(path, rootFull);
             }
-            if (hide) continue;
-            if (excludes.ShouldSkipRelativePath(rel)) continue;
+            catch (BackupRelativePath.NotUnderRootException)
+            {
+                // Fail closed: a path outside the source root aborts the scan
+                // (no lastPathComponent fallback) so prune keys stay honest.
+                throw;
+            }
 
             FileInfo info;
             long length;
             DateTimeOffset mtime;
+            FileAttributes attrs;
             try
             {
                 info = new FileInfo(path);
@@ -475,20 +497,42 @@ public sealed class BackupSyncEngine
                     continue;
                 length = info.Length;
                 mtime = info.LastWriteTimeUtc;
+                attrs = info.Attributes;
             }
             catch (Exception ex) when (ex is UnauthorizedAccessException or IOException or System.Security.SecurityException)
             {
                 continue;
             }
 
-            // Eligible local file (post-exclude). Used by Sync-mode orphan prune.
-            localFiles.Add(rel);
+            var name = Path.GetFileName(path);
+            var parts = rel.Split('/');
+            var isHidden = name.StartsWith('.')
+                || attrs.HasFlag(FileAttributes.Hidden)
+                || parts.Any(p => p.StartsWith('.'));
+            var isExcluded = excludes.ShouldSkipFile(name) || excludes.ShouldSkipRelativePath(rel);
+            // Directory-name excludes on ancestor segments.
+            for (var i = 0; i < parts.Length - 1; i++)
+            {
+                if (excludes.ShouldSkipDirectory(parts[i]))
+                {
+                    isExcluded = true;
+                    break;
+                }
+            }
+
+            var disposition = BackupSyncPresentSetPolicy.Disposition(isHidden, isExcluded);
+            presentRegularFiles++;
+            if (BackupSyncPresentSetPolicy.RetainInPruneAllowSet(isSyncMode, pathPresentOnDisk: true))
+                localFiles.Add(rel);
+
+            // Excluded / hidden: present for prune, never uploaded / never counted as scanned for upload.
+            if (disposition != BackupSyncScanDisposition.PresentUploadEligible)
+                continue;
 
             scanned++;
             scannedBytes += length;
             sinceUi++;
             // First file immediately; then ~10Hz or every 25 files (macOS live-name parity).
-            // Do not set FilesDone/BytesDone here - Percent would jump to 100% while counting.
             if (scanned == 1 || sinceUi >= 25 || lastUi.ElapsedMilliseconds >= 100)
             {
                 sinceUi = 0;
@@ -496,12 +540,14 @@ public sealed class BackupSyncEngine
                 syncProgress?.Report(new BackupSyncProgressUpdate
                 {
                     Phase = "scanning",
+                    WalkFinished = false,
                     FilesScanned = scanned,
                     BytesScanned = scannedBytes,
                     CurrentPath = rel,
                 });
             }
 
+            // Local fingerprint only — no vault LIST during the scan.
             var key = BackupSyncState.Key(vaultFolderName, rel);
             if (syncState.Files.TryGetValue(key, out var fp) && fp.Matches(length, mtime))
             {
@@ -512,18 +558,22 @@ public sealed class BackupSyncEngine
 
             var parentRel = Path.GetDirectoryName(rel)?.Replace('\\', '/') ?? "";
             if (parentRel == ".") parentRel = "";
-            jobs.Add(new PendingUpload(path, rel, parentRel, Path.GetFileName(path), length, mtime));
+            jobs.Add(new PendingUpload(path, rel, parentRel, name, length, mtime));
         }
 
         syncProgress?.Report(new BackupSyncProgressUpdate
         {
             Phase = "scanning",
+            WalkFinished = false,
             FilesScanned = scanned,
             BytesScanned = scannedBytes,
             CurrentPath = scanned == 0
                 ? localRoot
                 : $"Scan complete - {scanned} files",
         });
+        if (presentRegularFiles == 0)
+            throw new InvalidOperationException(
+                "No regular files found under backup source: " + localRoot);
         return (jobs, skipped, skippedBytes, localFiles);
     }
 }

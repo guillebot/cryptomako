@@ -142,4 +142,54 @@ final class SafePathTests: XCTestCase {
         let url = try SafePath.resolve(root: root, key: "d/ab/file.c9r")
         XCTAssertTrue(url.path.hasSuffix("d/ab/file.c9r"))
     }
+
+    func testRejectsSymlinkThatEscapesRoot() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("cm-safepath-\(UUID().uuidString)")
+        let root = base.appendingPathComponent("vault", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        try Data("secret".utf8).write(to: outside.appendingPathComponent("leak.txt"))
+        let link = root.appendingPathComponent("escape")
+        try fm.createSymbolicLink(at: link, withDestinationURL: outside)
+
+        XCTAssertThrowsError(try SafePath.resolve(root: root, key: "escape/leak.txt")) { error in
+            guard case ObjectStoreError.transport(let message) = error else {
+                return XCTFail("expected transport error, got \(error)")
+            }
+            XCTAssertEqual(message, "invalid object key")
+        }
+
+        // Existing ".." rejection must remain.
+        XCTAssertThrowsError(try SafePath.resolve(root: root, key: "../outside/leak.txt")) { error in
+            guard case ObjectStoreError.transport = error else {
+                return XCTFail("expected transport error, got \(error)")
+            }
+        }
+    }
+
+    func testDirectoryObjectStoreRejectsSymlinkEscape() async throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("cm-dirstore-\(UUID().uuidString)")
+        let root = base.appendingPathComponent("vault", isDirectory: true)
+        let outside = base.appendingPathComponent("outside", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        try fm.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: base) }
+
+        try Data("secret".utf8).write(to: outside.appendingPathComponent("leak.txt"))
+        let link = root.appendingPathComponent("escape")
+        try fm.createSymbolicLink(at: link, withDestinationURL: outside)
+
+        let store = DirectoryObjectStore(root: root)
+        do {
+            _ = try await store.getObject(key: "escape/leak.txt")
+            XCTFail("expected transport error")
+        } catch ObjectStoreError.transport(let message) {
+            XCTAssertEqual(message, "invalid object key")
+        }
+    }
 }
