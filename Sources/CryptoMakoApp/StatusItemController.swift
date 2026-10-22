@@ -113,7 +113,11 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         if sync.isRunning {
             let phase = sync.phaseLabel.isEmpty ? "Syncing" : sync.phaseLabel
             tip += "\nBackup Sync: \(phase) · \(sync.progressPercentLabel)"
-            tip += "\n\(sync.filesDone)/\(max(sync.filesDiscovered, sync.filesDone)) files"
+            if sync.walkFinished {
+                tip += "\nUploaded \(sync.filesUploaded)/\(max(sync.filesToUpload, sync.filesUploaded)) files"
+            } else {
+                tip += "\nDiscovered \(sync.filesDiscovered.formatted()) files"
+            }
             if !sync.remainingLabel.isEmpty {
                 tip += "\n\(sync.remainingLabel)"
             }

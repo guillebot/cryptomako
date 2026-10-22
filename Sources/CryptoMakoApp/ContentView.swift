@@ -790,6 +790,22 @@ struct BackupView: View {
     }
 
     @ViewBuilder
+    private func backupProgressLabels(_ engine: BackupSyncEngine) -> some View {
+        HStack {
+            Text("\(engine.phaseLabel.isEmpty ? "Syncing…" : engine.phaseLabel) · \(engine.progressPercentLabel)")
+                .appFont(.body, weight: .semibold)
+            Spacer()
+            if engine.walkFinished {
+                Text("\(engine.filesUploaded)/\(max(engine.filesToUpload, engine.filesUploaded)) files · \(TransferSnapshot.formatBytes(engine.bytesUploaded))/\(TransferSnapshot.formatBytes(max(engine.bytesToUpload, engine.bytesUploaded)))")
+                    .foregroundStyle(.secondary)
+            } else {
+                Text("Discovered \(engine.filesDiscovered.formatted()) · \(TransferSnapshot.formatBytes(engine.bytesDiscovered))")
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
     private var syncStatus: some View {
         let engine = syncEngine
         GroupBox("Last transfer") {
@@ -799,13 +815,15 @@ struct BackupView: View {
                     Text("Idle")
                         .foregroundStyle(.secondary)
                 case .running:
-                    ProgressView(value: engine.progressFraction) {
-                        HStack {
-                            Text("\(engine.phaseLabel.isEmpty ? "Syncing…" : engine.phaseLabel) · \(engine.progressPercentLabel)")
-                                .appFont(.body, weight: .semibold)
-                            Spacer()
-                            Text("\(engine.filesDone)/\(max(engine.filesDiscovered, engine.filesDone)) files · \(TransferSnapshot.formatBytes(engine.bytesDone))/\(TransferSnapshot.formatBytes(max(engine.bytesDiscovered, engine.bytesDone)))")
-                                .foregroundStyle(.secondary)
+                    Group {
+                        if engine.hasDeterminateUploadProgress {
+                            ProgressView(value: engine.progressFraction) {
+                                backupProgressLabels(engine)
+                            }
+                        } else {
+                            ProgressView {
+                                backupProgressLabels(engine)
+                            }
                         }
                     }
                     // "Still to transfer" — exact once the scan finished, before the first put.
@@ -826,7 +844,7 @@ struct BackupView: View {
                     .appFont(.caption)
                     .foregroundStyle(.secondary)
                     if !engine.walkFinished {
-                        Text("Scanning only — no uploads yet. % uses files discovered so far and may move while scanning.")
+                        Text("Scanning only — no uploads yet. Percent starts at 0% when the scan finishes.")
                             .appFont(.caption2)
                             .foregroundStyle(.tertiary)
                     }
