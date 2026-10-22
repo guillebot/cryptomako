@@ -18,7 +18,8 @@ import OSLog
 /// - **sync**: same puts, then delete remote ciphertext under `Backups/<folder>/`
 ///   that is missing from the local tree (ObjectStore delete, fail-closed). Never
 ///   deletes the local source. Scope is that source’s vault folder only.
-/// Caps queued uploads. `acquire` suspends the walk; each dequeued job releases one slot.
+/// Caps queued uploads. `acquire` may suspend the enumerator after local metadata
+/// is recorded (and after leaving the Walking UI phase); each dequeued job releases one slot.
 private final class UploadSlots: @unchecked Sendable {
     private let lock = NSLock()
     private var available: Int
@@ -97,9 +98,10 @@ final class BackupSyncEngine: ObservableObject {
         case failed(String)
     }
 
-    /// Coarse UI phase for Backup Sync (walk and upload can overlap briefly).
-    /// While the enumerator runs we keep `.walking` (counters still show skipped/queued);
-    /// `.skipping` / `.queuing` remain for label compatibility but are not flipped per file.
+    /// Coarse UI phase for Backup Sync.
+    /// `.walking` is local enumeration only (size/mtime + fingerprint skip). As soon as a
+    /// file must upload, we leave Walking — even if the enumerator is still running —
+    /// so a full put queue never keeps the label on "Walking local tree…".
     enum Phase: String, Equatable {
         case idle = ""
         case preparing = "Preparing sources…"
@@ -603,19 +605,11 @@ final class BackupSyncEngine: ObservableObject {
             return Count(files: 0, bytes: 0)
         }
 
-        var fileNameCache: [String: Set<String>] = [:]
         /// Eligible local relative paths (post-exclude). Used by Sync-mode orphan prune.
         var localFiles = Set<String>()
         var skipped = Count(files: 0, bytes: 0)
         var sinceSave = 0
         let dirCache = DirIdCache(rootDirId: parentDirId, session: session)
-
-        func cachedFileNames(_ dirId: String) async throws -> Set<String> {
-            if let hit = fileNameCache[dirId] { return hit }
-            let names = try await session.listFileNames(dirId: dirId)
-            fileNameCache[dirId] = names
-            return names
-        }
 
         let walkUI = WalkUIPublisher()
 
@@ -634,11 +628,8 @@ final class BackupSyncEngine: ObservableObject {
                     self.bytesDone += snap.skippedBytes
                 }
                 if let p = snap.path { self.currentPath = p }
-                // Keep a stable Walking label until the enumerator finishes —
-                // flipping skipping/queuing every flush starved SMB walks via MainActor.
-                if !self.walkFinished, self.phase != .walking {
-                    self.phase = .walking
-                }
+                // Never force phase back to Walking — once we enqueue, phase is
+                // Queuing/Uploading even while the enumerator is still running.
                 self.publishProgress()
             }
         }
@@ -662,12 +653,11 @@ final class BackupSyncEngine: ObservableObject {
         }
         defer { walkPublishTask.cancel() }
 
-        // Three priority streams: large / medium / small. The walk waits once
-        // 512 jobs are queued, so a huge tree cannot accumulate every path in
-        // memory. Each stream has exactly ONE consumer that spawns a bounded
-        // TaskGroup (limit = Settings workers for that tier). AsyncStream is
-        // single-consumer, so N `for await` workers on one stream would not
-        // create N concurrent puts.
+        // Three priority streams: large / medium / small. After local metadata
+        // is recorded (and Walking phase left), the enumerator may wait once
+        // 512 jobs are queued — bound memory without calling that wait Walking.
+        // Each stream has exactly ONE consumer that spawns a bounded TaskGroup
+        // (limit = Settings workers for that tier). AsyncStream is single-consumer.
         let uploadSlots = UploadSlots(limit: Self.maxQueuedUploads)
         let (largeStream, largeCont) = AsyncStream.makeStream(of: PendingUpload.self)
         let (mediumStream, mediumCont) = AsyncStream.makeStream(of: PendingUpload.self)
@@ -747,7 +737,6 @@ final class BackupSyncEngine: ObservableObject {
         let box = StateBox(syncState)
         // Crash / cancel window: periodic saves are time-gated; always flush on exit.
         defer { box.save(force: true) }
-        let bootstrapRemoteSkip = syncState.files.isEmpty
 
         final class UploadCounter: @unchecked Sendable {
             let lock = NSLock()
@@ -908,10 +897,14 @@ final class BackupSyncEngine: ObservableObject {
             return snap
         }()
 
-        // Single local walk: disk only. Unchanged → skip. New/changed → enqueue
-        // without waiting for MinIO (dir resolve happens in put workers).
+        // Single local walk: disk + fingerprint index only. Never LIST the vault or
+        // resolve dir.c9r here — that made cold-index / first-sync walks O(remote)
+        // per directory. Unchanged → skip. New/changed → enqueue; dir resolve is
+        // in put workers. `acquire` may block once 512 jobs are queued, but only
+        // after local metadata is recorded and after we leave the Walking phase.
         // Cache root path once — avoid per-file standardizedFileURL (SMB-expensive).
         let rootPath = localRoot.path
+        var leftWalkingPhase = false
         for case let fileURL as URL in enumerator {
             try Task.checkCancellation()
             if reachabilityGate.shouldProbe() {
@@ -943,12 +936,16 @@ final class BackupSyncEngine: ObservableObject {
             let size = Int64(values.fileSize ?? 0)
             let mtime = values.contentModificationDate ?? Date.distantPast
             let stateKey = BackupSyncState.key(vaultFolder: vaultFolderName, relativePath: rel)
-            let fingerprint = BackupFileFingerprint(size: size, contentModification: mtime)
 
             walkUI.noteDiscovered(bytes: size)
             walkUI.notePath(rel)
 
-            if box.get(stateKey)?.matches(size: size, contentModification: mtime) == true {
+            switch BackupWalkSkipPolicy.action(
+                indexed: box.get(stateKey),
+                size: size,
+                contentModification: mtime
+            ) {
+            case .skipUnchanged:
                 skipped.files += 1
                 skipped.bytes += size
                 sinceSave += 1
@@ -958,27 +955,8 @@ final class BackupSyncEngine: ObservableObject {
                     sinceSave = 0
                 }
                 continue
-            }
-
-            // Bootstrap LIST only when the local index is empty (first sync).
-            // Needs a dirId — resolve here only on cold index (rare after first run).
-            if box.get(stateKey) == nil, bootstrapRemoteSkip {
-                let parentRel = (rel as NSString).deletingLastPathComponent
-                let parentKey = parentRel == "." ? "" : parentRel
-                let parentId = try await dirCache.resolve(parentKey)
-                let remoteNames = try await cachedFileNames(parentId)
-                if remoteNames.contains(name) {
-                    box.set(stateKey, fingerprint)
-                    skipped.files += 1
-                    skipped.bytes += size
-                    sinceSave += 1
-                    walkUI.noteSkipped(bytes: size)
-                    if sinceSave >= StateBox.walkPersistEvery {
-                        box.save()
-                        sinceSave = 0
-                    }
-                    continue
-                }
+            case .enqueueUpload:
+                break
             }
 
             let parentRelRaw = (rel as NSString).deletingLastPathComponent
@@ -990,6 +968,19 @@ final class BackupSyncEngine: ObservableObject {
                 size: size,
                 contentModification: mtime
             )
+            // Local metadata already recorded (discovered + localFiles). Leave
+            // Walking before any put-queue wait so UI never calls blocked uploads
+            // "Walking local tree…".
+            if !leftWalkingPhase {
+                leftWalkingPhase = true
+                await MainActor.run {
+                    if !self.walkFinished, self.phase == .walking {
+                        self.phase = .queuing
+                        self.currentPath = "Queuing uploads…"
+                        self.publishProgress()
+                    }
+                }
+            }
             do {
                 try await uploadSlots.acquire()
             } catch {
