@@ -808,11 +808,17 @@ struct BackupView: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
+                    // "Still to transfer" — exact once the scan finished, before the first put.
+                    if !engine.remainingLabel.isEmpty {
+                        Text(engine.remainingLabel)
+                            .appFont(.body, weight: .medium)
+                            .foregroundStyle(engine.walkFinished ? .primary : .secondary)
+                    }
                     HStack(spacing: 12) {
-                        Text("Discovered \(engine.filesDiscovered)")
-                        Text("Skipped \(engine.filesSkipped)")
-                        Text("Queued \(engine.filesQueued)")
-                        Text("Uploaded \(engine.filesUploaded)")
+                        Text("Discovered \(engine.filesDiscovered.formatted())")
+                        Text("Skipped \(engine.filesSkipped.formatted()) (\(TransferSnapshot.formatBytes(engine.bytesSkipped)))")
+                        Text("To upload \(engine.filesToUpload.formatted()) (\(TransferSnapshot.formatBytes(engine.bytesToUpload)))")
+                        Text("Uploaded \(engine.filesUploaded.formatted()) (\(TransferSnapshot.formatBytes(engine.bytesUploaded)))")
                         if engine.filesDeleted > 0 || engine.phase == .pruning {
                             Text("Vault deleted \(engine.filesDeleted)")
                         }
@@ -820,7 +826,7 @@ struct BackupView: View {
                     .appFont(.caption)
                     .foregroundStyle(.secondary)
                     if !engine.walkFinished {
-                        Text("% uses files discovered so far (grows while walking; may move slightly).")
+                        Text("Scanning only — no uploads yet. % uses files discovered so far and may move while scanning.")
                             .appFont(.caption2)
                             .foregroundStyle(.tertiary)
                     }

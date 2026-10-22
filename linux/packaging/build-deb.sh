@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-VERSION="${VERSION:-1.0.7}"
+VERSION="${VERSION:-1.0.8}"
 if [[ -n "${ARCH:-}" ]]; then
   :
 elif command -v dpkg >/dev/null 2>&1; then

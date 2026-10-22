@@ -114,6 +114,9 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             let phase = sync.phaseLabel.isEmpty ? "Syncing" : sync.phaseLabel
             tip += "\nBackup Sync: \(phase) · \(sync.progressPercentLabel)"
             tip += "\n\(sync.filesDone)/\(max(sync.filesDiscovered, sync.filesDone)) files"
+            if !sync.remainingLabel.isEmpty {
+                tip += "\n\(sync.remainingLabel)"
+            }
         }
         statusItem.button?.toolTip = tip
         updateStatusItemImage()
