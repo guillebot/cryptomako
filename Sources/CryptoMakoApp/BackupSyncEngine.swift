@@ -66,10 +66,10 @@ final class BackupSyncEngine: ObservableObject {
 
     /// High-churn Sync metrics — mutated in batches then published via `progressEpoch`.
     private(set) var currentPath: String = ""
-    /// Skipped + uploaded (progress numerator).
+    /// Skipped + uploaded (processed count for captions; not the upload % numerator).
     private(set) var filesDone: Int = 0
     private(set) var bytesDone: Int64 = 0
-    /// Files discovered so far (progress denominator; freezes when walk finishes).
+    /// Files discovered so far (freezes when walk finishes). Not the upload % denominator.
     private(set) var filesTotal: Int = 0
     private(set) var bytesTotal: Int64 = 0
     /// Eligible files seen during the single walk (same as `filesTotal` while running).
@@ -131,30 +131,43 @@ final class BackupSyncEngine: ObservableObject {
         return false
     }
 
-    /// 0…1 based on (skipped+uploaded) / discovered. Totals grow during the walk.
+    /// True when the ProgressView should be determinate (post-scan upload %).
+    var hasDeterminateUploadProgress: Bool {
+        switch state {
+        case .running:
+            return walkFinished
+        case .finished:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// After scan: uploadedBytes / bytesToUpload (skips excluded). During scan: 0
+    /// (UI should use an indeterminate bar via `hasDeterminateUploadProgress`).
     var progressFraction: Double {
         switch state {
-        case .running, .finished:
-            if bytesTotal > 0 {
-                return min(1, Double(bytesDone) / Double(bytesTotal))
-            }
-            if filesTotal > 0 {
-                return min(1, Double(filesDone) / Double(filesTotal))
-            }
-            return 0
+        case .finished:
+            return 1
+        case .running:
+            return BackupUploadProgress.fraction(
+                walkFinished: walkFinished,
+                bytesUploaded: bytesUploaded,
+                bytesToUpload: bytesToUpload
+            ) ?? 0
         default:
             return 0
         }
     }
 
     var progressPercentLabel: String {
-        let pct = Int((progressFraction * 100).rounded(.down))
         switch state {
         case .running:
-            if filesTotal > 0 || bytesTotal > 0 {
-                return "\(pct)%"
-            }
-            return "…"
+            return BackupUploadProgress.percentLabel(
+                walkFinished: walkFinished,
+                bytesUploaded: bytesUploaded,
+                bytesToUpload: bytesToUpload
+            )
         case .finished:
             return "100%"
         default:
