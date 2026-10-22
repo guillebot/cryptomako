@@ -538,6 +538,7 @@ final class BackupSyncEngine: ObservableObject {
             .isRegularFileKey,
             .fileSizeKey,
             .isSymbolicLinkKey,
+            .isHiddenKey,
             .contentModificationDateKey,
         ]
         try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
@@ -563,10 +564,12 @@ final class BackupSyncEngine: ObservableObject {
             }
         }
         let enumerationErrors = EnumerationErrorBox()
+        // Do not use .skipsHiddenFiles: Sync prune allow-set is "present on disk",
+        // including hidden paths (recorded present, never uploaded).
         guard let enumerator = fm.enumerator(
             at: localRoot,
             includingPropertiesForKeys: keys,
-            options: [.skipsHiddenFiles, .skipsPackageDescendants],
+            options: [.skipsPackageDescendants],
             errorHandler: { _, error in
                 enumerationErrors.note(error)
                 // Stop immediately — continuing after a disconnect can yield an empty/partial tree.
@@ -579,8 +582,8 @@ final class BackupSyncEngine: ObservableObject {
             return Count(files: 0, bytes: 0)
         }
 
-        /// Sync-mode orphan prune only. Backup mode must not retain every relative
-        /// path of a multi-million-file tree.
+        /// Sync-mode orphan prune only ("present on disk", including excluded/hidden).
+        /// Backup mode must not retain every relative path of a multi-million-file tree.
         var localFiles = Set<String>()
         let dirCache = DirIdCache(rootDirId: parentDirId, session: session)
         /// Scan output: compact to-upload records + counts. Filled during the scan,
@@ -902,7 +905,12 @@ final class BackupSyncEngine: ObservableObject {
             }
             if values.isSymbolicLink == true { continue }
             if values.isDirectory == true {
-                if excludes.shouldSkipDirectory(named: fileURL.lastPathComponent) {
+                let dirName = fileURL.lastPathComponent
+                let dirHidden = dirName.hasPrefix(".") || values.isHidden == true
+                let dirExcluded = excludes.shouldSkipDirectory(named: dirName)
+                // Backup: skip excluded/hidden trees (no prune allow-set).
+                // Sync: keep walking so nested files are recorded as present (not uploaded).
+                if (dirHidden || dirExcluded) && !rememberLocalPaths {
                     enumerator.skipDescendants()
                 }
                 continue
@@ -910,13 +918,27 @@ final class BackupSyncEngine: ObservableObject {
             guard values.isRegularFile == true else { continue }
 
             let name = fileURL.lastPathComponent
-            if excludes.shouldSkipFile(named: name) { continue }
-            let rel = relativePath(fileURL, underRootPath: rootPath)
-            if excludes.shouldSkipRelativePath(rel) { continue }
-
-            if rememberLocalPaths {
+            let rel: String
+            do {
+                rel = try BackupRelativePath.make(filePath: fileURL.path, rootPath: rootPath)
+            } catch {
+                throw SyncError.pathOutsideSource(fileURL.path)
+            }
+            let isHidden = name.hasPrefix(".") || values.isHidden == true
+            let isExcluded = excludes.shouldSkipFile(named: name)
+                || excludes.shouldSkipRelativePath(rel)
+            let disposition = BackupSyncPresentSetPolicy.disposition(
+                isHidden: isHidden,
+                isExcluded: isExcluded
+            )
+            if BackupSyncPresentSetPolicy.retainInPruneAllowSet(
+                isSyncMode: rememberLocalPaths,
+                pathPresentOnDisk: true
+            ) {
                 localFiles.insert(rel)
             }
+            // Excluded / hidden: present for prune, never uploaded.
+            guard disposition == .presentUploadEligible else { continue }
 
             let size = Int64(values.fileSize ?? 0)
             let mtime = values.contentModificationDate ?? Date.distantPast
@@ -1010,7 +1032,8 @@ final class BackupSyncEngine: ObservableObject {
     }
 
     /// Sync mode only: delete remote ciphertext under this source’s vault folder that
-    /// has no matching eligible local file. Never touches the local source tree.
+    /// has no matching local path present on disk (including excluded/hidden locals).
+    /// Never touches the local source tree.
     /// Fail-closed: ObjectStore/`VaultSession` delete errors abort the run.
     nonisolated private func deleteVaultOrphans(
         session: VaultSession,
@@ -1101,18 +1124,6 @@ final class BackupSyncEngine: ObservableObject {
         }
     }
 
-    /// Relative path under `rootPath` without per-file `standardizedFileURL`
-    /// (that call is disproportionately expensive on SMB volumes).
-    nonisolated private func relativePath(_ url: URL, underRootPath rootPath: String) -> String {
-        let path = url.path
-        if path.hasPrefix(rootPath) {
-            var rel = String(path.dropFirst(rootPath.count))
-            if rel.hasPrefix("/") { rel.removeFirst() }
-            return rel
-        }
-        return url.lastPathComponent
-    }
-
     enum SyncError: LocalizedError {
         case missingSource(String)
         case missingParent(String)
@@ -1120,6 +1131,8 @@ final class BackupSyncEngine: ObservableObject {
         /// Enumerator reported I/O errors (e.g. SMB disconnect). Tree may be partial —
         /// abort before Sync prune can treat unseen locals as vault orphans.
         case enumerationFailed(String)
+        /// File URL is not under the source root — fail closed (no lastPathComponent fallback).
+        case pathOutsideSource(String)
         /// One or more file puts failed after S3 retries; siblings were not cancelled.
         case putFailures(count: Int, detail: String?)
         var errorDescription: String? {
@@ -1132,6 +1145,8 @@ final class BackupSyncEngine: ObservableObject {
                 return "Backup source volume disappeared during Sync: \(p). Sync stopped fail-closed (no wipe / no silent empty-tree success)."
             case .enumerationFailed(let p):
                 return "Could not finish reading backup source \(p). Sync stopped fail-closed (incomplete tree — nothing pruned)."
+            case .pathOutsideSource(let p):
+                return "Backup scan found a path outside the source root: \(p). Sync stopped fail-closed."
             case .putFailures(let count, let detail):
                 let suffix = detail.map { " Last: \($0)" } ?? ""
                 return "\(count) file(s) failed to upload after retries (network). Other files completed; retry Sync for the rest.\(suffix)"

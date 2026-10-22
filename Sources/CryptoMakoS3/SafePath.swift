@@ -1,7 +1,8 @@
 import Foundation
 
 enum SafePath {
-    /// Maps an object key under `root`, rejecting `..` and absolute escape.
+    /// Maps an object key under `root`, rejecting `..`, absolute escape, and
+    /// symlink escape outside the vault root (local DirectoryObjectStore only).
     static func resolve(root: URL, key: String) throws -> URL {
         if key.isEmpty {
             return root
@@ -10,8 +11,8 @@ enum SafePath {
             throw ObjectStoreError.transport("invalid object key")
         }
         let candidate = root.appendingPathComponent(key)
-        let rootPath = root.standardizedFileURL.path
-        let resolvedPath = candidate.standardizedFileURL.path
+        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let resolvedPath = candidate.resolvingSymlinksInPath().standardizedFileURL.path
         guard resolvedPath == rootPath || resolvedPath.hasPrefix(rootPath + "/") else {
             throw ObjectStoreError.transport("invalid object key")
         }

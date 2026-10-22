@@ -31,40 +31,53 @@ public class BackupProgressFormatTests
     }
 
     [Fact]
-    public void BackupSyncProgressUpdate_percent_prefers_bytes()
+    public void BackupSyncProgressUpdate_percent_is_uploaded_over_to_upload()
     {
         var u = new BackupSyncProgressUpdate
         {
+            WalkFinished = true,
+            Phase = "uploading",
             FilesDone = 1,
-            FilesTotal = 10,
+            FilesTotal = 2,
             BytesDone = 50,
             BytesTotal = 100,
+            FilesSkipped = 14,
+            FilesScanned = 16,
+            BytesScanned = 10_000,
         };
+        // Skips must not inflate the denominator — 50/100, not 50/10000.
         Assert.Equal(50, u.Percent);
     }
 
     [Fact]
-    public void BackupSyncProgressUpdate_percent_falls_back_to_files()
-    {
-        var u = new BackupSyncProgressUpdate { FilesDone = 2, FilesTotal = 8 };
-        Assert.Equal(25, u.Percent);
-    }
-
-    [Fact]
-    public void Progress_percent_with_skipped_bytes_already_done()
+    public void BackupSyncProgressUpdate_percent_zero_while_scanning()
     {
         var u = new BackupSyncProgressUpdate
         {
-            FilesDone = 14,
-            FilesTotal = 16,
-            FilesSkipped = 14,
+            Phase = "scanning",
+            WalkFinished = false,
             FilesScanned = 16,
-            BytesDone = 1000,
-            BytesTotal = 2000,
             BytesScanned = 2000,
+            BytesDone = 0,
+            BytesTotal = 0,
         };
-        Assert.Equal(50, u.Percent);
-        Assert.Equal(16, Math.Max(u.FilesScanned, u.FilesTotal));
+        Assert.Equal(0, u.Percent);
+    }
+
+    [Fact]
+    public void Progress_percent_empty_to_upload_is_100()
+    {
+        var u = new BackupSyncProgressUpdate
+        {
+            WalkFinished = true,
+            Phase = "done",
+            FilesSkipped = 16,
+            FilesScanned = 16,
+            BytesScanned = 2000,
+            BytesDone = 0,
+            BytesTotal = 0,
+        };
+        Assert.Equal(100, u.Percent);
     }
 
     [Fact]
@@ -103,6 +116,7 @@ public class BackupProgressFormatTests
         var u = new BackupSyncProgressUpdate
         {
             Phase = "uploading",
+            WalkFinished = true,
             FilesDone = 1,
             FilesTotal = 4,
             FilesScanned = 4,
@@ -116,18 +130,18 @@ public class BackupProgressFormatTests
     }
 
     [Fact]
-    public void DisplayProgressPercent_floors_below_100_when_files_remain()
+    public void DisplayProgressPercent_floors_below_100_when_bytes_remain()
     {
         var u = new BackupSyncProgressUpdate
         {
             Phase = "uploading",
+            WalkFinished = true,
             FilesDone = 30000,
             FilesTotal = 35000,
             FilesScanned = 35000,
             BytesDone = 9_910_000_000,
             BytesTotal = 9_940_000_000,
         };
-        // Raw Percent ~99.7 would round to 100% with "{0:0}%"; display must stay <=99.
         Assert.True(u.Percent >= 99.5);
         Assert.Equal(99, MainViewModel.DisplayProgressPercent(u));
     }
@@ -135,7 +149,15 @@ public class BackupProgressFormatTests
     [Fact]
     public void DisplayProgressPercent_100_when_done_phase()
     {
-        var u = new BackupSyncProgressUpdate { Phase = "done", FilesDone = 1, FilesTotal = 1, BytesDone = 1, BytesTotal = 1 };
+        var u = new BackupSyncProgressUpdate
+        {
+            Phase = "done",
+            WalkFinished = true,
+            FilesDone = 1,
+            FilesTotal = 1,
+            BytesDone = 1,
+            BytesTotal = 1,
+        };
         Assert.Equal(100, MainViewModel.DisplayProgressPercent(u));
     }
 }

@@ -196,9 +196,11 @@ func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix s
 
 	var (
 		jobs       []pendingUpload
-		sinceSave  int
 		localFiles = map[string]struct{}{}
 	)
+	// Sync: walk excluded/hidden trees so nested files stay in the prune allow-set.
+	// Backup: skip those trees (no prune).
+	rememberLocalPaths := p.IsSyncTransferMode()
 	err = filepath.WalkDir(localRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -206,23 +208,42 @@ func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix s
 		if walkErr != nil {
 			return walkErr
 		}
-		rel, err := filepath.Rel(localRoot, path)
+		rel, err := config.RelativeUnderRoot(path, localRoot)
 		if err != nil {
 			return err
 		}
-		if rel == "." {
+		if rel == "" {
 			return nil
 		}
-		rel = filepath.ToSlash(rel)
 		base := filepath.Base(path)
+		isHidden := strings.HasPrefix(base, ".")
 		if d.IsDir() {
-			if ex.ShouldSkipDirectory(base) {
+			dirExcluded := ex.ShouldSkipDirectory(base)
+			if (isHidden || dirExcluded) && !rememberLocalPaths {
 				return filepath.SkipDir
 			}
-		} else {
-			if ex.ShouldSkipFile(base) || ex.ShouldSkipRelativePath(rel) {
-				return nil
-			}
+			// No vault EnsureDir on the walk (macOS scan-then-upload: local
+			// enumeration only). Parents are created before puts below.
+			return nil
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return nil
+		}
+		isExcluded := ex.ShouldSkipFile(base) || ex.ShouldSkipRelativePath(rel)
+		disposition := config.Disposition(isHidden, isExcluded)
+		if config.RetainInPruneAllowSet(rememberLocalPaths, true) {
+			localFiles[rel] = struct{}{}
+		}
+		// Excluded / hidden: present for prune, never uploaded.
+		if disposition != config.PresentUploadEligible {
+			return nil
 		}
 		clearPath := destPrefix
 		if clearPath == "/" {
@@ -230,24 +251,12 @@ func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix s
 		} else {
 			clearPath = strings.TrimSuffix(clearPath, "/") + "/" + rel
 		}
-		if d.IsDir() {
-			return s.EnsureDir(clearPath)
-		}
-		// Eligible local file (post-exclude). Used by Sync-mode orphan prune.
-		localFiles[rel] = struct{}{}
-		info, err := d.Info()
-		if err != nil {
-			return err
-		}
 		mtime := info.ModTime()
 		size := info.Size()
+		// Local fingerprint only — no vault LIST and no mid-scan index save
+		// (macOS BackupWalkSkipPolicy / scan-then-upload).
 		stateKey := config.BackupSyncStateKey(vaultFolder, rel)
 		if fp, ok := state.Get(stateKey); ok && fp.Matches(size, mtime) {
-			sinceSave++
-			if sinceSave >= 500 {
-				state.Save(statePath)
-				sinceSave = 0
-			}
 			return nil
 		}
 		jobs = append(jobs, pendingUpload{
@@ -260,6 +269,7 @@ func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix s
 		return nil
 	})
 	if err != nil {
+		// Failed scan: no uploads, no prune.
 		return 0, 0, err
 	}
 

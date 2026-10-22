@@ -646,6 +646,57 @@ func TestSyncModeRefusesVaultRootDest(t *testing.T) {
 		t.Fatal("expected error refusing vault root orphan prune")
 	}
 	if !strings.Contains(err.Error(), "vault root") {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
 }
+
+func TestSyncModeKeepsExcludedPresentFilesFromOrphanPrune(t *testing.T) {
+	// H1: excluded path present on disk stays in prune allow-set and is not uploaded.
+	root := t.TempDir()
+	pass := "orphan-exclude-pass"
+	s, err := CreateFormat8(root, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	dest := "/Backups/Docs"
+	if err := s.PutFile(dest+"/.DS_Store", []byte("meta")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutFile(dest+"/keep.txt", []byte("keep")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutFile(dest+"/gone.txt", []byte("gone")); err != nil {
+		t.Fatal(err)
+	}
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, ".DS_Store"), []byte("meta"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	prefs := config.DefaultAppPreferences()
+	prefs.BackupTransferMode = config.BackupTransferModeSync
+	ex := config.DefaultBackupSyncExcludes()
+	uploaded, deleted, err := s.SyncCleartextTree(context.Background(), src, dest, &ex, &prefs, statePath, "Docs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if uploaded < 0 {
+		t.Fatalf("uploaded=%d", uploaded)
+	}
+	if _, err := s.Open(dest + "/.DS_Store"); err != nil {
+		t.Fatalf("excluded present file must not be pruned: %v", err)
+	}
+	if _, err := s.Open(dest + "/gone.txt"); err == nil {
+		t.Fatal("true orphan must still be deleted")
+	}
+	if deleted < 1 {
+		t.Fatalf("expected gone.txt prune, deleted=%d", deleted)
+	}
+}
+

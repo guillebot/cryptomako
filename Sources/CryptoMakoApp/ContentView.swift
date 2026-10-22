@@ -5,6 +5,7 @@ import SwiftUI
 struct ContentView: View {
     @State private var deleteRootName = "backupsfotosfamilia"
     @State private var confirmDeleteRoot = false
+    @State private var deleteRootConfirmTyped = ""
     @State private var showTransferFailures = false
     @EnvironmentObject private var model: VaultAppModel
 
@@ -342,18 +343,33 @@ struct ContentView: View {
                 TextField("Root item to delete", text: $deleteRootName)
                     .textFieldStyle(.roundedBorder)
                 Button("Delete from vault…", role: .destructive) {
+                    deleteRootConfirmTyped = ""
                     confirmDeleteRoot = true
                 }
                 .disabled(model.busy || !model.isUnlocked || deleteRootName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .confirmationDialog(
-                    "Permanently delete \(deleteRootName) from the vault on MinIO? This cannot be undone.",
-                    isPresented: $confirmDeleteRoot,
-                    titleVisibility: .visible
+                .alert(
+                    "Permanently delete from vault?",
+                    isPresented: $confirmDeleteRoot
                 ) {
+                    TextField("Type \(deleteRootName) to confirm", text: $deleteRootConfirmTyped)
                     Button("Delete permanently", role: .destructive) {
-                        Task { await model.deleteRootItem(named: deleteRootName) }
+                        let target = deleteRootName.trimmingCharacters(in: .whitespacesAndNewlines)
+                        guard deleteRootConfirmTyped == target, !target.isEmpty else { return }
+                        Task { await model.deleteRootItem(named: target) }
+                        deleteRootConfirmTyped = ""
                     }
-                    Button("Cancel", role: .cancel) {}
+                    .disabled(
+                        deleteRootConfirmTyped
+                            != deleteRootName.trimmingCharacters(in: .whitespacesAndNewlines)
+                            || deleteRootName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    )
+                    Button("Cancel", role: .cancel) {
+                        deleteRootConfirmTyped = ""
+                    }
+                } message: {
+                    Text(
+                        "This cannot be undone. Type the exact root name \"\(deleteRootName)\" to enable Delete."
+                    )
                 }
             }
             .help("Use this for huge folders like backupsfotosfamilia — Finder Trash hits Error -36 while remote deletes run.")

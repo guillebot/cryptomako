@@ -1,5 +1,5 @@
 # CryptoMako Linux CLI (format-8 SIV_GCM)
-FROM golang:1.27.2-bookworm@sha256:5cf287a799e6b94384bad13d16b14904c531f51ba65792237e122ce42b392f61 AS build
+FROM golang:1.27.3-bookworm@sha256:fea12ba16096adec0f699ce1c4da2154d320450e56c1f63671f95d2a3551c77b AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

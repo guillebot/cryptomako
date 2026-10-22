@@ -2,6 +2,7 @@
 # Local security gate. Install once:
 #   brew install trivy grype syft gitleaks osv-scanner gosec
 #   go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+#   go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.0
 # CI also runs NuGet audit, CodeQL, and the Linux image scan.
 set -euo pipefail
 
@@ -66,7 +67,7 @@ echo "==> gosec"
   # Compile gosec with Go 1.27.2. A binary built by an older Go cannot import
   # this module. gosec v2.29.0 still vendors an importer that stops at export
   # data version 4, so a version-skew error is a tool gap, not a finding.
-  GOTOOLCHAIN=go1.27.2 go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -fmt=text -r . >"$log" 2>&1
+  GOTOOLCHAIN=go1.27.3 go run github.com/securego/gosec/v2/cmd/gosec@v2.29.0 -fmt=text -r . >"$log" 2>&1
   status=$?
   set -e
   cat "$log"

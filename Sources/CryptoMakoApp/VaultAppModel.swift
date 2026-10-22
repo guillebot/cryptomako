@@ -211,13 +211,16 @@ final class VaultAppModel: ObservableObject {
         secretKey = (try? CredentialStore.readSharedOrLocal(account: AppIdentifiers.secretKeyAccount)) ?? ""
         password = (try? CredentialStore.readSharedOrLocal(account: AppIdentifiers.passwordAccount)) ?? ""
         backupSources = BackupSourcesStore.load().sources
-        if password.isEmpty {
+        // Never auto-load fixtures/PASSWORD in release builds (or shipping .app).
+        #if DEBUG
+        if password.isEmpty && !bundledApp {
             let fixturePassword = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
                 .appendingPathComponent("fixtures/PASSWORD")
             if let value = try? String(contentsOf: fixturePassword, encoding: .utf8) {
                 password = value.trimmingCharacters(in: .whitespacesAndNewlines)
             }
         }
+        #endif
         // Only auto-fill the local fixture when already in Local mode (never force Local over S3).
         if settings.storageMode == .local && settings.localVaultPath.isEmpty && !bundledApp {
             let fixtureVault = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)

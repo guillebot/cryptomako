@@ -30,6 +30,7 @@ Local gate:
 ```bash
 brew install trivy grype syft gitleaks osv-scanner  # once
 go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+go install github.com/google/osv-scanner/v2/cmd/osv-scanner@v2.7.0
 git config core.hooksPath .githooks   # once per clone; pre-push runs the gate
 make security                         # runs scripts/security-scan.sh
 make sbom                             # optional CycloneDX SBOM in .build/

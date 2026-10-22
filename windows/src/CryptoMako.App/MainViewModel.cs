@@ -948,15 +948,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
     {
         if (u.Phase is "done" or "pruning")
             return 100;
-        var p = u.Percent;
-        if (p >= 100)
+        if (u.Phase == "scanning" || !u.WalkFinished)
+            return 0;
+        var label = BackupUploadProgress.PercentLabel(
+            walkFinished: u.WalkFinished,
+            bytesUploaded: u.BytesDone,
+            bytesToUpload: u.BytesTotal,
+            jobFinished: false);
+        if (label == "Scanning")
+            return 0;
+        if (label.EndsWith('%') && int.TryParse(label.AsSpan(0, label.Length - 1), out var pct))
         {
-            var filesRemain = Math.Max(u.FilesScanned, u.FilesTotal) > u.FilesDone;
-            var bytesRemain = u.BytesTotal > 0 && u.BytesDone < u.BytesTotal;
-            if (filesRemain || bytesRemain)
+            // Floor already applied; keep below 100 while bytes remain.
+            if (pct >= 100 && u.BytesTotal > 0 && u.BytesDone < u.BytesTotal)
                 return 99;
+            return Math.Min(100, pct);
         }
-        return Math.Min(99, Math.Floor(p));
+        return Math.Min(99, Math.Floor(u.Percent));
     }
     /// <summary>Pure label builder (unit-tested). Scanning checked before percent format.</summary>
     public static string BuildBackupProgressLabel(BackupSyncProgressUpdate u)
@@ -964,6 +972,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         if (u.Phase == "scanning")
         {
             // macOS parity: count + bytes found so far + current relative path.
+            // Never show a stuck upload percent during the scan.
             if (u.FilesScanned <= 0)
                 return "Counting local files...";
             var pathBit = string.IsNullOrWhiteSpace(u.CurrentPath) ? "" : " - " + u.CurrentPath;
@@ -983,18 +992,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                 : $"Removing vault-only files...{pathBit}";
         }
 
-        var totalFiles = Math.Max(u.FilesScanned, Math.Max(u.FilesTotal, u.FilesDone));
-        if (totalFiles > 0 || u.BytesTotal > 0 || u.BytesScanned > 0)
+        // After scan: uploaded / to-upload (skips do not inflate the denominator).
+        if (u.WalkFinished && (u.FilesTotal > 0 || u.BytesTotal > 0 || u.FilesSkipped > 0))
         {
-            var bytesTot = Math.Max(u.BytesScanned, u.BytesTotal);
+            if (u.FilesTotal == 0 && u.BytesTotal == 0)
+            {
+                return u.FilesSkipped > 0
+                    ? $"All {u.FilesSkipped} files up-to-date - {FormatBytes(u.BytesScanned)}"
+                    : "Scan complete — nothing to upload.";
+            }
             return string.Format(
                 CultureInfo.InvariantCulture,
                 "{0:0}% - {1}/{2} files - {3}/{4}",
                 DisplayProgressPercent(u),
                 u.FilesDone,
-                totalFiles,
+                u.FilesTotal,
                 FormatBytes(u.BytesDone),
-                FormatBytes(bytesTot > 0 ? bytesTot : u.BytesTotal));
+                FormatBytes(u.BytesTotal));
         }
 
         if (u.FilesScanned > 0)

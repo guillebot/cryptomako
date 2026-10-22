@@ -221,7 +221,9 @@ enum SMBBackupMount {
         }
     }
 
-    /// Present an in-app folder picker rooted at the mounted volume. Returns nil if the user cancels (caller may use share root).
+    /// Present an in-app folder picker rooted at the mounted volume.
+    /// Returns nil if the user cancels or picks a path outside the mounted volume
+    /// (including via symlink escape). Caller must not add an outside path.
     static func pickFolderUnderMountedShare(
         startingAt mounted: URL,
         message: String = "Choose the share root or a subfolder to sync."
@@ -236,7 +238,14 @@ enum SMBBackupMount {
         panel.prompt = "Use this folder"
         panel.title = "SMB folder"
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
-        // Soft-guard: prefer paths under the mounted volume (user can navigate elsewhere; we still accept).
+        guard MountedSharePathGuard.isInsideMountedVolume(
+            candidatePath: url.path,
+            volumeRootPath: mounted.path,
+            resolveSymlinks: true
+        ) else {
+            log.error("SMB folder picker rejected path outside mounted volume")
+            return nil
+        }
         return url
     }
 
@@ -288,8 +297,8 @@ enum SMBBackupMount {
                 continue
             }
             if let share {
-                let leaf = item.lastPathComponent.lowercased()
-                if leaf == share || leaf.hasPrefix(share + "-") {
+                let leaf = item.lastPathComponent
+                if SMBVolumeNameMatch.volumeLeaf(leaf, matchesShare: share) {
                     return item
                 }
             }

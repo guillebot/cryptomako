@@ -27,13 +27,13 @@ One vault format, one security model, across:
 
 Not a Cryptomator fork — ciphertext stays on the bucket; decryption is in‑process. Licensed **AGPLv3** (including paid distribution).
 
-## Release ([v1.0.8](https://github.com/guillebot/cryptomako/releases/tag/v1.0.8))
+## Release ([v1.0.9](https://github.com/guillebot/cryptomako/releases/tag/v1.0.9))
 
 | Platform | Status |
 |----------|--------|
-| **Linux** | `.deb` attached (`cryptomako_1.0.8_amd64.deb`) — CLI + FUSE + Backup Sync |
-| **macOS** | Notarized DMG on the release (`CryptoMako-1.0.8.dmg`) — install via [Homebrew](https://github.com/guillebot/homebrew-cryptomako) or download the DMG |
-| **Windows** | CLI and desktop zips on the release (`CryptoMako-1.0.8-win-x64-cli.zip`, `CryptoMako-1.0.8-win-x64-desktop.zip`) |
+| **Linux** | `.deb` attached (`cryptomako_1.0.9_amd64.deb`) — CLI + FUSE + Backup Sync |
+| **macOS** | Notarized DMG on the release (`CryptoMako-1.0.9.dmg`) — install via [Homebrew](https://github.com/guillebot/homebrew-cryptomako) or download the DMG |
+| **Windows** | CLI and desktop zips on the release (`CryptoMako-1.0.9-win-x64-cli.zip`, `CryptoMako-1.0.9-win-x64-desktop.zip`) |
 
 ### Install via Homebrew (macOS)
 
@@ -46,7 +46,7 @@ Tap: [guillebot/homebrew-cryptomako](https://github.com/guillebot/homebrew-crypt
 
 ```bash
 # Linux
-sudo dpkg -i cryptomako_1.0.8_amd64.deb
+sudo dpkg -i cryptomako_1.0.9_amd64.deb
 ```
 
 ## What it does
@@ -219,7 +219,7 @@ Details: [`linux/README.md`](linux/README.md).
 
 ## Windows (`windows/`)
 
-.NET 8 CLI, Avalonia desktop (Vault / Backup / Settings + tray), and Explorer **CfAPI** viewer mount, plus Backup Sync. HTTPS‑only S3; secrets via env / Credential Manager — never JSON. Build from that tree with the .NET 8 SDK (`dotnet build` / `dotnet test`). Windows CLI and desktop zips ship on [v1.0.8](https://github.com/guillebot/cryptomako/releases/tag/v1.0.8).
+.NET 8 CLI, Avalonia desktop (Vault / Backup / Settings + tray), and Explorer **CfAPI** viewer mount, plus Backup Sync. HTTPS‑only S3; secrets via env / Credential Manager — never JSON. Build from that tree with the .NET 8 SDK (`dotnet build` / `dotnet test`). Windows CLI and desktop zips ship on [v1.0.9](https://github.com/guillebot/cryptomako/releases/tag/v1.0.9).
 
 
 ## Brand

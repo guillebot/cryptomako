@@ -41,11 +41,47 @@ func (s *localStore) resolve(key string) (string, error) {
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(os.PathSeparator)) {
 		return "", fmt.Errorf("vault: invalid key")
 	}
+	if strings.HasPrefix(clean, string(os.PathSeparator)) {
+		return "", fmt.Errorf("vault: invalid key")
+	}
 	full := filepath.Join(s.root, clean)
 	if !strings.HasPrefix(full, s.root+string(os.PathSeparator)) && full != s.root {
 		return "", fmt.Errorf("vault: invalid key")
 	}
+	// Reject symlink escape outside the vault root (macOS SafePath / DirectoryObjectStore).
+	// EvalSymlinks fails when the leaf does not exist yet (Put path) — then fall back
+	// to evaluating the deepest existing ancestor.
+	if err := assertInsideRoot(s.root, full); err != nil {
+		return "", err
+	}
 	return full, nil
+}
+
+// assertInsideRoot ensures path (or its deepest existing ancestor) resolves
+// inside root after symlink evaluation.
+func assertInsideRoot(root, path string) error {
+	rootReal, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return fmt.Errorf("vault: invalid key")
+	}
+	check := path
+	for {
+		resolved, err := filepath.EvalSymlinks(check)
+		if err == nil {
+			if resolved != rootReal && !strings.HasPrefix(resolved, rootReal+string(os.PathSeparator)) {
+				return fmt.Errorf("vault: invalid key")
+			}
+			return nil
+		}
+		if !os.IsNotExist(err) {
+			return fmt.Errorf("vault: invalid key")
+		}
+		parent := filepath.Dir(check)
+		if parent == check {
+			return nil
+		}
+		check = parent
+	}
 }
 
 func (s *localStore) Get(key string) ([]byte, error) {
