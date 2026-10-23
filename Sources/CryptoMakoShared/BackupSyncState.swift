@@ -1,4 +1,5 @@
 import Foundation
+import OSLog
 
 /// Per-file fingerprint so Backup Sync can skip unchanged files (mtime + size).
 public struct BackupFileFingerprint: Codable, Equatable, Sendable {
@@ -18,6 +19,8 @@ public struct BackupFileFingerprint: Codable, Equatable, Sendable {
 
 /// Local index of successfully synced (or trusted-already-remote) backup files.
 public struct BackupSyncState: Codable, Equatable, Sendable {
+    private static let log = Logger(subsystem: "net.gschimmel.cryptomako", category: "backup-state")
+
     /// Key: "\(vaultFolderName)/\(relativePath)"
     public var files: [String: BackupFileFingerprint]
 
@@ -33,18 +36,36 @@ public struct BackupSyncState: Codable, Equatable, Sendable {
             .appendingPathComponent("backup-sync-state.json")
     }
 
-    public static func load() -> BackupSyncState {
-        guard let url = fileURL,
-              let data = try? Data(contentsOf: url),
-              let store = try? JSONDecoder().decode(BackupSyncState.self, from: data)
-        else {
-            return .empty
+    public static func load() throws -> BackupSyncState {
+        guard let url = fileURL else {
+            throw CocoaError(.fileNoSuchFile)
         }
-        return store
+        return try load(from: url)
     }
 
-    public func save() {
-        guard let url = Self.fileURL else { return }
+    public static func load(from url: URL) throws -> BackupSyncState {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            return .empty
+        }
+        do {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode(BackupSyncState.self, from: data)
+        } catch {
+            log.error(
+                "backup index load failed path=\(url.path, privacy: .private(mask: .hash)) error=\(error.localizedDescription, privacy: .private(mask: .hash))"
+            )
+            throw error
+        }
+    }
+
+    public func save() throws {
+        guard let url = Self.fileURL else {
+            throw CocoaError(.fileNoSuchFile)
+        }
+        try save(to: url)
+    }
+
+    public func save(to url: URL) throws {
         do {
             try FileManager.default.createDirectory(
                 at: url.deletingLastPathComponent(),
@@ -53,7 +74,10 @@ public struct BackupSyncState: Codable, Equatable, Sendable {
             let data = try JSONEncoder().encode(self)
             try data.write(to: url, options: .atomic)
         } catch {
-            // Best-effort; never fail a sync because the index could not persist.
+            Self.log.error(
+                "backup index save failed path=\(url.path, privacy: .private(mask: .hash)) error=\(error.localizedDescription, privacy: .private(mask: .hash))"
+            )
+            throw error
         }
     }
 

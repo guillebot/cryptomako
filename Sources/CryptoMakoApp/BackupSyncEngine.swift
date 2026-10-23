@@ -229,11 +229,23 @@ final class BackupSyncEngine: ObservableObject {
         // (MainActor inheritance serialized prep LIST/UI hops and starved PUT scheduling).
         task = Task.detached { [weak self] in
             guard let self else { return }
-            defer { TransferMetrics.endRun(transferRunID) }
+            let activity = ProcessInfo.processInfo.beginActivity(
+                options: [.userInitiated, .suddenTerminationDisabled, .automaticTerminationDisabled],
+                reason: "CryptoMako backup sync"
+            )
+            defer {
+                ProcessInfo.processInfo.endActivity(activity)
+                TransferMetrics.endRun(transferRunID)
+            }
             do {
                 let excludes = BackupSyncExcludesStore.load()
                 let bandwidthLimiter = UploadBandwidthLimiter.fromPreferences(AppPreferences.load())
                 try Task.checkCancellation()
+                // Best-effort reclaim of orphaned encrypt temps from prior killed runs.
+                // Age-gated so an in-flight upload (this or another instance) is never deleted.
+                // Failures are logged only — never abort a backup. Not in CryptoMakoApp
+                // launch hooks (owned by another change); sync-start is the engine-owned site.
+                _ = EncryptionTempCleanup.removeStaleOrphans()
                 await MainActor.run {
                     self.phase = .preparing
                     self.currentPath = sources.isEmpty
@@ -246,7 +258,7 @@ final class BackupSyncEngine: ObservableObject {
 
                 var files = 0
                 var bytes: Int64 = 0
-                var syncState = BackupSyncState.load()
+                var syncState = try BackupSyncState.load()
                 for source in sources {
                     try Task.checkCancellation()
                     let vaultRoot = "Backups/\(source.vaultFolderName)"
@@ -263,7 +275,11 @@ final class BackupSyncEngine: ObservableObject {
                     guard FileManager.default.fileExists(atPath: root.path) else {
                         throw SyncError.missingSource(source.path)
                     }
-                    try self.assertSourceStillPresent(path: root.path, isSMB: isSMB)
+                    try self.assertSourceStillPresent(
+                        path: root.path,
+                        isSMB: isSMB,
+                        expectedSMBURL: source.smbURL
+                    )
                     Self.syncLog.info("ensureDirectoryPath start path=\(vaultRoot, privacy: .private(mask: .hash))")
                     let leafDirId = try await session.ensureDirectoryPath(vaultRoot)
                     Self.syncLog.info("ensureDirectoryPath done path=\(vaultRoot, privacy: .private(mask: .hash))")
@@ -279,9 +295,10 @@ final class BackupSyncEngine: ObservableObject {
                         excludes: excludes,
                         bandwidthLimiter: bandwidthLimiter,
                         isSMB: isSMB,
+                        expectedSMBURL: source.smbURL,
                         transferMode: transferMode
                     )
-                    syncState.save()
+                    try syncState.save()
                     files += result.files
                     bytes += result.bytes
                     let completedID = source.id
@@ -333,53 +350,6 @@ final class BackupSyncEngine: ObservableObject {
     nonisolated private static let mediumFileBytes: Int64 = 256 * 1024
     /// Compact per-file upload record produced by the scan; see `BackupScanPlan`.
     private typealias PendingUpload = BackupPendingUpload
-
-    /// Shared vault-dir cache. Actor-serialized so parallel put workers never
-    /// race `createDirectory` for the same cleartext path (duplicate dirIds).
-    private actor DirIdCache {
-        private var dirIds: [String: String]
-        private let rootDirId: String
-        private let session: VaultSession
-
-        init(rootDirId: String, session: VaultSession) {
-            self.rootDirId = rootDirId
-            self.session = session
-            self.dirIds = ["": rootDirId]
-        }
-
-        func resolve(_ relFolder: String) async throws -> String {
-            let key = relFolder == "." ? "" : relFolder
-            if let hit = dirIds[key] { return hit }
-            if key.isEmpty { return rootDirId }
-            let parts = key.split(separator: "/").map(String.init).filter { !$0.isEmpty }
-            var parentId = rootDirId
-            var built = ""
-            for part in parts {
-                built = built.isEmpty ? part : built + "/" + part
-                if let hit = dirIds[built] {
-                    parentId = hit
-                    continue
-                }
-                let dirId: String
-                if let existing = try await session.existingDirectoryId(
-                    parentDirId: parentId,
-                    cleartextName: part
-                ) {
-                    dirId = existing
-                } else {
-                    let created = try await session.createDirectory(
-                        parentDirId: parentId,
-                        cleartextName: part,
-                        skipExistsCheck: true
-                    )
-                    dirId = created.dirId ?? ""
-                }
-                dirIds[built] = dirId
-                parentId = dirId
-            }
-            return parentId
-        }
-    }
 
     /// Accumulates walk discovery/skip/queue counters without awaiting MainActor.
     /// A timer task publishes snapshots ~0.75s so SMB walks are not starved by
@@ -530,6 +500,7 @@ final class BackupSyncEngine: ObservableObject {
         excludes: BackupSyncExcludes,
         bandwidthLimiter: UploadBandwidthLimiter?,
         isSMB: Bool,
+        expectedSMBURL: String?,
         transferMode: AppPreferences.BackupTransferMode
     ) async throws -> Count {
         let fm = FileManager.default
@@ -541,7 +512,11 @@ final class BackupSyncEngine: ObservableObject {
             .isHiddenKey,
             .contentModificationDateKey,
         ]
-        try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+        try assertSourceStillPresent(
+            path: localRoot.path,
+            isSMB: isSMB,
+            expectedSMBURL: expectedSMBURL
+        )
         // Mid-walk probes are wall-clock throttled — per-N-file volume metadata on SMB
         // turned multi-million-file walks into hour-long probe storms.
         var reachabilityGate = BackupWalkReachabilityGate()
@@ -564,12 +539,17 @@ final class BackupSyncEngine: ObservableObject {
             }
         }
         let enumerationErrors = EnumerationErrorBox()
-        // Do not use .skipsHiddenFiles: Sync prune allow-set is "present on disk",
-        // including hidden paths (recorded present, never uploaded).
+        // Sync: never skip hidden entries — prune allow-set is "present on disk"
+        // (1.0.9 H1). Backup: skip hidden at the enumerator so SMB does not
+        // attribute-fetch .DS_Store / AppleDouble sidecars that are discarded later.
+        let rememberLocalPaths = transferMode == .sync
+        let enumOptions = BackupScanEnumeratorPolicy.directoryEnumerationOptions(
+            isSyncMode: rememberLocalPaths
+        )
         guard let enumerator = fm.enumerator(
             at: localRoot,
             includingPropertiesForKeys: keys,
-            options: [.skipsPackageDescendants],
+            options: enumOptions,
             errorHandler: { _, error in
                 enumerationErrors.note(error)
                 // Stop immediately — continuing after a disconnect can yield an empty/partial tree.
@@ -585,7 +565,21 @@ final class BackupSyncEngine: ObservableObject {
         /// Sync-mode orphan prune only ("present on disk", including excluded/hidden).
         /// Backup mode must not retain every relative path of a multi-million-file tree.
         var localFiles = Set<String>()
-        let dirCache = DirIdCache(rootDirId: parentDirId, session: session)
+        var scanCompleted = false
+        let dirCache = BackupDirectoryResolutionCache(
+            rootDirectoryID: parentDirId,
+            lookup: { parentID, name in
+                try await session.existingDirectoryId(parentDirId: parentID, cleartextName: name)
+            },
+            create: { parentID, name in
+                let created = try await session.createDirectory(
+                    parentDirId: parentID,
+                    cleartextName: name,
+                    skipExistsCheck: true
+                )
+                return created.dirId ?? ""
+            }
+        )
         /// Scan output: compact to-upload records + counts. Filled during the scan,
         /// frozen before the first put. Large to-upload sets are retained on purpose
         /// (that is the price of knowing the remaining bytes up front).
@@ -663,8 +657,8 @@ final class BackupSyncEngine: ObservableObject {
             var lastSaveAt = Date.distantPast
             /// Avoid re-encoding the full fingerprint JSON more than once per gap
             /// (~64MB / ~458k keys was dominating Sync CPU via JSONEncoder).
-            static let minSaveInterval: TimeInterval = 30
-            static let putPersistEvery = 512
+            static let minSaveInterval = BackupStatePersistPolicy.timeThreshold
+            static let putPersistEvery = BackupStatePersistPolicy.putThreshold
 
             init(_ state: BackupSyncState) { self.files = state.files }
             func snapshot() -> BackupSyncState {
@@ -681,39 +675,42 @@ final class BackupSyncEngine: ObservableObject {
             /// Persist when dirty. Non-forced saves respect `minSaveInterval`.
             /// Pass `force: true` on Sync end / cancel / clean shutdown to ignore
             /// the time gate (still no-ops when nothing changed).
-            func save(force: Bool = false) {
+            func save(force: Bool = false) throws {
                 lock.lock()
+                defer { lock.unlock() }
                 let elapsed = Date().timeIntervalSince(lastSaveAt)
-                let should = dirty && (force || elapsed >= Self.minSaveInterval)
-                guard should else {
-                    lock.unlock()
-                    return
-                }
+                let should = dirty && (
+                    force || BackupStatePersistPolicy.shouldPersist(
+                        putsSinceSave: putsSinceSave,
+                        elapsed: elapsed
+                    )
+                )
+                guard should else { return }
+                let snap = BackupSyncState(files: files)
+                try snap.save()
                 dirty = false
                 putsSinceSave = 0
                 lastSaveAt = Date()
-                let snap = BackupSyncState(files: files)
-                lock.unlock()
-                snap.save()
             }
             /// Persist after successful puts so a crash mid-drain does not
             /// re-upload everything already committed. Returns true when a
             /// save should run (caller saves outside the lock). Count threshold
-            /// plus wall-clock gap — avoids JSONEncoder storms on busy Sync.
+            /// or wall-clock gap — bounds the crash window without requiring both.
             func notePutCommittedForPersist(every: Int = StateBox.putPersistEvery) -> Bool {
                 lock.lock()
                 putsSinceSave += 1
                 dirty = true
-                let countHit = putsSinceSave >= every
-                let timeOk = Date().timeIntervalSince(lastSaveAt) >= Self.minSaveInterval
-                let should = countHit && timeOk
+                let should = BackupStatePersistPolicy.shouldPersist(
+                    putsSinceSave: putsSinceSave,
+                    elapsed: Date().timeIntervalSince(lastSaveAt),
+                    putThreshold: every,
+                    timeThreshold: Self.minSaveInterval
+                )
                 lock.unlock()
                 return should
             }
         }
         let box = StateBox(syncState)
-        // Crash / cancel window: periodic saves are time-gated; always flush on exit.
-        defer { box.save(force: true) }
 
         final class UploadCounter: @unchecked Sendable {
             let lock = NSLock()
@@ -797,7 +794,7 @@ final class BackupSyncEngine: ObservableObject {
                 box.set(key, fp)
                 counter.add(fileBytes: job.size)
                 if box.notePutCommittedForPersist() {
-                    box.save()
+                    try box.save()
                 }
                 if let batch = uiBatcher.note(path: job.relativePath, bytes: job.size) {
                     await applyUIBatch(batch)
@@ -890,17 +887,24 @@ final class BackupSyncEngine: ObservableObject {
         // (same keys as the fast walk). Do not allocate that set per entry, and no
         // per-file standardizedFileURL (SMB-expensive).
         let prefetchedKeys = Set(keys)
-        let rememberLocalPaths = transferMode == .sync
         for case let fileURL as URL in enumerator {
             try Task.checkCancellation()
             if reachabilityGate.shouldProbe() {
-                try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+                try assertSourceStillPresent(
+                    path: localRoot.path,
+                    isSMB: isSMB,
+                    expectedSMBURL: expectedSMBURL
+                )
             }
             let values: URLResourceValues
             do {
                 values = try fileURL.resourceValues(forKeys: prefetchedKeys)
             } catch {
-                try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+                try assertSourceStillPresent(
+                    path: localRoot.path,
+                    isSMB: isSMB,
+                    expectedSMBURL: expectedSMBURL
+                )
                 throw SyncError.volumeLost(localRoot.path)
             }
             if values.isSymbolicLink == true { continue }
@@ -968,7 +972,11 @@ final class BackupSyncEngine: ObservableObject {
         }
         // Mandatory post-scan probe (not gated) — never treat a disconnected share
         // as an empty-tree success before uploads start or Sync prune runs.
-        try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+        try assertSourceStillPresent(
+            path: localRoot.path,
+            isSMB: isSMB,
+            expectedSMBURL: expectedSMBURL
+        )
         let enumSnap = enumerationErrors.snapshot()
         if enumSnap.count > 0 {
             let detail = enumSnap.first.map { $0.localizedDescription } ?? "unknown"
@@ -978,6 +986,7 @@ final class BackupSyncEngine: ObservableObject {
             // Failed scan: no uploads, no prune.
             throw SyncError.enumerationFailed(localRoot.path)
         }
+        scanCompleted = true
         let skipped = Count(files: plan.skipped.files, bytes: plan.skipped.bytes)
         let toUpload = plan.toUpload
         Self.syncLog.info(
@@ -995,13 +1004,45 @@ final class BackupSyncEngine: ObservableObject {
         }
 
         // ---- Phase 2: upload -----------------------------------------------------
-        let uploaded = try await uploadPlanned(plan)
-        try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+        let uploaded: Count
+        do {
+            uploaded = try await uploadPlanned(plan)
+            try box.save(force: true)
+        } catch let primary {
+            // A cancellation or put failure still gets one synchronous durability
+            // attempt. If that save also fails, surface BOTH (combined error) so
+            // index corruption is never silently dropped behind the upload error.
+            var saveFailure: Error?
+            do {
+                try box.save(force: true)
+            } catch {
+                saveFailure = error
+                Self.syncLog.error(
+                    "backup index durability save failed after sync error save=\(error.localizedDescription, privacy: .private(mask: .hash))"
+                )
+            }
+            throw BackupPostFailureSavePolicy.errorToThrow(
+                primary: primary,
+                saveFailure: saveFailure
+            )
+        }
+        try assertSourceStillPresent(
+            path: localRoot.path,
+            isSMB: isSMB,
+            expectedSMBURL: expectedSMBURL
+        )
         syncState = box.snapshot()
 
         if transferMode == .sync {
+            guard BackupPruneIndex.shouldPrune(scanCompleted: scanCompleted) else {
+                throw SyncError.enumerationFailed(localRoot.path)
+            }
             // Mandatory pre-prune probe — fail closed before deleting vault orphans.
-            try assertSourceStillPresent(path: localRoot.path, isSMB: isSMB)
+            try assertSourceStillPresent(
+                path: localRoot.path,
+                isSMB: isSMB,
+                expectedSMBURL: expectedSMBURL
+            )
             await MainActor.run {
                 self.phase = .pruning
                 self.currentPath = "Comparing vault Backups/\(vaultFolderName)/ to local tree…"
@@ -1016,7 +1057,7 @@ final class BackupSyncEngine: ObservableObject {
                 vaultFolderName: vaultFolderName,
                 syncState: &syncState
             )
-            syncState.save()
+            try syncState.save()
             await MainActor.run {
                 self.filesDeleted += deleted
                 self.publishProgress()
@@ -1025,7 +1066,7 @@ final class BackupSyncEngine: ObservableObject {
                 "sync orphan prune done vaultFolder=\(vaultFolderName, privacy: .private(mask: .hash)) deleted=\(deleted)"
             )
         } else {
-            syncState.save()
+            try syncState.save()
         }
 
         return Count(files: skipped.files + uploaded.files, bytes: skipped.bytes + uploaded.bytes)
@@ -1042,28 +1083,23 @@ final class BackupSyncEngine: ObservableObject {
         vaultFolderName: String,
         syncState: inout BackupSyncState
     ) async throws -> Int {
-        func hasLocalUnder(_ relDir: String) -> Bool {
-            // Source vault root always stays; only prune children.
-            if relDir.isEmpty { return true }
-            let prefix = relDir + "/"
-            for path in localFiles where path == relDir || path.hasPrefix(prefix) {
+        let pruneIndex = BackupPruneIndex(localFiles: localFiles)
+        var deletedFiles = Set<String>()
+        var deletedDirectories = Set<String>()
+
+        final class PathPublishGate: @unchecked Sendable {
+            private let lock = NSLock()
+            private var lastPublish = Date.distantPast
+
+            func shouldPublish(now: Date = Date()) -> Bool {
+                lock.lock()
+                defer { lock.unlock() }
+                guard now.timeIntervalSince(lastPublish) >= 0.1 else { return false }
+                lastPublish = now
                 return true
             }
-            return false
         }
-
-        func removeStateKeys(underRel rel: String, isDirectory: Bool) {
-            let base = BackupSyncState.key(vaultFolder: vaultFolderName, relativePath: rel)
-            if isDirectory {
-                let prefix = base + "/"
-                let victims = syncState.files.keys.filter { $0 == base || $0.hasPrefix(prefix) }
-                for key in victims {
-                    syncState.files.removeValue(forKey: key)
-                }
-            } else {
-                syncState.files.removeValue(forKey: base)
-            }
-        }
+        let pathPublishGate = PathPublishGate()
 
         func prune(dirId: String, relPrefix: String) async throws -> Int {
             try Task.checkCancellation()
@@ -1074,23 +1110,25 @@ final class BackupSyncEngine: ObservableObject {
                 let childRel = relPrefix.isEmpty
                     ? child.cleartextName
                     : relPrefix + "/" + child.cleartextName
-                await MainActor.run {
-                    self.currentPath = childRel
+                if pathPublishGate.shouldPublish() {
+                    await MainActor.run {
+                        self.currentPath = childRel
+                    }
                 }
                 switch child.kind {
                 case .file, .symlink:
-                    if !localFiles.contains(childRel) {
+                    if !pruneIndex.containsFile(childRel) {
                         // Remote ObjectStore ciphertext delete only — never local source.
                         try await session.deleteFile(node: child)
-                        removeStateKeys(underRel: childRel, isDirectory: false)
+                        deletedFiles.insert(childRel)
                         deleted += 1
                     }
                 case .directory:
                     guard let childDirId = child.dirId else { continue }
-                    if !hasLocalUnder(childRel) {
+                    if !pruneIndex.hasLocalUnder(childRel) {
                         // Entire subtree is vault-only under this source folder.
                         try await session.deleteDirectory(node: child, recursive: true)
-                        removeStateKeys(underRel: childRel, isDirectory: true)
+                        deletedDirectories.insert(childRel)
                         deleted += 1
                     } else {
                         deleted += try await prune(dirId: childDirId, relPrefix: childRel)
@@ -1100,7 +1138,17 @@ final class BackupSyncEngine: ObservableObject {
             return deleted
         }
 
-        return try await prune(dirId: rootDirId, relPrefix: "")
+        let deleted = try await prune(dirId: rootDirId, relPrefix: "")
+        let victims = BackupPruneStateRemoval.keysToRemove(
+            from: syncState.files.keys,
+            vaultFolderName: vaultFolderName,
+            deletedFiles: deletedFiles,
+            deletedDirectories: deletedDirectories
+        )
+        for key in victims {
+            syncState.files.removeValue(forKey: key)
+        }
+        return deleted
     }
 
     /// Update job BW from cleartext bytes just committed via remote put (not skips).
@@ -1196,9 +1244,17 @@ final class BackupSyncEngine: ObservableObject {
     }
 
     /// Fail-closed: SMB / network volumes must stay mounted for the whole Sync.
-    nonisolated private func assertSourceStillPresent(path: String, isSMB: Bool) throws {
+    nonisolated private func assertSourceStillPresent(
+        path: String,
+        isSMB: Bool,
+        expectedSMBURL: String?
+    ) throws {
         do {
-            try SMBBackupMount.assertSourceReachable(path: path, isSMB: isSMB)
+            try SMBBackupMount.assertSourceReachable(
+                path: path,
+                isSMB: isSMB,
+                expectedSMBURL: expectedSMBURL
+            )
         } catch {
             throw SyncError.volumeLost(path)
         }
