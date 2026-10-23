@@ -24,6 +24,7 @@ struct ContentView: View {
                 .tag(VaultAppModel.MainTab.settings)
         }
         .frame(minWidth: 620, minHeight: 560)
+        .background(MainWindowAccessor())
         .environment(\.textPointAdjustment, model.textSize.pointAdjustment)
         .font(.system(size: CGFloat(13 + model.textSize.pointAdjustment)))
         .onAppear {

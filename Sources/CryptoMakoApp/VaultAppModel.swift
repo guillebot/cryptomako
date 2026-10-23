@@ -787,6 +787,10 @@ final class VaultAppModel: ObservableObject {
                 source.kind = .smb
                 source.bookmarkData = SMBBackupMount.makeBookmark(for: url)
             }
+            source.vaultFolderName = BackupPathOverlap.uniqueVaultFolderName(
+                preferred: source.vaultFolderName,
+                existing: backupSources
+            )
             backupSources.append(source)
         }
         persistBackupSources()
@@ -842,6 +846,10 @@ final class VaultAppModel: ObservableObject {
             smbUsername: cleanUser,
             bookmarkData: SMBBackupMount.makeBookmark(for: selected)
         )
+        source.vaultFolderName = BackupPathOverlap.uniqueVaultFolderName(
+            preferred: source.vaultFolderName,
+            existing: backupSources
+        )
         try SMBBackupMount.savePassword(password, for: source)
         let softWarn = BackupPathOverlap.softWarnOnAdd(existing: backupSources, candidatePath: source.path)
         backupSources.append(source)
@@ -886,6 +894,9 @@ final class VaultAppModel: ObservableObject {
         let sources: [BackupSource]
         do {
             sources = try prepareBackupSourcesForSync(selected)
+            // A single-source run can still collide with another configured source's
+            // state/vault folder, so validate names against the full persisted list.
+            try BackupPathOverlap.throwIfDuplicateVaultFolders(backupSources)
             // Soft-warn was at add time; Sync hard-fails on nested overlap (Windows parity).
             try BackupPathOverlap.throwIfOverlapping(sources)
         } catch {
@@ -928,14 +939,30 @@ final class VaultAppModel: ObservableObject {
     private func watchBackupSyncForFinderRefresh() {
         Task { [weak self] in
             guard let self else { return }
-            var ticks = 0
+            // Per-run only: reset so a prior sync's last signal does not suppress this one.
+            var lastSignaled = FinderRefreshSignalCounts(filesUploaded: 0, filesDeleted: 0)
+            var lastSignalAt: Date?
             while await MainActor.run(body: { self.backupSync.isRunning }) {
                 try? await Task.sleep(nanoseconds: 3_000_000_000)
-                ticks += 1
-                if ticks % 2 == 0 { // ~every 6s
+                let current = await MainActor.run {
+                    FinderRefreshSignalCounts(
+                        filesUploaded: self.backupSync.filesUploaded,
+                        filesDeleted: self.backupSync.filesDeleted
+                    )
+                }
+                let elapsed = lastSignalAt.map { Date().timeIntervalSince($0) }
+                if FinderRefreshSignalPolicy.shouldSignal(
+                    lastSignaled: lastSignaled,
+                    current: current,
+                    elapsedSinceLastSignal: elapsed,
+                    force: false
+                ) {
                     await self.signalFinderRefresh()
+                    lastSignaled = current
+                    lastSignalAt = Date()
                 }
             }
+            // Always poke Finder when the run ends so the tree is never left stale.
             await self.signalFinderRefresh()
             await MainActor.run {
                 if case .finished(let files, let bytes) = self.backupSync.state {

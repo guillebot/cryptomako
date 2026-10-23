@@ -73,6 +73,60 @@ final class BackupPathOverlapTests: XCTestCase {
         XCTAssertNoThrow(try BackupPathOverlap.throwIfOverlapping(sources))
     }
 
+    func testThrowIfOverlappingRejectsCaseInsensitiveVaultFolderCollision() throws {
+        let a = makeTempDir("cm-name-a")
+        let b = makeTempDir("cm-name-b")
+        let sources = [
+            BackupSource(path: a.path, vaultFolderName: "Photos"),
+            BackupSource(path: b.path, vaultFolderName: "photos"),
+        ]
+        XCTAssertThrowsError(try BackupPathOverlap.throwIfOverlapping(sources)) { error in
+            let message = error.localizedDescription
+            XCTAssertTrue(message.contains(a.path))
+            XCTAssertTrue(message.contains(b.path))
+            XCTAssertTrue(message.localizedCaseInsensitiveContains("Photos"))
+        }
+    }
+
+    func testNewSourceGetsUniqueNameWithoutRenamingExistingSources() {
+        let existing = [
+            BackupSource(path: "/one/Photos", vaultFolderName: "Photos"),
+            BackupSource(path: "/two/Photos", vaultFolderName: "Photos-2"),
+        ]
+        let originalNames = existing.map(\.vaultFolderName)
+        XCTAssertEqual(
+            BackupPathOverlap.uniqueVaultFolderName(preferred: "photos", existing: existing),
+            "photos-3"
+        )
+        XCTAssertEqual(existing.map(\.vaultFolderName), originalNames)
+    }
+
+    func testUniqueVaultFolderNameReturnsPreferredWhenFree() {
+        let existing = [BackupSource(path: "/one/Docs", vaultFolderName: "Docs")]
+        XCTAssertEqual(
+            BackupPathOverlap.uniqueVaultFolderName(preferred: "Photos", existing: existing),
+            "Photos"
+        )
+        XCTAssertEqual(
+            BackupPathOverlap.uniqueVaultFolderName(preferred: "", existing: []),
+            "Backup"
+        )
+    }
+
+    func testSoftWarnOnAddDoesNotFireForDuplicateVaultFolderNamesAlone() throws {
+        // Path-disjoint sources with the same vault folder name are a hard Sync
+        // refusal, not a soft add warning — uniqueVaultFolderName handles add-time.
+        let a = makeTempDir("cm-dup-a")
+        let b = makeTempDir("cm-dup-b")
+        let existing = [BackupSource(path: a.path, vaultFolderName: "Photos")]
+        XCTAssertNil(BackupPathOverlap.softWarnOnAdd(existing: existing, candidatePath: b.path))
+        XCTAssertThrowsError(
+            try BackupPathOverlap.throwIfDuplicateVaultFolders(
+                existing + [BackupSource(path: b.path, vaultFolderName: "Photos")]
+            )
+        )
+    }
+
     func testIsSameOrPrefixCaseInsensitive() {
         XCTAssertTrue(BackupPathOverlap.isSameOrPrefix(
             ancestor: "/Users/Guille/Docs",

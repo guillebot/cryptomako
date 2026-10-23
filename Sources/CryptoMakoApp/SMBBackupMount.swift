@@ -1,5 +1,6 @@
 import AppKit
 import CryptoMakoShared
+import Darwin
 import Foundation
 import NetFS
 import OSLog
@@ -73,7 +74,12 @@ enum SMBBackupMount {
         )
         // Prefer keeping a deeper previously-picked path when it still exists under the remounted volume.
         if source.path.hasPrefix("/Volumes/"),
-           isReachableDirectory(URL(fileURLWithPath: source.path, isDirectory: true)) {
+           isReachableDirectory(URL(fileURLWithPath: source.path, isDirectory: true)),
+           mountIdentityMatchesSource(
+               url: URL(fileURLWithPath: source.path, isDirectory: true),
+               source: source
+           )
+        {
             let kept = URL(fileURLWithPath: source.path, isDirectory: true)
             source.bookmarkData = makeBookmark(for: kept) ?? source.bookmarkData
             source.smbURL = smb
@@ -173,7 +179,7 @@ enum SMBBackupMount {
     }
 
     /// Fail-closed probe used during Sync (start + mid-run).
-    static func assertSourceReachable(path: String, isSMB: Bool) throws {
+    static func assertSourceReachable(path: String, isSMB: Bool, expectedSMBURL: String? = nil) throws {
         let url = URL(fileURLWithPath: path, isDirectory: true)
         guard isReachableDirectory(url) else {
             if isSMB || path.hasPrefix("/Volumes/") {
@@ -181,7 +187,19 @@ enum SMBBackupMount {
             }
             throw MountError.volumeUnavailable(path)
         }
-        if isSMB || looksLikeNetworkVolume(url) {
+        if isSMB {
+            guard let expectedSMBURL,
+                  let identity = mountIdentity(at: url),
+                  SMBVolumeNameMatch.mountMatches(
+                      volumeLeaf: identity.volumeLeaf,
+                      isLocal: identity.isLocal,
+                      mountedFrom: identity.mountedFrom,
+                      expectedSMBURL: expectedSMBURL
+                  )
+            else {
+                throw MountError.volumeLost(path)
+            }
+        } else if looksLikeNetworkVolume(url) {
             // Touch volume metadata — if the share dropped, this fails even if the path string lingers briefly.
             let keys: Set<URLResourceKey> = [.volumeNameKey, .volumeIsLocalKey, .volumeUUIDStringKey]
             do {
@@ -259,11 +277,15 @@ enum SMBBackupMount {
     }
 
     private static func tryResolveExisting(source: BackupSource) -> URL? {
-        if let data = source.bookmarkData, let url = resolveBookmark(data), isReachableDirectory(url) {
+        if let data = source.bookmarkData,
+           let url = resolveBookmark(data),
+           isReachableDirectory(url),
+           mountIdentityMatchesSource(url: url, source: source)
+        {
             return url
         }
         let pathURL = URL(fileURLWithPath: source.path, isDirectory: true)
-        if isReachableDirectory(pathURL) {
+        if isReachableDirectory(pathURL), mountIdentityMatchesSource(url: pathURL, source: source) {
             return pathURL
         }
         if let smb = source.smbURL, let existing = try? findExistingMount(forSMBURL: SMBSourceURL.normalize(smb)) {
@@ -278,6 +300,40 @@ enum SMBBackupMount {
             return false
         }
         return true
+    }
+
+    private static func mountIdentityMatchesSource(url: URL, source: BackupSource) -> Bool {
+        guard source.isSMB else { return true }
+        guard let expected = source.smbURL,
+              let identity = mountIdentity(at: url)
+        else {
+            return false
+        }
+        return SMBVolumeNameMatch.mountMatches(
+            volumeLeaf: identity.volumeLeaf,
+            isLocal: identity.isLocal,
+            mountedFrom: identity.mountedFrom,
+            expectedSMBURL: expected
+        )
+    }
+
+    private static func mountIdentity(
+        at url: URL
+    ) -> (volumeLeaf: String, isLocal: Bool, mountedFrom: String)? {
+        var info = statfs()
+        guard statfs(url.path, &info) == 0 else { return nil }
+        let mountedFrom = withUnsafePointer(to: &info.f_mntfromname) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MNAMELEN)) {
+                String(cString: $0)
+            }
+        }
+        let mountedOn = withUnsafePointer(to: &info.f_mntonname) {
+            $0.withMemoryRebound(to: CChar.self, capacity: Int(MNAMELEN)) {
+                String(cString: $0)
+            }
+        }
+        let isLocal = (info.f_flags & UInt32(MNT_LOCAL)) != 0
+        return (URL(fileURLWithPath: mountedOn).lastPathComponent, isLocal, mountedFrom)
     }
 
     /// Best-effort match of an already-mounted share under `/Volumes`.
@@ -298,7 +354,13 @@ enum SMBBackupMount {
             }
             if let share {
                 let leaf = item.lastPathComponent
-                if SMBVolumeNameMatch.volumeLeaf(leaf, matchesShare: share) {
+                guard let identity = mountIdentity(at: item) else { continue }
+                if SMBVolumeNameMatch.mountMatches(
+                    volumeLeaf: leaf,
+                    isLocal: identity.isLocal,
+                    mountedFrom: identity.mountedFrom,
+                    expectedSMBURL: smb
+                ) {
                     return item
                 }
             }
@@ -338,7 +400,18 @@ enum SMBBackupMount {
             if let array = mountpoints?.takeRetainedValue() as? [String],
                let first = array.first,
                !first.isEmpty {
-                return URL(fileURLWithPath: first, isDirectory: true)
+                let mounted = URL(fileURLWithPath: first, isDirectory: true)
+                guard let identity = mountIdentity(at: mounted),
+                      SMBVolumeNameMatch.mountMatches(
+                          volumeLeaf: identity.volumeLeaf,
+                          isLocal: identity.isLocal,
+                          mountedFrom: identity.mountedFrom,
+                          expectedSMBURL: normalized
+                      )
+                else {
+                    throw MountError.mountFailed("Mounted volume identity did not match the requested SMB share.")
+                }
+                return mounted
             }
             if let existing = findExistingMount(forSMBURL: normalized) {
                 return existing

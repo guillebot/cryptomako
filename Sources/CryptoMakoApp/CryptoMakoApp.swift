@@ -1,5 +1,6 @@
 import AppKit
 import CryptoMakoShared
+import os
 import SwiftUI
 
 @main
@@ -14,6 +15,9 @@ struct CryptoMakoApp: App {
         }
         .windowResizability(.contentMinSize)
         .commands {
+            // Single-window app: drop File > New Window (⌘N). Extra WindowGroup
+            // instances are not kept alive by MainWindowController.
+            CommandGroup(replacing: .newItem) {}
             CommandGroup(replacing: .appInfo) {
                 Button("About CryptoMako") {
                     delegate.showAbout()
@@ -142,40 +146,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.model.refreshTransfers()
             }
         }
-        showMainWindow()
+        // SwiftUI shows the WindowGroup window itself at launch; MainWindowAccessor adopts it.
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         false
     }
 
+    /// Returning true lets SwiftUI build a fresh WindowGroup window, so only do that when
+    /// there is no main window to bring back; otherwise a hidden window would get a twin.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag {
-            showMainWindow()
-        }
-        return true
+        !MainWindowController.shared.bringToFront()
     }
 
     @MainActor
     func showMainWindow() {
-        // Accessory policy can leave WindowGroup unmaterialized; briefly go regular
-        // so SwiftUI creates the scene, then order it front.
-        if NSApp.activationPolicy() == .accessory, NSApp.windows.isEmpty {
-            NSApp.setActivationPolicy(.regular)
-        }
-        NSApp.activate(ignoringOtherApps: true)
-        for window in NSApp.windows where window.canBecomeMain {
-            window.makeKeyAndOrderFront(nil)
-            return
-        }
-        NSApp.windows.first?.makeKeyAndOrderFront(nil)
-        // Fallback: ask AppKit to reopen (creates WindowGroup for accessory apps).
-        if NSApp.windows.isEmpty {
-            _ = NSApp.delegate?.applicationShouldHandleReopen?(NSApp, hasVisibleWindows: false)
-            for window in NSApp.windows {
-                window.makeKeyAndOrderFront(nil)
-            }
-        }
+        MainWindowController.shared.show()
     }
 
     @MainActor
@@ -195,6 +182,166 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         showMainWindow()
         NSApp.orderFrontStandardAboutPanel(options: options)
+    }
+}
+
+/// Owns the app's main window and keeps it alive. NSApp.windows also holds the status item's
+/// NSStatusBarWindow and OS helpers (TextInputUI) that refuse key status, so it is never indexed
+/// by position. Closing hides the window instead of letting SwiftUI destroy it: an accessory app
+/// with no Dock icon has no reliable way to get a destroyed WindowGroup window back.
+@MainActor
+final class MainWindowController: NSObject, NSWindowDelegate {
+    static let shared = MainWindowController()
+    /// Pinned so edits to the scene's root modifier chain no longer orphan the saved frame.
+    static let frameAutosaveName = "CryptoMakoMainWindow"
+
+    private static let log = Logger(subsystem: "net.gschimmel.cryptomako", category: "main-window")
+
+    private weak var window: NSWindow?
+    /// Whatever delegate SwiftUI installed; every message we do not handle is forwarded to it.
+    /// NSWindow holds its delegate weakly, so SwiftUI keeps owning that object.
+    nonisolated(unsafe) private weak var forwardedDelegate: NSWindowDelegate?
+    private var frameConfigured = false
+
+    /// Called by MainWindowAccessor once the SwiftUI content is attached to a window.
+    func adopt(_ candidate: NSWindow) {
+        if let window, window !== candidate { return }
+        window = candidate
+        installDelegate(on: candidate)
+        if !frameConfigured {
+            frameConfigured = true
+            configureFrame(candidate)
+        }
+    }
+
+    /// Brings the main window front. If none exists yet, retries once on the next run loop turn,
+    /// then falls back to a Dock icon: clicking it sends a reopen event that SwiftUI answers
+    /// with a new window, which MainWindowAccessor adopts.
+    func show() {
+        NSApp.activate(ignoringOtherApps: true)
+        if bringToFront() { return }
+        DispatchQueue.main.async { [self] in
+            if bringToFront() { return }
+            Self.log.error("No main window to show; switching to regular activation policy")
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    /// Orders the main window front if one exists. Never calls back into reopen handling.
+    @discardableResult
+    func bringToFront() -> Bool {
+        let tracked = window.map { [$0] } ?? []
+        let candidates = (tracked + NSApp.windows).map(AppKitWindowCandidate.init)
+        guard let target = MainWindowSelection.selectMainWindow(from: candidates)?.window else {
+            return false
+        }
+        adopt(target)
+        target.makeKeyAndOrderFront(nil)
+        return true
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        guard sender === window else {
+            return forwardedDelegate?.windowShouldClose?(sender) ?? true
+        }
+        sender.orderOut(nil)
+        if NSApp.activationPolicy() != .accessory {
+            // Async: flipping policy while the window is still key can deactivate the app mid-close.
+            DispatchQueue.main.async {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
+        return false
+    }
+
+    func windowDidBecomeKey(_ notification: Notification) {
+        if let window = notification.object as? NSWindow { installDelegate(on: window) }
+        forwardedDelegate?.windowDidBecomeKey?(notification)
+    }
+
+    nonisolated override func responds(to aSelector: Selector!) -> Bool {
+        super.responds(to: aSelector) || (forwardedDelegate?.responds(to: aSelector) ?? false)
+    }
+
+    nonisolated override func forwardingTarget(for aSelector: Selector!) -> Any? {
+        if let forwardedDelegate, forwardedDelegate.responds(to: aSelector) {
+            return forwardedDelegate
+        }
+        return super.forwardingTarget(for: aSelector)
+    }
+
+    /// SwiftUI may (re)assign the delegate after the accessor fires; re-asserting on key and on
+    /// every show keeps the close interception in place without dropping SwiftUI's delegate.
+    private func installDelegate(on window: NSWindow) {
+        guard window === self.window, window.delegate !== self else { return }
+        forwardedDelegate = window.delegate
+        window.delegate = self
+    }
+
+    private func configureFrame(_ window: NSWindow) {
+        let pinned = Self.frameAutosaveName
+        let derived = window.frameAutosaveName
+        if derived != pinned {
+            let hasPinnedFrame = UserDefaults.standard.string(forKey: "NSWindow Frame \(pinned)") != nil
+            if !hasPinnedFrame, !derived.isEmpty {
+                // First run with the pinned name: carry over the position SwiftUI saved.
+                _ = window.setFrameUsingName(derived)
+            }
+            if !window.setFrameAutosaveName(pinned) {
+                Self.log.error("Could not pin frame autosave name")
+            }
+            if hasPinnedFrame {
+                _ = window.setFrameUsingName(pinned)
+            }
+        }
+        let screens = NSScreen.screens.map(\.visibleFrame)
+        let validated = MainWindowFrame.validatedFrame(
+            window.frame,
+            screens: screens,
+            mainScreen: screens.first
+        )
+        if validated != window.frame {
+            Self.log.info("Corrected restored main window frame")
+            window.setFrame(validated, display: true)
+        }
+        window.saveFrame(usingName: window.frameAutosaveName)
+    }
+}
+
+private struct AppKitWindowCandidate: MainWindowCandidate {
+    let window: NSWindow
+    let canBecomeMain: Bool
+    let canBecomeKey: Bool
+    let hasContentViewController: Bool
+
+    @MainActor
+    init(_ window: NSWindow) {
+        self.window = window
+        canBecomeMain = window.canBecomeMain
+        canBecomeKey = window.canBecomeKey
+        hasContentViewController = window.contentViewController != nil
+    }
+}
+
+/// Hands the hosting NSWindow to MainWindowController. Lives inside ContentView rather than on the
+/// scene so the WindowGroup root type, which SwiftUI derives the legacy frame key from, is unchanged.
+struct MainWindowAccessor: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        WindowReportingView()
+    }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
+
+    private final class WindowReportingView: NSView {
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            guard let window else { return }
+            // Next turn: SwiftUI finishes configuring the window (delegate, restored frame) first.
+            DispatchQueue.main.async {
+                MainWindowController.shared.adopt(window)
+            }
+        }
     }
 }
 

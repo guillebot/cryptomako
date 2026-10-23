@@ -19,11 +19,14 @@ public enum BackupPathOverlap {
 
     public enum OverlapError: Error, LocalizedError, Equatable {
         case overlapping(resolvedA: String, resolvedB: String)
+        case duplicateVaultFolder(name: String, sourceA: String, sourceB: String)
 
         public var errorDescription: String? {
             switch self {
             case .overlapping(let a, let b):
                 return "Backup Sync refused: nested/overlapping sources. '\(a)' overlaps '\(b)'. Remove or change one source before syncing."
+            case .duplicateVaultFolder(let name, let a, let b):
+                return "Backup Sync refused: '\(a)' and '\(b)' both use vault folder '\(name)' (case-insensitive). Remove and re-add one source so it receives a unique vault folder name."
             }
         }
     }
@@ -85,8 +88,43 @@ public enum BackupPathOverlap {
 
     /// Hard-fail before Sync when any pair overlaps.
     public static func throwIfOverlapping(_ sources: [BackupSource]) throws {
-        guard let first = findOverlaps(sources).first else { return }
-        throw OverlapError.overlapping(resolvedA: first.resolvedA, resolvedB: first.resolvedB)
+        try throwIfDuplicateVaultFolders(sources)
+        if let first = findOverlaps(sources).first {
+            throw OverlapError.overlapping(resolvedA: first.resolvedA, resolvedB: first.resolvedB)
+        }
+    }
+
+    public static func throwIfDuplicateVaultFolders(_ sources: [BackupSource]) throws {
+        if let duplicate = firstDuplicateVaultFolder(in: sources) {
+            throw OverlapError.duplicateVaultFolder(
+                name: duplicate.a.vaultFolderName,
+                sourceA: duplicate.a.displayLocation,
+                sourceB: duplicate.b.displayLocation
+            )
+        }
+    }
+
+    public static func uniqueVaultFolderName(preferred: String, existing: [BackupSource]) -> String {
+        let base = preferred.isEmpty ? "Backup" : preferred
+        let names = Set(existing.map { $0.vaultFolderName.lowercased() })
+        guard names.contains(base.lowercased()) else { return base }
+        var suffix = 2
+        while names.contains("\(base)-\(suffix)".lowercased()) {
+            suffix += 1
+        }
+        return "\(base)-\(suffix)"
+    }
+
+    private static func firstDuplicateVaultFolder(
+        in sources: [BackupSource]
+    ) -> (a: BackupSource, b: BackupSource)? {
+        for i in sources.indices {
+            for j in sources.index(after: i)..<sources.endIndex
+            where sources[i].vaultFolderName.caseInsensitiveCompare(sources[j].vaultFolderName) == .orderedSame {
+                return (sources[i], sources[j])
+            }
+        }
+        return nil
     }
 
     private static func trimTrailingSeparators(_ path: String) -> String {

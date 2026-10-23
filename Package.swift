@@ -18,8 +18,19 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
     ],
     targets: [
-        .target(name: "CryptoMakoS3"),
-        .target(name: "CryptoMakoShared"),
+        .target(
+            name: "CryptoMakoS3",
+            // Already warning-clean; fail the build if new noise lands here.
+            swiftSettings: [
+                .unsafeFlags(["-warnings-as-errors"]),
+            ]
+        ),
+        .target(
+            name: "CryptoMakoShared",
+            swiftSettings: [
+                .enableUpcomingFeature("StrictConcurrency"),
+            ]
+        ),
         // Built here purely so `swift build` type-checks the extension; the
         // shipping appex is compiled from these same sources by Xcode.
         .target(
@@ -36,6 +47,9 @@ let package = Package(
                 "CryptoMakoS3",
                 "CryptoMakoShared",
                 .product(name: "CryptomatorCryptoLib", package: "cryptolib-swift"),
+            ],
+            swiftSettings: [
+                .enableUpcomingFeature("StrictConcurrency"),
             ]
         ),
         .executableTarget(
