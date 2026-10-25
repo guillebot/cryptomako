@@ -646,71 +646,9 @@ final class BackupSyncEngine: ObservableObject {
             "put workers small=\(smallWorkers) medium=\(mediumWorkers) large=\(largeWorkers)"
         )
 
-        final class StateBox: @unchecked Sendable {
-            let lock = NSLock()
-            var files: [String: BackupFileFingerprint]
-            /// Puts since last persist. The enumerator skip path must not save —
-            /// encoding the full fingerprint map stalled multi-million-file walks.
-            var putsSinceSave = 0
-            /// True when `files` changed since the last successful persist.
-            var dirty = false
-            var lastSaveAt = Date.distantPast
-            /// Avoid re-encoding the full fingerprint JSON more than once per gap
-            /// (~64MB / ~458k keys was dominating Sync CPU via JSONEncoder).
-            static let minSaveInterval = BackupStatePersistPolicy.timeThreshold
-            static let putPersistEvery = BackupStatePersistPolicy.putThreshold
-
-            init(_ state: BackupSyncState) { self.files = state.files }
-            func snapshot() -> BackupSyncState {
-                lock.lock(); defer { lock.unlock() }
-                return BackupSyncState(files: files)
-            }
-            func set(_ key: String, _ fp: BackupFileFingerprint) {
-                lock.lock(); files[key] = fp; dirty = true; lock.unlock()
-            }
-            func get(_ key: String) -> BackupFileFingerprint? {
-                lock.lock(); defer { lock.unlock() }
-                return files[key]
-            }
-            /// Persist when dirty. Non-forced saves respect `minSaveInterval`.
-            /// Pass `force: true` on Sync end / cancel / clean shutdown to ignore
-            /// the time gate (still no-ops when nothing changed).
-            func save(force: Bool = false) throws {
-                lock.lock()
-                defer { lock.unlock() }
-                let elapsed = Date().timeIntervalSince(lastSaveAt)
-                let should = dirty && (
-                    force || BackupStatePersistPolicy.shouldPersist(
-                        putsSinceSave: putsSinceSave,
-                        elapsed: elapsed
-                    )
-                )
-                guard should else { return }
-                let snap = BackupSyncState(files: files)
-                try snap.save()
-                dirty = false
-                putsSinceSave = 0
-                lastSaveAt = Date()
-            }
-            /// Persist after successful puts so a crash mid-drain does not
-            /// re-upload everything already committed. Returns true when a
-            /// save should run (caller saves outside the lock). Count threshold
-            /// or wall-clock gap — bounds the crash window without requiring both.
-            func notePutCommittedForPersist(every: Int = StateBox.putPersistEvery) -> Bool {
-                lock.lock()
-                putsSinceSave += 1
-                dirty = true
-                let should = BackupStatePersistPolicy.shouldPersist(
-                    putsSinceSave: putsSinceSave,
-                    elapsed: Date().timeIntervalSince(lastSaveAt),
-                    putThreshold: every,
-                    timeThreshold: Self.minSaveInterval
-                )
-                lock.unlock()
-                return should
-            }
-        }
-        let box = StateBox(syncState)
+        // Fingerprint index: set/get under a short lock; JSON encode + atomic write
+        // run off-lock on a background queue (coalesced). Forced saves are synchronous.
+        let box = BackupFingerprintStore(syncState)
 
         final class UploadCounter: @unchecked Sendable {
             let lock = NSLock()

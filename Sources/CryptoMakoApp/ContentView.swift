@@ -2,7 +2,66 @@ import AppKit
 import CryptoMakoShared
 import SwiftUI
 
+/// Window shell. Deliberately does **not** observe `VaultAppModel`: on macOS 26 every
+/// re-evaluation of a TabView's `tabItem`s (bridged to toolbar items) retained another
+/// copy of the tab Labels, tag projections and Observation tracking state. With the
+/// model publishing ~1×/s during Sync this grew to ~160k copies (~1.4 GB) and made each
+/// layout pass progressively slower (main thread pinned at 100%). Tabs now rebuild only
+/// when the selected tab or window visibility changes; tab contents observe the model.
 struct ContentView: View {
+    let model: VaultAppModel
+    @ObservedObject private var tabs: MainTabSelection
+    /// Close hides the window (orderOut) instead of destroying it. While it is hidden,
+    /// minimized, or fully covered, the whole tree is swapped for an empty placeholder
+    /// so Sync progress / transfer polling drive no SwiftUI work at all.
+    @ObservedObject private var visibility = MainWindowVisibility.shared
+
+    init(model: VaultAppModel) {
+        self.model = model
+        _tabs = ObservedObject(wrappedValue: model.tabSelection)
+    }
+
+    var body: some View {
+        Group {
+            if visibility.isVisible {
+                TabView(selection: $tabs.selection) {
+                    VaultTabView()
+                        .tabItem { Label("Vault", systemImage: "lock.rectangle.stack") }
+                        .tag(VaultAppModel.MainTab.vault)
+                    BackupView(syncEngine: model.backupSync)
+                        .tabItem { Label("Backup", systemImage: "externaldrive.badge.timemachine") }
+                        .tag(VaultAppModel.MainTab.backup)
+                    SettingsView()
+                        .tabItem { Label("Settings", systemImage: "gearshape") }
+                        .tag(VaultAppModel.MainTab.settings)
+                }
+            } else {
+                Color.clear
+            }
+        }
+        .frame(minWidth: 620, minHeight: 560)
+        .background(MainWindowAccessor())
+        .modifier(AppTextSizeModifier(model: model))
+        .environmentObject(model)
+        .onAppear {
+            // AppDelegate already called load() at launch. Only reconcile Finder lamp here.
+            Task { await model.refreshMountState() }
+        }
+    }
+}
+
+/// Applies the window text size; observes the model itself so the shell above does not.
+private struct AppTextSizeModifier: ViewModifier {
+    @ObservedObject var model: VaultAppModel
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.textPointAdjustment, model.textSize.pointAdjustment)
+            .font(.system(size: CGFloat(13 + model.textSize.pointAdjustment)))
+    }
+}
+
+struct VaultTabView: View {
     @State private var deleteRootName = "backupsfotosfamilia"
     @State private var confirmDeleteRoot = false
     @State private var deleteRootConfirmTyped = ""
@@ -10,27 +69,7 @@ struct ContentView: View {
     @EnvironmentObject private var model: VaultAppModel
 
     var body: some View {
-        TabView(selection: $model.selectedTab) {
-            vaultTab
-                .tabItem { Label("Vault", systemImage: "lock.rectangle.stack") }
-                .tag(VaultAppModel.MainTab.vault)
-            BackupView(syncEngine: model.backupSync)
-                .environmentObject(model)
-                .tabItem { Label("Backup", systemImage: "externaldrive.badge.timemachine") }
-                .tag(VaultAppModel.MainTab.backup)
-            SettingsView()
-                .environmentObject(model)
-                .tabItem { Label("Settings", systemImage: "gearshape") }
-                .tag(VaultAppModel.MainTab.settings)
-        }
-        .frame(minWidth: 620, minHeight: 560)
-        .background(MainWindowAccessor())
-        .environment(\.textPointAdjustment, model.textSize.pointAdjustment)
-        .font(.system(size: CGFloat(13 + model.textSize.pointAdjustment)))
-        .onAppear {
-            // AppDelegate already called load() at launch. Only reconcile Finder lamp here.
-            Task { await model.refreshMountState() }
-        }
+        vaultTab
     }
 
     private var vaultTab: some View {
@@ -495,6 +534,22 @@ private struct TransferFailureSheet: View {
 
 // MARK: - Backup tab
 
+private struct TransferModePicker: View {
+    @Binding var mode: AppPreferences.BackupTransferMode
+    let disabled: Bool
+
+    var body: some View {
+        Picker("Transfer mode", selection: $mode) {
+            Text("Backup").tag(AppPreferences.BackupTransferMode.backup)
+            Text("Sync").tag(AppPreferences.BackupTransferMode.sync)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .disabled(disabled)
+        .help("Backup = put/update only. Sync = put/update plus delete vault-only files under this source’s Backups folder.")
+    }
+}
+
 struct BackupView: View {
     @EnvironmentObject private var model: VaultAppModel
     @ObservedObject var syncEngine: BackupSyncEngine
@@ -530,14 +585,9 @@ struct BackupView: View {
 
             GroupBox("Transfer mode") {
                 VStack(alignment: .leading, spacing: 8) {
-                    Picker("Transfer mode", selection: $prefs.backupTransferMode) {
-                        Text("Backup").tag(AppPreferences.BackupTransferMode.backup)
-                        Text("Sync").tag(AppPreferences.BackupTransferMode.sync)
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .disabled(syncEngine.isRunning)
-                    .help("Backup = put/update only. Sync = put/update plus delete vault-only files under this source’s Backups folder.")
+                    // Own view: re-evaluating a segmented Picker inside BackupView on every
+                    // Sync progress publish retained its tag projections (see ContentView).
+                    TransferModePicker(mode: $prefs.backupTransferMode, disabled: syncEngine.isRunning)
 
                     if transferMode == .backup {
                         Text("Backup copies and updates into the vault. It never deletes the local source, and it does not remove vault files that are missing locally.")
@@ -628,8 +678,12 @@ struct BackupView: View {
                                 Spacer(minLength: 8)
                                 if syncEngine.isRunning, syncEngine.currentSourceName == source.vaultFolderName {
                                     HStack(spacing: 6) {
-                                        ProgressView()
-                                            .controlSize(.small)
+                                        // Static glyph: a per-row indeterminate spinner kept the
+                                        // whole Backup tree in a continuous redraw/layout pass.
+                                        Image(systemName: "arrow.triangle.2.circlepath")
+                                            .imageScale(.small)
+                                            .foregroundStyle(.secondary)
+                                            .accessibilityLabel("Syncing")
                                         Text(syncEngine.phaseLabel.isEmpty ? "Syncing…" : syncEngine.phaseLabel)
                                             .appFont(.caption)
                                             .foregroundStyle(.secondary)
@@ -657,7 +711,9 @@ struct BackupView: View {
                         }
                         // Grow with the window so several sources stay visible without scrolling.
                         // Add/Cancel/Backup-all stay outside this ScrollView (intrinsic height).
-                        .frame(minHeight: 280, maxHeight: .infinity)
+                        // ScrollView already takes the proposed height; an extra unbounded
+                        // flexible frame here only added another nested sizing pass.
+                        .frame(minHeight: 280)
                     }
                     HStack {
                         Button("Add folders…") { model.addBackupFolder() }
@@ -838,7 +894,8 @@ struct BackupView: View {
                                 backupProgressLabels(engine)
                             }
                         } else {
-                            ProgressView {
+                            // Scan phase: static empty bar (no indeterminate animation).
+                            ProgressView(value: 0.0) {
                                 backupProgressLabels(engine)
                             }
                         }
