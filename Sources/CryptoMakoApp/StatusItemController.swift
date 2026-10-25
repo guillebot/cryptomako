@@ -116,11 +116,12 @@ final class StatusItemController: NSObject, NSMenuDelegate {
             if sync.walkFinished {
                 tip += "\nUploaded \(sync.filesUploaded)/\(max(sync.filesToUpload, sync.filesUploaded)) files"
             } else {
-                tip += "\nDiscovered \(sync.filesDiscovered.formatted()) files"
+                tip += "\nDiscovered \(sync.filesDiscovered.formatted()) files (tree total so far)"
             }
             if !sync.remainingLabel.isEmpty {
                 tip += "\n\(sync.remainingLabel)"
             }
+            tip += "\n\(sync.counterBreakdown)"
         }
         statusItem.button?.toolTip = tip
         updateStatusItemImage()
