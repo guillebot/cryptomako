@@ -24,16 +24,19 @@ struct ContentView: View {
     var body: some View {
         Group {
             if visibility.isVisible {
-                TabView(selection: $tabs.selection) {
-                    VaultTabView()
-                        .tabItem { Label("Vault", systemImage: "lock.rectangle.stack") }
-                        .tag(VaultAppModel.MainTab.vault)
-                    BackupView(syncEngine: model.backupSync)
-                        .tabItem { Label("Backup", systemImage: "externaldrive.badge.timemachine") }
-                        .tag(VaultAppModel.MainTab.backup)
-                    SettingsView()
-                        .tabItem { Label("Settings", systemImage: "gearshape") }
-                        .tag(VaultAppModel.MainTab.settings)
+                VStack(spacing: 0) {
+                    TabView(selection: $tabs.selection) {
+                        VaultTabView()
+                            .tabItem { Label("Vault", systemImage: "lock.rectangle.stack") }
+                            .tag(VaultAppModel.MainTab.vault)
+                        BackupView(syncEngine: model.backupSync)
+                            .tabItem { Label("Backup", systemImage: "externaldrive.badge.timemachine") }
+                            .tag(VaultAppModel.MainTab.backup)
+                        SettingsView()
+                            .tabItem { Label("Settings", systemImage: "gearshape") }
+                            .tag(VaultAppModel.MainTab.settings)
+                    }
+                    AppVersionFooter()
                 }
             } else {
                 Color.clear
@@ -47,6 +50,23 @@ struct ContentView: View {
             // AppDelegate already called load() at launch. Only reconcile Finder lamp here.
             Task { await model.refreshMountState() }
         }
+    }
+}
+
+/// Subtle version line under the tab view, visible on every tab.
+/// Static string resolved once from Bundle.main; observes nothing, so it adds no
+/// SwiftUI invalidation to the shell (see #68).
+private struct AppVersionFooter: View {
+    private static let text = "CryptoMako \(AppVersion.displayString)"
+
+    var body: some View {
+        Text(Self.text)
+            .appFont(.caption2)
+            .foregroundStyle(.tertiary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.vertical, 4)
+            .accessibilityLabel("CryptoMako version \(AppVersion.displayString)")
     }
 }
 

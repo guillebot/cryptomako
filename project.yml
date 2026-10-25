@@ -13,8 +13,8 @@ packages:
 
 settings:
   base:
-    MARKETING_VERSION: "1.0.11"
-    CURRENT_PROJECT_VERSION: "111"
+    MARKETING_VERSION: "1.0.12"
+    CURRENT_PROJECT_VERSION: "112"
     SWIFT_VERSION: "5.10"
     CODE_SIGN_STYLE: Automatic
     # Xcode 16 debug builds split a target into a stub plus a .debug.dylib for
