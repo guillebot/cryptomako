@@ -11,7 +11,7 @@ import (
 //
 //	go build -ldflags "-X github.com/guillebot/cryptomako/linux/cmd.Version=1.0.0 -X github.com/guillebot/cryptomako/linux/cmd.GitCommit=$(git rev-parse --short HEAD)"
 var (
-	Version   = "1.0.11"
+	Version   = "1.0.12"
 	GitCommit = "unknown"
 )
 
