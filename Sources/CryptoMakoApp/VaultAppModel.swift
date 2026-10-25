@@ -105,7 +105,13 @@ final class VaultAppModel: ObservableObject {
         case excludes
     }
 
-    @Published var selectedTab: MainTab = .vault
+    /// Tab selection lives in its own tiny ObservableObject so the window shell (TabView)
+    /// does not re-render on every model publish (see ContentView).
+    let tabSelection = MainTabSelection()
+    var selectedTab: MainTab {
+        get { tabSelection.selection }
+        set { tabSelection.selection = newValue }
+    }
     /// Window text size. Standard is already a step larger than the previous UI.
     @Published var textSize: AppPreferences.TextSize = AppPreferences.load().textSize
     @Published var settingsFocus: SettingsSection? = nil
@@ -589,7 +595,10 @@ final class VaultAppModel: ObservableObject {
     }
 
     func refreshTransfers() {
-        transfer = TransferMetrics.load()
+        // Publish only on change: every assignment fires objectWillChange and
+        // re-renders the window + status item even when nothing moved.
+        let next = TransferMetrics.load()
+        if next != transfer { transfer = next }
     }
 
     func resetTransferMetrics() {
@@ -1351,4 +1360,9 @@ final class VaultAppModel: ObservableObject {
     }
 
 
+}
+
+@MainActor
+final class MainTabSelection: ObservableObject {
+    @Published var selection: VaultAppModel.MainTab = .vault
 }

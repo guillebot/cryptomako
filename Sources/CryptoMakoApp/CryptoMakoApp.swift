@@ -9,9 +9,9 @@ struct CryptoMakoApp: App {
 
     var body: some Scene {
         WindowGroup("CryptoMako") {
-            ContentView()
-                .environmentObject(delegate.model)
-                .frame(minWidth: 560, minHeight: 360)
+            // ContentView carries the real min size (620×560); a second, smaller
+            // flexible frame here only nested another layout pass.
+            ContentView(model: delegate.model)
         }
         .windowResizability(.contentMinSize)
         .commands {
@@ -46,6 +46,8 @@ struct CryptoMakoApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model = VaultAppModel()
     private var statusItemController: StatusItemController?
+    /// Consecutive 1s poll ticks with no Sync or put in flight (idle poll = every 5s).
+    private var transferIdleTicks = 0
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         if CommandLine.arguments.contains("--cleanup-mount") {
@@ -141,9 +143,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         // Poll so tooltip stays live even if a notification is missed across processes.
+        // 1s while a Sync or put is active, otherwise every 5s; refreshTransfers only
+        // publishes when the snapshot actually changed.
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                self?.model.refreshTransfers()
+                guard let self else { return }
+                let active = self.model.backupSync.isRunning || self.model.transfer.inFlight > 0
+                if active {
+                    self.transferIdleTicks = 0
+                } else {
+                    self.transferIdleTicks += 1
+                    guard self.transferIdleTicks >= 5 else { return }
+                    self.transferIdleTicks = 0
+                }
+                self.model.refreshTransfers()
             }
         }
         // SwiftUI shows the WindowGroup window itself at launch; MainWindowAccessor adopts it.
@@ -185,6 +198,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// Whether the main window is actually on screen. Views gate live progress on this.
+@MainActor
+final class MainWindowVisibility: ObservableObject {
+    static let shared = MainWindowVisibility()
+    @Published private(set) var isVisible = true
+
+    func update(_ visible: Bool) {
+        if visible != isVisible { isVisible = visible }
+    }
+}
+
 /// Owns the app's main window and keeps it alive. NSApp.windows also holds the status item's
 /// NSStatusBarWindow and OS helpers (TextInputUI) that refuse key status, so it is never indexed
 /// by position. Closing hides the window instead of letting SwiftUI destroy it: an accessory app
@@ -198,6 +222,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     private static let log = Logger(subsystem: "net.gschimmel.cryptomako", category: "main-window")
 
     private weak var window: NSWindow?
+    private var occlusionObserver: NSObjectProtocol?
     /// Whatever delegate SwiftUI installed; every message we do not handle is forwarded to it.
     /// NSWindow holds its delegate weakly, so SwiftUI keeps owning that object.
     nonisolated(unsafe) private weak var forwardedDelegate: NSWindowDelegate?
@@ -206,6 +231,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
     /// Called by MainWindowAccessor once the SwiftUI content is attached to a window.
     func adopt(_ candidate: NSWindow) {
         if let window, window !== candidate { return }
+        if window == nil { observeVisibility(of: candidate) }
         window = candidate
         installDelegate(on: candidate)
         if !frameConfigured {
@@ -237,6 +263,8 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             return false
         }
         adopt(target)
+        // Render real content before the window appears (no placeholder flash).
+        MainWindowVisibility.shared.update(true)
         target.makeKeyAndOrderFront(nil)
         return true
     }
@@ -246,6 +274,7 @@ final class MainWindowController: NSObject, NSWindowDelegate {
             return forwardedDelegate?.windowShouldClose?(sender) ?? true
         }
         sender.orderOut(nil)
+        refreshVisibility()
         if NSApp.activationPolicy() != .accessory {
             // Async: flipping policy while the window is still key can deactivate the app mid-close.
             DispatchQueue.main.async {
@@ -277,6 +306,23 @@ final class MainWindowController: NSObject, NSWindowDelegate {
         guard window === self.window, window.delegate !== self else { return }
         forwardedDelegate = window.delegate
         window.delegate = self
+    }
+
+    /// Occlusion covers orderOut (close), minimize, app hide, other Spaces and full cover.
+    private func observeVisibility(of window: NSWindow) {
+        if let occlusionObserver { NotificationCenter.default.removeObserver(occlusionObserver) }
+        occlusionObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.didChangeOcclusionStateNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshVisibility() }
+        }
+    }
+
+    private func refreshVisibility() {
+        guard let window else { return }
+        MainWindowVisibility.shared.update(window.isVisible && window.occlusionState.contains(.visible))
     }
 
     private func configureFrame(_ window: NSWindow) {
