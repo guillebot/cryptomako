@@ -99,19 +99,29 @@ final class BackupSyncEngine: ObservableObject {
     var filesRemaining: Int { max(0, filesToUpload - filesUploaded) }
     var bytesRemaining: Int64 { max(0, bytesToUpload - bytesUploaded) }
 
-    /// Human line for the Backup UI and menu tooltip, e.g.
-    /// "Scan complete — 1,204 files, 3.2 GB to upload" / "812 files, 2.1 GB left to upload".
+    /// Human line for the Backup UI and menu tooltip (provisional mid-scan;
+    /// settled "left to upload" after the walk). Copy lives in BackupUploadProgress.
     var remainingLabel: String {
-        guard isRunning else { return "" }
-        let files = filesRemaining.formatted()
-        let bytes = TransferSnapshot.formatBytes(bytesRemaining)
-        if !walkFinished {
-            return "Scanning… \(files) files, \(bytes) to upload so far"
-        }
-        if filesUploaded == 0 {
-            return "Scan complete — \(files) files, \(bytes) to upload"
-        }
-        return "\(files) files, \(bytes) left to upload"
+        BackupUploadProgress.remainingLabel(
+            isRunning: isRunning,
+            walkFinished: walkFinished,
+            filesRemaining: filesRemaining,
+            bytesRemaining: bytesRemaining,
+            filesUploaded: filesUploaded
+        )
+    }
+
+    /// Compact Discovered = Skipped + To upload · Uploaded counter line.
+    var counterBreakdown: String {
+        BackupUploadProgress.counterBreakdown(
+            filesDiscovered: filesDiscovered,
+            filesSkipped: filesSkipped,
+            bytesSkipped: bytesSkipped,
+            filesToUpload: filesToUpload,
+            bytesToUpload: bytesToUpload,
+            filesUploaded: filesUploaded,
+            bytesUploaded: bytesUploaded
+        )
     }
 
     nonisolated private static let syncLog = Logger(subsystem: "net.gschimmel.cryptomako", category: "backup-sync")

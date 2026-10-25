@@ -900,25 +900,24 @@ struct BackupView: View {
                             }
                         }
                     }
-                    // "Still to transfer" — exact once the scan finished, before the first put.
+                    // Provisional mid-scan tally, or settled remaining after the walk.
                     if !engine.remainingLabel.isEmpty {
                         Text(engine.remainingLabel)
                             .appFont(.body, weight: .medium)
                             .foregroundStyle(engine.walkFinished ? .primary : .secondary)
                     }
-                    HStack(spacing: 12) {
-                        Text("Discovered \(engine.filesDiscovered.formatted())")
-                        Text("Skipped \(engine.filesSkipped.formatted()) (\(TransferSnapshot.formatBytes(engine.bytesSkipped)))")
-                        Text("To upload \(engine.filesToUpload.formatted()) (\(TransferSnapshot.formatBytes(engine.bytesToUpload)))")
-                        Text("Uploaded \(engine.filesUploaded.formatted()) (\(TransferSnapshot.formatBytes(engine.bytesUploaded)))")
+                    HStack(spacing: 8) {
+                        Text(engine.counterBreakdown)
                         if engine.filesDeleted > 0 || engine.phase == .pruning {
-                            Text("Vault deleted \(engine.filesDeleted)")
+                            Text("· Vault deleted \(engine.filesDeleted)")
                         }
                     }
                     .appFont(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.85)
                     if !engine.walkFinished {
-                        Text("Scanning only — no uploads yet. Percent starts at 0% when the scan finishes.")
+                        Text(BackupUploadProgress.scanningCaption)
                             .appFont(.caption2)
                             .foregroundStyle(.tertiary)
                     }
