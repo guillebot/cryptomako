@@ -23,3 +23,6 @@ release/dist/
 # Local agent DerivedData
 .derivedData-smb/
 .derivedData*/
+
+# Release upload staging (assets belong on GitHub Releases)
+release-upload/
