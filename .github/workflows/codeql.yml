@@ -23,7 +23,7 @@ jobs:
           - language: csharp
             runner: ubuntu-latest
           - language: swift
-            runner: macos-14
+            runner: macos-26
     steps:
       - uses: actions/checkout@v4
 
