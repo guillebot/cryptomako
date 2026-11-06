@@ -136,11 +136,10 @@ final class BackupSyncEngine: ObservableObject {
     /// The Backup button is removed and a Cancel button appears in that same click;
     /// AppKit delivers that as cancel, which would stop the run immediately.
     private var suppressCancel = false
-    /// Wall clock for the current job-BW sample window (upload phase start, or
-    /// last live bandwidth-cap change).
-    private var uploadPhaseStartedAt: Date?
-    /// `bytesUploaded` at the start of the current job-BW sample window.
-    private var uploadRateBaselineBytes: Int64 = 0
+    /// Job BW sliding window over cleartext `bytesUploaded` (see SlidingByteRateMeter).
+    /// Must not reset on live Mbps-cap changes — in-flight put completions would
+    /// dump a large byte delta into a short window and invent multi-Gbps.
+    private var uploadRateMeter = SlidingByteRateMeter()
 
     var isRunning: Bool {
         if case .running = state { return true }
@@ -236,8 +235,7 @@ final class BackupSyncEngine: ObservableObject {
         uploadBytesPerSecond = 0
         putWorkersLabel = ""
         progressEpoch = 0
-        uploadPhaseStartedAt = nil
-        uploadRateBaselineBytes = 0
+        uploadRateMeter.reset()
         currentPath = ""
         currentSourceName = sources.first?.vaultFolderName ?? ""
         let transferRunID = TransferMetrics.beginRun()
@@ -262,7 +260,7 @@ final class BackupSyncEngine: ObservableObject {
                     forName: AppPreferences.didSaveNotification,
                     object: nil,
                     queue: nil
-                ) { [weak self] note in
+                ) { note in
                     let before = bandwidthLimiter.bytesPerSecond
                     if let rate = note.userInfo?[AppPreferences.uploadBytesPerSecondUserInfoKey] as? Double {
                         bandwidthLimiter.setBytesPerSecond(rate)
@@ -271,13 +269,10 @@ final class BackupSyncEngine: ObservableObject {
                     }
                     let after = bandwidthLimiter.bytesPerSecond
                     Self.syncLog.info("bandwidth cap live-reload before=\(before) after=\(after) B/s")
-                    // Restart the job-BW window so the UI reflects the new regime
-                    // instead of the cumulative average from the unlimited stretch.
-                    guard abs(before - after) > 0.5, let self else { return }
-                    TransferMetrics.resetBusyBandwidthWindow()
-                    Task { @MainActor in
-                        self.resetUploadBandwidthWindow()
-                    }
+                    // Do not reset job-BW / strip meters on cap change. In-flight puts
+                    // that finish right after unlimited dump a large byte batch into a
+                    // short window and invent multi-Gbps; SlidingByteRateMeter adapts
+                    // within one window without a reset.
                 }
                 defer { NotificationCenter.default.removeObserver(prefsObserver) }
                 try Task.checkCancellation()
@@ -841,8 +836,8 @@ final class BackupSyncEngine: ObservableObject {
                 "upload phase start toUploadFiles=\(plan.toUpload.files) toUploadBytes=\(plan.toUpload.bytes) small=\(plan.small.count)/\(smallWorkers) medium=\(plan.medium.count)/\(mediumWorkers) large=\(plan.large.count)/\(largeWorkers) workers=\(workerCount)"
             )
             await MainActor.run {
-                self.uploadPhaseStartedAt = Date()
-                self.uploadRateBaselineBytes = self.bytesUploaded
+                self.uploadRateMeter.reset()
+                _ = self.uploadRateMeter.observe(cumulativeBytes: self.bytesUploaded)
                 self.uploadBytesPerSecond = 0
             }
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -1144,30 +1139,13 @@ final class BackupSyncEngine: ObservableObject {
         return deleted
     }
 
-    /// Job BW = cleartext bytes uploaded (since window start) ÷ wall time.
-    /// Must not use short inter-batch windows — parallel put completions were
-    /// reporting tens of MB/s on a Zscaler-capped ~100–150 Mbps path.
-    /// Window restarts when Settings changes the live bandwidth cap mid-Sync.
+    /// Job BW from a sliding wall-clock window over cleartext `bytesUploaded`.
+    /// Completion-driven UI batches must not divide a large byte dump by a short
+    /// inter-flush gap (that invented multi-Gbps after a mid-Sync cap removal).
     private func refreshJobBandwidth(now: Date = Date()) {
-        guard let started = uploadPhaseStartedAt else { return }
-        let elapsed = now.timeIntervalSince(started)
-        let completed = max(Int64(0), bytesUploaded - uploadRateBaselineBytes)
-        if let rate = TransferSnapshot.busyAverageBytesPerSecond(
-            completedBytes: completed,
-            elapsed: elapsed
-        ) {
+        if let rate = uploadRateMeter.observe(cumulativeBytes: bytesUploaded, at: now) {
             uploadBytesPerSecond = rate
         }
-    }
-
-    /// Restart the job-BW sample after a live Mbps / unlimited change so the
-    /// cumulative average from the previous regime does not hide the new cap.
-    @MainActor
-    private func resetUploadBandwidthWindow(now: Date = Date()) {
-        uploadPhaseStartedAt = now
-        uploadRateBaselineBytes = bytesUploaded
-        uploadBytesPerSecond = 0
-        publishProgress()
     }
 
     enum SyncError: LocalizedError {

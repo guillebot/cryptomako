@@ -271,7 +271,7 @@ struct SettingsView: View {
                             .labelsHidden()
                     }
                 }
-                Text("Applies only to Backup Sync puts (token-bucket pacing). Finder File Provider transfers are unchanged. Cap changes apply to a running Sync after each in-flight put finishes (next post-put charge); Job bandwidth restarts its average so the new cap is visible. Worker counts still need the next Sync.")
+                Text("Applies only to Backup Sync puts (token-bucket pacing). Finder File Provider transfers are unchanged. Cap changes apply to a running Sync after each in-flight put finishes (next post-put charge); Job bandwidth uses a short sliding average so the new regime shows within a few seconds. Worker counts still need the next Sync.")
                     .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

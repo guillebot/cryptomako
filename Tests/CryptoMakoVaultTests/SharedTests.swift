@@ -231,6 +231,90 @@ final class TransferRateFormatTests: XCTestCase {
     }
 }
 
+final class SlidingByteRateMeterTests: XCTestCase {
+    func testSteadyRateOverWindow() {
+        var meter = SlidingByteRateMeter(
+            windowSeconds: 5,
+            minElapsed: 1,
+            maxBytesPerSecond: nil,
+            minSampleGap: 0.1
+        )
+        let t0 = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertNil(meter.observe(cumulativeBytes: 0, at: t0))
+        // 12.5 MB/s cleartext ≈ 100 Mbps for 5s.
+        let rate = meter.observe(cumulativeBytes: 62_500_000, at: t0.addingTimeInterval(5))
+        XCTAssertEqual(rate!, 12_500_000, accuracy: 1)
+        XCTAssertEqual(rate! * 8 / 1_000_000, 100, accuracy: 0.1)
+    }
+
+    func testResetThenBurstInventGbps_documentsOldBug() {
+        // The mid-Sync "reset busy window on cap change" bug: zero the meter, then
+        // PutUIBatcher dumps ~325 MB of already-in-flight completions into ~1s → 2.6 Gbps.
+        var meter = SlidingByteRateMeter(
+            windowSeconds: 5,
+            minElapsed: 0.5,
+            maxBytesPerSecond: nil,
+            minSampleGap: 0.1
+        )
+        let t0 = Date(timeIntervalSince1970: 1_700_000_100)
+        meter.reset()
+        _ = meter.observe(cumulativeBytes: 0, at: t0)
+        let bogus = meter.observe(cumulativeBytes: 325_000_000, at: t0.addingTimeInterval(1.0))!
+        XCTAssertGreaterThan(bogus * 8, 2_000_000_000, "reset+burst still invents >2 Gbps")
+    }
+
+    func testCapRemovalBurstWithoutResetStaysBelowGbps() {
+        // Correct path: keep the sliding window across unlimited; a 325 MB completion
+        // burst is diluted over the prior capped samples' wall span.
+        var meter = SlidingByteRateMeter(
+            windowSeconds: 8,
+            minElapsed: 1,
+            maxBytesPerSecond: nil,
+            minSampleGap: 0.1
+        )
+        let t0 = Date(timeIntervalSince1970: 1_700_000_200)
+        _ = meter.observe(cumulativeBytes: 0, at: t0)
+        // ~100 Mbps cleartext for 8s.
+        let capped = meter.observe(cumulativeBytes: 100_000_000, at: t0.addingTimeInterval(8))!
+        XCTAssertEqual(capped * 8 / 1_000_000, 100, accuracy: 1)
+
+        // Many parallel puts finish right after removing the limit (UI batch).
+        let after = meter.observe(
+            cumulativeBytes: 100_000_000 + 325_000_000,
+            at: t0.addingTimeInterval(9)
+        )!
+        let mbps = after * 8 / 1_000_000
+        XCTAssertLessThan(mbps, 1000, "continuing window must not show Gbps; got \(mbps) Mbps")
+        // Diluted over ~9s → hundreds of Mbps is ok; multi-Gbps is not.
+        XCTAssertGreaterThan(mbps, 50)
+    }
+
+    func testAbsurdityClampCapsNonsense() {
+        var meter = SlidingByteRateMeter(
+            windowSeconds: 5,
+            minElapsed: 0.5,
+            maxBytesPerSecond: SlidingByteRateMeter.absurdityClampBytesPerSecond,
+            minSampleGap: 0.1
+        )
+        let t0 = Date(timeIntervalSince1970: 1_700_000_300)
+        _ = meter.observe(cumulativeBytes: 0, at: t0)
+        let rate = meter.observe(cumulativeBytes: 5_000_000_000, at: t0.addingTimeInterval(1))!
+        XCTAssertEqual(rate, SlidingByteRateMeter.absurdityClampBytesPerSecond, accuracy: 1)
+    }
+
+    func testShortSpanReturnsNilSoCallerKeepsLastRate() {
+        var meter = SlidingByteRateMeter(
+            windowSeconds: 8,
+            minElapsed: 1.0,
+            maxBytesPerSecond: nil,
+            minSampleGap: 0.05
+        )
+        let t0 = Date(timeIntervalSince1970: 1_700_000_400)
+        _ = meter.observe(cumulativeBytes: 0, at: t0)
+        XCTAssertNil(meter.observe(cumulativeBytes: 50_000_000, at: t0.addingTimeInterval(0.4)))
+    }
+}
+
 final class TransferMetricsTests: XCTestCase {
     override func setUp() {
         super.setUp()

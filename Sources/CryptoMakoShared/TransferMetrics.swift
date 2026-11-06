@@ -217,8 +217,8 @@ public struct TransferSnapshot: Codable, Equatable, Sendable {
     }
 
     /// Aggregate throughput while puts are busy: completed bytes ÷ wall time since
-    /// the busy period began. Parallel completions must not be divided by a short
-    /// inter-completion gap (that invented ~90 MB/s on a 100–150 Mbps path).
+    /// the busy period began. Prefer `SlidingByteRateMeter` for live UI — a short
+    /// inter-completion gap still invents absurd MB/s when used alone.
     public static func busyAverageBytesPerSecond(
         completedBytes: Int64,
         elapsed: TimeInterval,
@@ -230,7 +230,7 @@ public struct TransferSnapshot: Codable, Equatable, Sendable {
 
     /// Display rate for the strip / menu.
     ///
-    /// - While puts are in flight: keep the last busy-period average.
+    /// - While puts are in flight: keep the last sliding-window average.
     /// - When idle: hide after ~2.5s (avoids a frozen trickle after drain).
     /// Stuck `inFlight` is soft-healed in `TransferMetrics.load` after ~90s.
     public func liveUploadBytesPerSecond(now: Date = Date()) -> Double {
@@ -250,9 +250,10 @@ public enum TransferMetrics {
     public static let didChangeNotification = Notification.Name("net.gschimmel.cryptomako.transferMetrics")
 
     private static let lock = NSLock()
-    /// Busy-period rate: wall clock from first in-flight put; cumulative completed bytes.
-    /// Do not reset on each sample — short inter-completion gaps inflate MB/s wildly.
-    private static var rateBusyStartedAt: Date?
+    /// Sliding-window rate over recent completions (not inter-completion gaps).
+    /// Do not reset on live Mbps-cap changes — that dumped in-flight put bytes into
+    /// a short window and invented multi-Gbps (see SlidingByteRateMeter).
+    private static var rateMeter = SlidingByteRateMeter()
     private static var rateBusyBytes: Int64 = 0
     /// Hot-path cache: avoid read+atomic-write JSON on every begin/end put (was
     /// serializing Sync under a global lock and stomping the cooperative pool).
@@ -287,7 +288,7 @@ public enum TransferMetrics {
             snap.uploadBytesPerSecond = 0
             memory = snap
             saveUnlocked(snap)
-            rateBusyStartedAt = nil
+            rateMeter.reset()
             rateBusyBytes = 0
         }
         return snap
@@ -296,26 +297,9 @@ public enum TransferMetrics {
     public static func reset() {
         lock.lock()
         memory = TransferSnapshot.empty
-        rateBusyStartedAt = nil
+        rateMeter.reset()
         rateBusyBytes = 0
         saveUnlocked(TransferSnapshot.empty)
-        lock.unlock()
-        DistributedNotificationCenter.default().post(name: didChangeNotification, object: nil)
-    }
-
-    /// Restart the busy-period rate window (menu-bar / strip Mbps) without
-    /// clearing put counters. Used when Backup Sync's live bandwidth cap changes
-    /// so the displayed rate is not stuck on the previous regime's average.
-    public static func resetBusyBandwidthWindow() {
-        lock.lock()
-        rateBusyStartedAt = Date()
-        rateBusyBytes = 0
-        if var snap = memory {
-            snap.uploadBytesPerSecond = 0
-            snap.updatedAt = Date()
-            memory = snap
-            // Keep persist lightweight — next endPutSuccess will refresh.
-        }
         lock.unlock()
         DistributedNotificationCenter.default().post(name: didChangeNotification, object: nil)
     }
@@ -403,10 +387,10 @@ public enum TransferMetrics {
             return s
         }
         lock.lock()
-        // New busy period when nothing was in flight / window was cleared.
-        if rateBusyStartedAt == nil {
-            rateBusyStartedAt = Date()
+        // New busy period when nothing was in flight / meter was cleared.
+        if !rateMeter.hasSamples {
             rateBusyBytes = 0
+            _ = rateMeter.observe(cumulativeBytes: 0)
         }
         lock.unlock()
         return token
@@ -417,14 +401,8 @@ public enum TransferMetrics {
         lock.lock()
         let pending = pendingPuts.removeValue(forKey: token)
         rateBusyBytes += max(0, bytes)
-        if let started = rateBusyStartedAt {
-            let dt = Date().timeIntervalSince(started)
-            if let avg = TransferSnapshot.busyAverageBytesPerSecond(
-                completedBytes: rateBusyBytes,
-                elapsed: dt
-            ) {
-                rate = avg
-            }
+        if let avg = rateMeter.observe(cumulativeBytes: rateBusyBytes) {
+            rate = avg
         }
         lock.unlock()
 
@@ -461,7 +439,7 @@ public enum TransferMetrics {
         }
         if wentIdle {
             lock.lock()
-            rateBusyStartedAt = nil
+            rateMeter.reset()
             rateBusyBytes = 0
             lock.unlock()
         }
@@ -507,7 +485,7 @@ public enum TransferMetrics {
         }
         if wentIdle {
             lock.lock()
-            rateBusyStartedAt = nil
+            rateMeter.reset()
             rateBusyBytes = 0
             lock.unlock()
         }
