@@ -598,7 +598,7 @@ struct BackupView: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Backup")
                 .appFont(.title2, weight: .semibold)
-            Text("Pick local folders or add an explicit SMB share (smb://…). Transfer uses bounded parallel remote puts (many small files, one large at a time) so it does not fill CloudStorage like rclone-into-Finder did. SMB uses macOS mounts under /Volumes — remount-on-demand before a run; fail-closed if the share drops. Never deletes files on the source.")
+            Text("Pick local folders or add an explicit SMB share (smb://…). Transfer uses bounded parallel remote puts (many small/medium, few large) so it does not fill CloudStorage like rclone-into-Finder did. SMB mounts under /Volumes are remounted on demand and auto-cap workers so the share is not thrashed; fail-closed if the share drops. Never deletes files on the source.")
                 .appFont(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

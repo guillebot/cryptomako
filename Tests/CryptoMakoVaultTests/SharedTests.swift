@@ -142,6 +142,36 @@ final class UploadBandwidthLimiterTests: XCTestCase {
         prefs.limitSyncUploadBandwidth = false
         prefs.syncUploadCapMbps = 100
         XCTAssertNil(UploadBandwidthLimiter.fromPreferences(prefs))
+        let live = UploadBandwidthLimiter.live(from: prefs)
+        XCTAssertEqual(live.bytesPerSecond, 0)
+    }
+
+    func testHotReloadDisablesMidAcquire() async {
+        let limiter = UploadBandwidthLimiter(bytesPerSecond: 8_000) // 8 KB/s
+        await limiter.acquire(8_000) // burn the 1s burst
+        let task = Task {
+            await limiter.acquire(80_000) // would take ~10s at 8 KB/s
+        }
+        try? await Task.sleep(nanoseconds: 200_000_000)
+        limiter.setBytesPerSecond(0)
+        let start = CFAbsoluteTimeGetCurrent()
+        await task.value
+        XCTAssertLessThan(CFAbsoluteTimeGetCurrent() - start, 1.0)
+        XCTAssertEqual(limiter.bytesPerSecond, 0)
+    }
+
+    func testHotReloadApplyPreferencesRaisesCap() {
+        var prefs = AppPreferences()
+        prefs.limitSyncUploadBandwidth = true
+        prefs.syncUploadCapMbps = 10
+        let limiter = UploadBandwidthLimiter.live(from: prefs)
+        XCTAssertEqual(limiter.bytesPerSecond, 10 * 1_000_000 / 8, accuracy: 1)
+        prefs.syncUploadCapMbps = 50
+        limiter.applyPreferences(prefs)
+        XCTAssertEqual(limiter.bytesPerSecond, 50 * 1_000_000 / 8, accuracy: 1)
+        prefs.limitSyncUploadBandwidth = false
+        limiter.applyPreferences(prefs)
+        XCTAssertEqual(limiter.bytesPerSecond, 0)
     }
 }
 

@@ -35,15 +35,58 @@ func UploadBandwidthLimiterFromPreferences(prefs AppPreferences) *UploadBandwidt
 	return NewUploadBandwidthLimiter(rate)
 }
 
+// LiveUploadBandwidthLimiter always returns a limiter (rate 0 = unlimited) so
+// Sync can hot-reload the cap without recreating the shared instance.
+func LiveUploadBandwidthLimiter(prefs AppPreferences) *UploadBandwidthLimiter {
+	return NewUploadBandwidthLimiter(prefs.SyncUploadBytesPerSecond())
+}
+
+// ApplyPreferences hot-reloads the Mbps cap (0 = unlimited). Safe mid-Acquire.
+func (l *UploadBandwidthLimiter) ApplyPreferences(prefs AppPreferences) {
+	if l == nil {
+		return
+	}
+	l.SetBytesPerSecond(prefs.SyncUploadBytesPerSecond())
+}
+
+// SetBytesPerSecond updates the sustained budget. 0 disables pacing.
+func (l *UploadBandwidthLimiter) SetBytesPerSecond(rateBytesPerSec float64) {
+	if l == nil {
+		return
+	}
+	if rateBytesPerSec < 0 {
+		rateBytesPerSec = 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.rateBytesPerSec > 0 {
+		l.refillLocked()
+	}
+	enabling := l.rateBytesPerSec <= 0 && rateBytesPerSec > 0
+	l.rateBytesPerSec = rateBytesPerSec
+	if rateBytesPerSec <= 0 {
+		l.tokens = 0
+	} else if enabling {
+		l.tokens = rateBytesPerSec
+	} else if l.tokens > rateBytesPerSec {
+		l.tokens = rateBytesPerSec
+	}
+	l.lastRefill = time.Now()
+}
+
 // Acquire blocks until byteCount tokens are available, then consumes them.
 func (l *UploadBandwidthLimiter) Acquire(byteCount int64) {
-	if l == nil || l.rateBytesPerSec <= 0 || byteCount <= 0 {
+	if l == nil || byteCount <= 0 {
 		return
 	}
 	need := float64(byteCount)
 	for {
 		var sleepSeconds float64
 		l.mu.Lock()
+		if l.rateBytesPerSec <= 0 {
+			l.mu.Unlock()
+			return
+		}
 		l.refillLocked()
 		if l.tokens >= need {
 			l.tokens -= need
@@ -58,8 +101,8 @@ func (l *UploadBandwidthLimiter) Acquire(byteCount int64) {
 		if sleepSeconds <= 0 {
 			return
 		}
-		if sleepSeconds > 2 {
-			sleepSeconds = 2
+		if sleepSeconds > 0.25 {
+			sleepSeconds = 0.25
 		}
 		time.Sleep(time.Duration(sleepSeconds * float64(time.Second)))
 	}

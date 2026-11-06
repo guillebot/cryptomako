@@ -52,7 +52,7 @@ struct SettingsView: View {
                             .textSelection(.enabled)
                     }
 
-                    Text("Proxy changes apply after Unlock / reconnect (URLSession pools are built at unlock). Bandwidth, workers, and excludes apply to the next Sync run.")
+                    Text("Proxy changes apply after Unlock / reconnect (URLSession pools are built at unlock). Bandwidth cap applies live to a running Sync; workers and excludes apply to the next Sync run.")
                         .appFont(.caption2)
                         .foregroundStyle(.tertiary)
                         .fixedSize(horizontal: false, vertical: true)
@@ -271,7 +271,7 @@ struct SettingsView: View {
                             .labelsHidden()
                     }
                 }
-                Text("Applies only to Backup Sync puts (token-bucket pacing). Finder File Provider transfers are unchanged. Takes effect on the next Sync run.")
+                Text("Applies only to Backup Sync puts (token-bucket pacing). Finder File Provider transfers are unchanged. Cap changes apply immediately to a running Sync (next post-put charge); worker counts still need the next Sync.")
                     .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -314,7 +314,7 @@ struct SettingsView: View {
                     prefs.syncLargePutConcurrency = 4
                 }
                 .appFont(.caption)
-                Text("Surfaces the BackupSyncEngine put pools. Higher small/medium counts fill a home uplink; keep large low to avoid multi-GB streams. Applies on the next Sync run.")
+                Text("Surfaces the BackupSyncEngine put pools. Higher small/medium counts fill a home uplink; keep large low to avoid multi-GB streams. SMB sources auto-cap at 16/6/2 so the share is not thrashed. Applies on the next Sync run.")
                     .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -483,7 +483,7 @@ struct SettingsView: View {
                 CredentialStore.delete(account: AppIdentifiers.proxyPasswordAccount, useAccessGroup: true)
                 CredentialStore.delete(account: AppIdentifiers.proxyPasswordAccount, useAccessGroup: false)
             }
-            statusMessage = "Saved. Reconnect/Unlock for proxy; next Sync for bandwidth & workers."
+            statusMessage = "Saved. Bandwidth applies live to a running Sync; workers need the next Sync; proxy needs Reconnect/Unlock."
         } catch {
             statusMessage = "Save failed: \(error.localizedDescription)"
         }

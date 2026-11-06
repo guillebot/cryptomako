@@ -141,6 +141,10 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         return prefs
     }
 
+    /// Posted after a successful `save()` so a running Backup Sync can hot-reload
+    /// bandwidth (workers / excludes still take effect on the next Sync).
+    public static let didSaveNotification = Notification.Name("net.gschimmel.cryptomako.appPreferencesDidSave")
+
     public func save() throws {
         var copy = self
         copy.clampSyncWorkers()
@@ -154,6 +158,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(copy).write(to: url, options: .atomic)
+        NotificationCenter.default.post(name: Self.didSaveNotification, object: nil)
     }
 
     /// Bytes/sec target for Sync pacing, or `nil` when unlimited.
@@ -204,20 +209,30 @@ public struct AppPreferences: Codable, Equatable, Sendable {
 /// the entire file size to be present before starting a put — `acquire` consumes in
 /// chunks as tokens refill. Prefer charging **after** (or during) the transfer so
 /// large files can proceed while the sustained average still respects Mbps.
+///
+/// Rate is mutable: Settings can change Mbps (or disable limiting) mid-Sync via
+/// `applyPreferences` / `setBytesPerSecond`. In-flight PUTs finish; the next
+/// `acquire` (post-put charge) uses the new budget. Rate `0` = unlimited.
 public final class UploadBandwidthLimiter: @unchecked Sendable {
     private let lock = NSLock()
-    private let rateBytesPerSec: Double
+    private var rateBytesPerSec: Double
     /// Burst / chunk cap (= 1s of rate). Tokens never accumulate beyond this.
-    private let maxTokens: Double
+    private var maxTokens: Double
     private var tokens: Double
     private var lastRefill: CFAbsoluteTime
 
     /// - Parameter bytesPerSecond: Sustained cleartext-byte budget (0 disables).
     public init(bytesPerSecond: Double) {
-        self.rateBytesPerSec = max(0, bytesPerSecond)
-        self.maxTokens = self.rateBytesPerSec // 1s burst
-        self.tokens = self.maxTokens
+        let rate = max(0, bytesPerSecond)
+        self.rateBytesPerSec = rate
+        self.maxTokens = rate // 1s burst
+        self.tokens = rate
         self.lastRefill = CFAbsoluteTimeGetCurrent()
+    }
+
+    /// Limiter that always exists so Sync can hot-reload on/off and Mbps.
+    public static func live(from prefs: AppPreferences = .load()) -> UploadBandwidthLimiter {
+        UploadBandwidthLimiter(bytesPerSecond: prefs.syncUploadBytesPerSecond ?? 0)
     }
 
     public static func fromPreferences(_ prefs: AppPreferences = .load()) -> UploadBandwidthLimiter? {
@@ -225,18 +240,55 @@ public final class UploadBandwidthLimiter: @unchecked Sendable {
         return UploadBandwidthLimiter(bytesPerSecond: rate)
     }
 
+    /// Current cleartext-byte budget (0 = unlimited). For tests / diagnostics.
+    public var bytesPerSecond: Double {
+        lock.withLock { rateBytesPerSec }
+    }
+
+    /// Hot-reload from disk prefs (limit toggle + Mbps). Safe while workers `acquire`.
+    public func applyPreferences(_ prefs: AppPreferences = .load()) {
+        setBytesPerSecond(prefs.syncUploadBytesPerSecond ?? 0)
+    }
+
+    /// Update the sustained budget. `0` disables pacing immediately (waiters exit).
+    public func setBytesPerSecond(_ bytesPerSecond: Double) {
+        lock.withLock {
+            let newRate = max(0, bytesPerSecond)
+            if rateBytesPerSec > 0 {
+                refillLocked()
+            }
+            let enabling = rateBytesPerSec <= 0 && newRate > 0
+            rateBytesPerSec = newRate
+            maxTokens = newRate
+            if newRate <= 0 {
+                tokens = 0
+            } else if enabling {
+                tokens = maxTokens
+            } else {
+                tokens = min(tokens, maxTokens)
+            }
+            lastRefill = CFAbsoluteTimeGetCurrent()
+        }
+    }
+
     /// Consume `byteCount` tokens as the bucket refills.
     ///
     /// - Never requires `byteCount` ≤ `maxTokens` (chunked takes).
     /// - Never zeroes the bucket on deficit (concurrent waiters keep sharing refill).
     /// - No-op when bandwidth limiting is off or `byteCount` ≤ 0.
+    /// - Re-reads rate each slice so a mid-Sync Settings change applies promptly.
     /// - Returns early on task cancellation (Cancel path).
     public func acquire(_ byteCount: Int64) async {
-        guard rateBytesPerSec > 0, byteCount > 0 else { return }
+        guard byteCount > 0 else { return }
         var remaining = Double(byteCount)
         while remaining > 0 {
             if Task.isCancelled { return }
             let sleepSeconds: Double = lock.withLock {
+                // Unlimited (or disabled mid-wait): drop remaining charge.
+                guard rateBytesPerSec > 0, maxTokens > 0 else {
+                    remaining = 0
+                    return 0
+                }
                 refillLocked()
                 // Take whatever is available now — partial progress is required so
                 // files larger than the 1s burst can ever finish acquiring.
@@ -252,7 +304,7 @@ public final class UploadBandwidthLimiter: @unchecked Sendable {
                 return want / rateBytesPerSec
             }
             if sleepSeconds <= 0 { continue }
-            // Short slices so Cancel stays responsive; wake and re-evaluate.
+            // Short slices so Cancel + live rate changes stay responsive.
             let slice = min(max(sleepSeconds, 0.001), 0.25)
             let ns = UInt64(slice * 1_000_000_000)
             try? await Task.sleep(nanoseconds: max(ns, 1_000_000))
@@ -262,7 +314,7 @@ public final class UploadBandwidthLimiter: @unchecked Sendable {
     private func refillLocked() {
         let now = CFAbsoluteTimeGetCurrent()
         let elapsed = now - lastRefill
-        guard elapsed > 0 else { return }
+        guard elapsed > 0, rateBytesPerSec > 0 else { return }
         tokens = min(maxTokens, tokens + elapsed * rateBytesPerSec)
         lastRefill = now
     }

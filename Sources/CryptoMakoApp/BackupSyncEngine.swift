@@ -249,7 +249,16 @@ final class BackupSyncEngine: ObservableObject {
             }
             do {
                 let excludes = BackupSyncExcludesStore.load()
-                let bandwidthLimiter = UploadBandwidthLimiter.fromPreferences(AppPreferences.load())
+                // Always live so Settings can toggle Mbps / unlimited mid-Sync.
+                let bandwidthLimiter = UploadBandwidthLimiter.live(from: AppPreferences.load())
+                let prefsObserver = NotificationCenter.default.addObserver(
+                    forName: AppPreferences.didSaveNotification,
+                    object: nil,
+                    queue: nil
+                ) { _ in
+                    bandwidthLimiter.applyPreferences()
+                }
+                defer { NotificationCenter.default.removeObserver(prefsObserver) }
                 try Task.checkCancellation()
                 // Best-effort reclaim of orphaned encrypt temps from prior killed runs.
                 // Age-gated so an in-flight upload (this or another instance) is never deleted.
@@ -508,7 +517,7 @@ final class BackupSyncEngine: ObservableObject {
         vaultFolderName: String,
         syncState: inout BackupSyncState,
         excludes: BackupSyncExcludes,
-        bandwidthLimiter: UploadBandwidthLimiter?,
+        bandwidthLimiter: UploadBandwidthLimiter,
         isSMB: Bool,
         expectedSMBURL: String?,
         transferMode: AppPreferences.BackupTransferMode
@@ -647,13 +656,21 @@ final class BackupSyncEngine: ObservableObject {
         // frozen scan plan. Nothing here starts until the scan has completed.
         let vaultFolder = vaultFolderName
         // Worker counts come from Settings (AppPreferences); clamp fail-closed.
+        // SMB: each put reads the cleartext from the share before encrypt+PUT.
+        // Default medium=32 turns ~25 MB RAWs into dozens of concurrent SMB
+        // reads, thrashing the mount while MinIO idles (~low MB/s on a fat uplink).
         let syncPrefs = AppPreferences.load()
-        let smallWorkers = syncPrefs.clampedSmallPutConcurrency
-        let mediumWorkers = syncPrefs.clampedMediumPutConcurrency
-        let largeWorkers = syncPrefs.clampedLargePutConcurrency
+        var smallWorkers = syncPrefs.clampedSmallPutConcurrency
+        var mediumWorkers = syncPrefs.clampedMediumPutConcurrency
+        var largeWorkers = syncPrefs.clampedLargePutConcurrency
+        if isSMB {
+            smallWorkers = min(smallWorkers, 16)
+            mediumWorkers = min(mediumWorkers, 6)
+            largeWorkers = min(largeWorkers, 2)
+        }
         let workerCount = smallWorkers + mediumWorkers + largeWorkers
         Self.syncLog.info(
-            "put workers small=\(smallWorkers) medium=\(mediumWorkers) large=\(largeWorkers)"
+            "put workers small=\(smallWorkers) medium=\(mediumWorkers) large=\(largeWorkers) smb=\(isSMB)"
         )
 
         // Fingerprint index: set/get under a short lock; JSON encode + atomic write
@@ -728,9 +745,8 @@ final class BackupSyncEngine: ObservableObject {
                     diagnosticRunID: transferRunID
                 )
                 // Pace Sync puts only (Finder File Provider uses a different path).
-                if let limiter = bandwidthLimiter {
-                    await limiter.acquire(job.size)
-                }
+                // No-op when unlimited; rate can change mid-Sync via Settings save.
+                await bandwidthLimiter.acquire(job.size)
                 let key = BackupSyncState.key(
                     vaultFolder: vaultFolder,
                     relativePath: job.relativePath
