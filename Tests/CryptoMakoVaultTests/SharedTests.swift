@@ -173,6 +173,36 @@ final class UploadBandwidthLimiterTests: XCTestCase {
         limiter.applyPreferences(prefs)
         XCTAssertEqual(limiter.bytesPerSecond, 0)
     }
+
+    func testHotReloadEnablesFromUnlimited() async {
+        // free → 10 Mbps: enabling path must arm the bucket and pace the next acquire.
+        let limiter = UploadBandwidthLimiter.live(from: AppPreferences())
+        XCTAssertEqual(limiter.bytesPerSecond, 0)
+        await limiter.acquire(50_000_000) // no-op while unlimited
+
+        var prefs = AppPreferences()
+        prefs.limitSyncUploadBandwidth = true
+        prefs.syncUploadCapMbps = 10
+        limiter.applyPreferences(prefs)
+        let expected = 10.0 * 1_000_000 / 8
+        XCTAssertEqual(limiter.bytesPerSecond, expected, accuracy: 1)
+
+        // Charge ~2s of budget after the 1s burst → should take ~1s+, not return instantly.
+        let start = CFAbsoluteTimeGetCurrent()
+        await limiter.acquire(Int64(expected * 2))
+        let elapsed = CFAbsoluteTimeGetCurrent() - start
+        XCTAssertGreaterThanOrEqual(elapsed, 0.7)
+        XCTAssertLessThan(elapsed, 4.0)
+    }
+
+    func testSetBytesPerSecondEnablingPath() {
+        let limiter = UploadBandwidthLimiter(bytesPerSecond: 0)
+        let rate = 10.0 * 1_000_000 / 8
+        limiter.setBytesPerSecond(rate)
+        XCTAssertEqual(limiter.bytesPerSecond, rate, accuracy: 1)
+        limiter.setBytesPerSecond(0)
+        XCTAssertEqual(limiter.bytesPerSecond, 0)
+    }
 }
 
 final class TransferRateFormatTests: XCTestCase {

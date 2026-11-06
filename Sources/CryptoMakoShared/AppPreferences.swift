@@ -167,6 +167,10 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     /// bandwidth (workers / excludes still take effect on the next Sync).
     public static let didSaveNotification = Notification.Name("net.gschimmel.cryptomako.appPreferencesDidSave")
 
+    /// `userInfo` key for `didSaveNotification`: cleartext upload budget in bytes/sec
+    /// (`0` = unlimited). Observers should prefer this over re-reading disk.
+    public static let uploadBytesPerSecondUserInfoKey = "uploadBytesPerSecond"
+
     public func save() throws {
         var copy = self
         copy.clampSyncWorkers()
@@ -180,7 +184,14 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(copy).write(to: url, options: .atomic)
-        NotificationCenter.default.post(name: Self.didSaveNotification, object: nil)
+        // Pass the rate in userInfo so Sync does not depend on a post-write disk
+        // reload (and so a stale in-memory copy elsewhere cannot undo the cap).
+        let rate = copy.syncUploadBytesPerSecond ?? 0
+        NotificationCenter.default.post(
+            name: Self.didSaveNotification,
+            object: nil,
+            userInfo: [Self.uploadBytesPerSecondUserInfoKey: rate]
+        )
     }
 
     /// Bytes/sec target for Sync pacing, or `nil` when unlimited.

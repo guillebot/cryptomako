@@ -136,8 +136,11 @@ final class BackupSyncEngine: ObservableObject {
     /// The Backup button is removed and a Cancel button appears in that same click;
     /// AppKit delivers that as cancel, which would stop the run immediately.
     private var suppressCancel = false
-    /// Wall clock when the put phase began — job BW = uploaded bytes ÷ this elapsed.
+    /// Wall clock for the current job-BW sample window (upload phase start, or
+    /// last live bandwidth-cap change).
     private var uploadPhaseStartedAt: Date?
+    /// `bytesUploaded` at the start of the current job-BW sample window.
+    private var uploadRateBaselineBytes: Int64 = 0
 
     var isRunning: Bool {
         if case .running = state { return true }
@@ -234,6 +237,7 @@ final class BackupSyncEngine: ObservableObject {
         putWorkersLabel = ""
         progressEpoch = 0
         uploadPhaseStartedAt = nil
+        uploadRateBaselineBytes = 0
         currentPath = ""
         currentSourceName = sources.first?.vaultFolderName ?? ""
         let transferRunID = TransferMetrics.beginRun()
@@ -258,8 +262,22 @@ final class BackupSyncEngine: ObservableObject {
                     forName: AppPreferences.didSaveNotification,
                     object: nil,
                     queue: nil
-                ) { _ in
-                    bandwidthLimiter.applyPreferences()
+                ) { [weak self] note in
+                    let before = bandwidthLimiter.bytesPerSecond
+                    if let rate = note.userInfo?[AppPreferences.uploadBytesPerSecondUserInfoKey] as? Double {
+                        bandwidthLimiter.setBytesPerSecond(rate)
+                    } else {
+                        bandwidthLimiter.applyPreferences()
+                    }
+                    let after = bandwidthLimiter.bytesPerSecond
+                    Self.syncLog.info("bandwidth cap live-reload before=\(before) after=\(after) B/s")
+                    // Restart the job-BW window so the UI reflects the new regime
+                    // instead of the cumulative average from the unlimited stretch.
+                    guard abs(before - after) > 0.5, let self else { return }
+                    TransferMetrics.resetBusyBandwidthWindow()
+                    Task { @MainActor in
+                        self.resetUploadBandwidthWindow()
+                    }
                 }
                 defer { NotificationCenter.default.removeObserver(prefsObserver) }
                 try Task.checkCancellation()
@@ -824,6 +842,7 @@ final class BackupSyncEngine: ObservableObject {
             )
             await MainActor.run {
                 self.uploadPhaseStartedAt = Date()
+                self.uploadRateBaselineBytes = self.bytesUploaded
                 self.uploadBytesPerSecond = 0
             }
             try await withThrowingTaskGroup(of: Void.self) { group in
@@ -1125,18 +1144,30 @@ final class BackupSyncEngine: ObservableObject {
         return deleted
     }
 
-    /// Job BW = cleartext bytes uploaded ÷ wall time since upload phase start.
+    /// Job BW = cleartext bytes uploaded (since window start) ÷ wall time.
     /// Must not use short inter-batch windows — parallel put completions were
     /// reporting tens of MB/s on a Zscaler-capped ~100–150 Mbps path.
+    /// Window restarts when Settings changes the live bandwidth cap mid-Sync.
     private func refreshJobBandwidth(now: Date = Date()) {
         guard let started = uploadPhaseStartedAt else { return }
         let elapsed = now.timeIntervalSince(started)
+        let completed = max(Int64(0), bytesUploaded - uploadRateBaselineBytes)
         if let rate = TransferSnapshot.busyAverageBytesPerSecond(
-            completedBytes: bytesUploaded,
+            completedBytes: completed,
             elapsed: elapsed
         ) {
             uploadBytesPerSecond = rate
         }
+    }
+
+    /// Restart the job-BW sample after a live Mbps / unlimited change so the
+    /// cumulative average from the previous regime does not hide the new cap.
+    @MainActor
+    private func resetUploadBandwidthWindow(now: Date = Date()) {
+        uploadPhaseStartedAt = now
+        uploadRateBaselineBytes = bytesUploaded
+        uploadBytesPerSecond = 0
+        publishProgress()
     }
 
     enum SyncError: LocalizedError {

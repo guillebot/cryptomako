@@ -814,10 +814,14 @@ struct BackupView: View {
             prefs = AppPreferences.load()
             prefsReady = true
         }
-        .onChange(of: prefs.backupTransferMode) { _, _ in
+        .onChange(of: prefs.backupTransferMode) { _, mode in
             guard prefsReady else { return }
             do {
-                try prefs.save()
+                // Merge into disk prefs so a stale Backup-tab copy cannot wipe
+                // bandwidth / worker knobs saved from Settings mid-Sync.
+                var latest = AppPreferences.load()
+                latest.backupTransferMode = mode
+                try latest.save()
             } catch {
                 model.detail = "Could not save transfer mode: \(error.localizedDescription)"
             }

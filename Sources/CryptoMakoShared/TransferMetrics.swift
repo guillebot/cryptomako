@@ -303,6 +303,23 @@ public enum TransferMetrics {
         DistributedNotificationCenter.default().post(name: didChangeNotification, object: nil)
     }
 
+    /// Restart the busy-period rate window (menu-bar / strip Mbps) without
+    /// clearing put counters. Used when Backup Sync's live bandwidth cap changes
+    /// so the displayed rate is not stuck on the previous regime's average.
+    public static func resetBusyBandwidthWindow() {
+        lock.lock()
+        rateBusyStartedAt = Date()
+        rateBusyBytes = 0
+        if var snap = memory {
+            snap.uploadBytesPerSecond = 0
+            snap.updatedAt = Date()
+            memory = snap
+            // Keep persist lightweight — next endPutSuccess will refresh.
+        }
+        lock.unlock()
+        DistributedNotificationCenter.default().post(name: didChangeNotification, object: nil)
+    }
+
     @discardableResult
     public static func beginRun() -> UUID {
         let id = UUID()
