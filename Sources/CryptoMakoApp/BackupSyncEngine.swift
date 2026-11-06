@@ -90,6 +90,9 @@ final class BackupSyncEngine: ObservableObject {
     private(set) var filesDeleted: Int = 0
     /// Job upload rate (cleartext bytes committed in the put phase only; skips excluded).
     private(set) var uploadBytesPerSecond: Double = 0
+    /// Non-empty when the network-source cap lowered this source's put workers,
+    /// e.g. "Put workers 16 / 6 / 2 (network source cap)".
+    @Published private(set) var putWorkersLabel: String = ""
 
     /// Primary status line for the Backup UI.
     var phaseLabel: String { phase.rawValue }
@@ -228,6 +231,7 @@ final class BackupSyncEngine: ObservableObject {
         filesDeleted = 0
         walkFinished = false
         uploadBytesPerSecond = 0
+        putWorkersLabel = ""
         progressEpoch = 0
         putRateWindowStartedAt = nil
         putRateWindowBytes = 0
@@ -659,19 +663,22 @@ final class BackupSyncEngine: ObservableObject {
         // SMB: each put reads the cleartext from the share before encrypt+PUT.
         // Default medium=32 turns ~25 MB RAWs into dozens of concurrent SMB
         // reads, thrashing the mount while MinIO idles (~low MB/s on a fat uplink).
+        // Also applies to a plain local folder that lives on a network mount
+        // (e.g. /Volumes/Share added as a folder): statfs smbfs/nfs/afpfs/webdav.
         let syncPrefs = AppPreferences.load()
-        var smallWorkers = syncPrefs.clampedSmallPutConcurrency
-        var mediumWorkers = syncPrefs.clampedMediumPutConcurrency
-        var largeWorkers = syncPrefs.clampedLargePutConcurrency
-        if isSMB {
-            smallWorkers = min(smallWorkers, 16)
-            mediumWorkers = min(mediumWorkers, 6)
-            largeWorkers = min(largeWorkers, 2)
-        }
-        let workerCount = smallWorkers + mediumWorkers + largeWorkers
+        let isNetworkSource = isSMB || NetworkFilesystem.isOnNetworkFilesystem(path: localRoot.path)
+        let workers = syncPrefs.effectivePutWorkers(isNetworkSource: isNetworkSource)
+        let smallWorkers = workers.small
+        let mediumWorkers = workers.medium
+        let largeWorkers = workers.large
+        let workerCount = workers.total
         Self.syncLog.info(
-            "put workers small=\(smallWorkers) medium=\(mediumWorkers) large=\(largeWorkers) smb=\(isSMB)"
+            "put workers small=\(smallWorkers) medium=\(mediumWorkers) large=\(largeWorkers) smb=\(isSMB) network=\(isNetworkSource) capped=\(workers.isCapped)"
         )
+        let workersLabel = workers.isCapped
+            ? "Put workers \(workers.summary) (network source cap)"
+            : ""
+        await MainActor.run { self.putWorkersLabel = workersLabel }
 
         // Fingerprint index: set/get under a short lock; JSON encode + atomic write
         // run off-lock on a background queue (coalesced). Forced saves are synchronous.

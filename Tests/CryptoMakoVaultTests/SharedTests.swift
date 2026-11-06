@@ -298,3 +298,66 @@ final class AppPreferencesTextSizeTests: XCTestCase {
         XCTAssertEqual(AppPreferences.TextSize.extraLarge.pointAdjustment, 6)
     }
 }
+
+final class SyncPutWorkerCountsTests: XCTestCase {
+    func testLocalSourceUsesSettingsUnchanged() {
+        let w = SyncPutWorkerCounts.effective(small: 96, medium: 32, large: 4, isNetworkSource: false, capNetworkSources: true)
+        XCTAssertEqual(w, SyncPutWorkerCounts(small: 96, medium: 32, large: 4, isCapped: false))
+        XCTAssertEqual(w.total, 132)
+    }
+
+    func testNetworkSourceCapsAt16_6_2() {
+        let w = SyncPutWorkerCounts.effective(small: 96, medium: 32, large: 4, isNetworkSource: true, capNetworkSources: true)
+        XCTAssertEqual(w, SyncPutWorkerCounts(small: 16, medium: 6, large: 2, isCapped: true))
+        XCTAssertEqual(w.summary, "16 / 6 / 2")
+    }
+
+    func testNetworkCapNeverRaisesLowerSettings() {
+        let w = SyncPutWorkerCounts.effective(small: 8, medium: 4, large: 1, isNetworkSource: true, capNetworkSources: true)
+        XCTAssertEqual(w, SyncPutWorkerCounts(small: 8, medium: 4, large: 1, isCapped: false))
+        let partial = SyncPutWorkerCounts.effective(small: 8, medium: 4, large: 4, isNetworkSource: true, capNetworkSources: true)
+        XCTAssertEqual(partial, SyncPutWorkerCounts(small: 8, medium: 4, large: 2, isCapped: true))
+    }
+
+    func testToggleOffDisablesNetworkCap() {
+        let w = SyncPutWorkerCounts.effective(small: 96, medium: 32, large: 4, isNetworkSource: true, capNetworkSources: false)
+        XCTAssertEqual(w, SyncPutWorkerCounts(small: 96, medium: 32, large: 4, isCapped: false))
+    }
+
+    func testPreferencesEffectiveWorkersClampsThenCaps() {
+        var prefs = AppPreferences()
+        prefs.syncSmallPutConcurrency = 999 // clamps to 256
+        prefs.syncMediumPutConcurrency = 0 // clamps to 1
+        prefs.syncLargePutConcurrency = 4
+        XCTAssertEqual(prefs.effectivePutWorkers(isNetworkSource: false), SyncPutWorkerCounts(small: 256, medium: 1, large: 4))
+        XCTAssertEqual(prefs.effectivePutWorkers(isNetworkSource: true), SyncPutWorkerCounts(small: 16, medium: 1, large: 2, isCapped: true))
+        prefs.capSMBPutWorkers = false
+        XCTAssertEqual(prefs.effectivePutWorkers(isNetworkSource: true), SyncPutWorkerCounts(small: 256, medium: 1, large: 4))
+    }
+
+    func testCapSMBPutWorkersDefaultsTrueForOldFiles() throws {
+        let old = #"{"proxyMode":"system","syncLargePutConcurrency":4}"#.data(using: .utf8)!
+        let prefs = try JSONDecoder().decode(AppPreferences.self, from: old)
+        XCTAssertTrue(prefs.capSMBPutWorkers)
+        var off = prefs
+        off.capSMBPutWorkers = false
+        let round = try JSONDecoder().decode(AppPreferences.self, from: JSONEncoder().encode(off))
+        XCTAssertFalse(round.capSMBPutWorkers)
+    }
+
+    func testNetworkFilesystemTypeNames() {
+        for name in ["smbfs", "nfs", "afpfs", "webdav", "SMBFS"] {
+            XCTAssertTrue(NetworkFilesystem.isNetworkTypeName(name), name)
+        }
+        for name in ["apfs", "hfs", "msdos", "exfat", "devfs", ""] {
+            XCTAssertFalse(NetworkFilesystem.isNetworkTypeName(name), name)
+        }
+    }
+
+    func testLocalTempDirIsNotNetwork() {
+        let tmp = FileManager.default.temporaryDirectory.path
+        XCTAssertNotNil(NetworkFilesystem.typeName(atPath: tmp))
+        XCTAssertFalse(NetworkFilesystem.isOnNetworkFilesystem(path: tmp))
+        XCTAssertFalse(NetworkFilesystem.isOnNetworkFilesystem(path: "/definitely/not/here/\(UUID().uuidString)"))
+    }
+}

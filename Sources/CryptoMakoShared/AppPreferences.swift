@@ -60,6 +60,12 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     /// Prefs key `textSize`. Default `.standard`.
     public var textSize: TextSize
 
+    /// Prefs key `capSMBPutWorkers`. When true (default), Backup Sync caps put
+    /// workers for network sources (explicit `smb://` sources and folders on an
+    /// smbfs / nfs / afpfs / webdav mount) at `SyncPutWorkerCounts.networkSourceCap`
+    /// so the share is not thrashed. Older preference files decode as `true`.
+    public var capSMBPutWorkers: Bool
+
     public init(
         proxyMode: ProxyMode = .system,
         proxyHost: String = "",
@@ -71,7 +77,8 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         syncSmallPutConcurrency: Int = 96,
         syncMediumPutConcurrency: Int = 32,
         syncLargePutConcurrency: Int = 4,
-        textSize: TextSize = .standard
+        textSize: TextSize = .standard,
+        capSMBPutWorkers: Bool = true
     ) {
         self.proxyMode = proxyMode
         self.proxyHost = proxyHost
@@ -84,6 +91,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         self.syncMediumPutConcurrency = syncMediumPutConcurrency
         self.syncLargePutConcurrency = syncLargePutConcurrency
         self.textSize = textSize
+        self.capSMBPutWorkers = capSMBPutWorkers
     }
 
     public static let `default` = AppPreferences()
@@ -94,6 +102,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         case limitSyncUploadBandwidth, syncUploadCapMbps
         case syncSmallPutConcurrency, syncMediumPutConcurrency, syncLargePutConcurrency
         case textSize
+        case capSMBPutWorkers
     }
 
     public init(from decoder: Decoder) throws {
@@ -109,6 +118,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         syncMediumPutConcurrency = try c.decodeIfPresent(Int.self, forKey: .syncMediumPutConcurrency) ?? 32
         syncLargePutConcurrency = try c.decodeIfPresent(Int.self, forKey: .syncLargePutConcurrency) ?? 4
         textSize = try c.decodeIfPresent(TextSize.self, forKey: .textSize) ?? .standard
+        capSMBPutWorkers = try c.decodeIfPresent(Bool.self, forKey: .capSMBPutWorkers) ?? true
     }
 
     /// Clamp worker knobs to safe ranges (fail-closed: never zero / never unbounded).
@@ -122,6 +132,18 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     public var clampedSmallPutConcurrency: Int { min(max(syncSmallPutConcurrency, 1), 256) }
     public var clampedMediumPutConcurrency: Int { min(max(syncMediumPutConcurrency, 1), 128) }
     public var clampedLargePutConcurrency: Int { min(max(syncLargePutConcurrency, 1), 16) }
+
+    /// Effective Backup Sync put workers for a source (Settings clamp, then the
+    /// network-source cap when `capSMBPutWorkers` is on).
+    public func effectivePutWorkers(isNetworkSource: Bool) -> SyncPutWorkerCounts {
+        SyncPutWorkerCounts.effective(
+            small: clampedSmallPutConcurrency,
+            medium: clampedMediumPutConcurrency,
+            large: clampedLargePutConcurrency,
+            isNetworkSource: isNetworkSource,
+            capNetworkSources: capSMBPutWorkers
+        )
+    }
 
     // MARK: - Locations
 
@@ -325,5 +347,85 @@ private extension NSLock {
         lock()
         defer { unlock() }
         return body()
+    }
+}
+
+
+// MARK: - Put worker counts
+
+/// Small / medium / large put worker counts actually used by Backup Sync.
+public struct SyncPutWorkerCounts: Equatable, Sendable {
+    public var small: Int
+    public var medium: Int
+    public var large: Int
+    /// True when the network-source cap lowered at least one tier.
+    public var isCapped: Bool
+
+    public init(small: Int, medium: Int, large: Int, isCapped: Bool = false) {
+        self.small = small
+        self.medium = medium
+        self.large = large
+        self.isCapped = isCapped
+    }
+
+    /// Network-source ceiling. Each put reads cleartext from the share before
+    /// encrypt+PUT; dozens of parallel ~25 MB reads thrash one SMB mount.
+    public static let networkSourceCap = SyncPutWorkerCounts(small: 16, medium: 6, large: 2)
+
+    public var total: Int { small + medium + large }
+
+    /// "16 / 6 / 2"
+    public var summary: String { "\(small) / \(medium) / \(large)" }
+
+    /// Pure computation (unit-tested). Inputs are already-clamped Settings values.
+    public static func effective(
+        small: Int,
+        medium: Int,
+        large: Int,
+        isNetworkSource: Bool,
+        capNetworkSources: Bool
+    ) -> SyncPutWorkerCounts {
+        guard isNetworkSource, capNetworkSources else {
+            return SyncPutWorkerCounts(small: small, medium: medium, large: large)
+        }
+        let cap = networkSourceCap
+        let s = min(small, cap.small)
+        let m = min(medium, cap.medium)
+        let l = min(large, cap.large)
+        return SyncPutWorkerCounts(
+            small: s, medium: m, large: l,
+            isCapped: s < small || m < medium || l < large
+        )
+    }
+}
+
+// MARK: - Network filesystem detection
+
+/// Detects folders that live on a network mount (e.g. a `/Volumes/Share` SMB
+/// mount added as a plain local folder rather than an `smb://` source).
+public enum NetworkFilesystem {
+    /// `statfs.f_fstypename` values treated as network filesystems.
+    public static let networkTypeNames: Set<String> = ["smbfs", "nfs", "afpfs", "webdav", "cifs", "ftp"]
+
+    /// Pure: is this `f_fstypename` a network filesystem? (case-insensitive)
+    public static func isNetworkTypeName(_ name: String) -> Bool {
+        networkTypeNames.contains(name.lowercased())
+    }
+
+    /// `statfs` type name for `path`, or nil if it cannot be read.
+    public static func typeName(atPath path: String) -> String? {
+        var st = statfs()
+        guard statfs(path, &st) == 0 else { return nil }
+        return withUnsafePointer(to: &st.f_fstypename) { ptr in
+            ptr.withMemoryRebound(to: CChar.self, capacity: Int(MFSTYPENAMELEN)) {
+                String(cString: $0)
+            }
+        }
+    }
+
+    /// True when `path` is on smbfs / nfs / afpfs / webdav (statfs). False if unknown.
+    public static func isOnNetworkFilesystem(path: String) -> Bool {
+        guard let name = typeName(atPath: path) else { return false }
+        return isNetworkTypeName(name)
     }
 }

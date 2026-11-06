@@ -946,6 +946,11 @@ struct BackupView: View {
                             .appFont(.caption)
                             .foregroundStyle(.secondary)
                     }
+                    if !engine.putWorkersLabel.isEmpty {
+                        Text(engine.putWorkersLabel)
+                            .appFont(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                     if !engine.currentSourceName.isEmpty {
                         Text("Folder: \(engine.currentSourceName)")
                             .appFont(.caption)
