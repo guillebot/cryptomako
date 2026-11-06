@@ -6,14 +6,14 @@
 #      release/CryptoMako_DeveloperID.certSigningRequest). Import the .cer and
 #      the Developer ID private key into the login keychain. Keep the private
 #      key out of this repository (for example ~/Library/Application Support/CryptoMako/signing).
-#   2. App Store Connect API key for notarization (preferred), e.g.:
+#   2. App Store Connect API key for notarization (preferred). Either:
 #        export APP_STORE_CONNECT_API_KEY_ID=...
 #        export APP_STORE_CONNECT_ISSUER_ID=...
 #        export APP_STORE_CONNECT_API_KEY_PATH=~/.appstoreconnect/private_keys/AuthKey_….p8
-#      Or a notarytool keychain profile named CryptoMakoNotary:
-#        xcrun notarytool store-credentials CryptoMakoNotary \
-#          --apple-id "YOUR_APPLE_ID" --team-id "H4K6YW7MQM" \
-#          --password "app-specific-password"
+#      or put the same vars in release/notary.env (gitignored), or leave PATH/ID
+#      unset and keep AuthKey_*.p8 under ~/.appstoreconnect/private_keys/ with
+#      APP_STORE_CONNECT_ISSUER_ID (or release/notary.env) set.
+#      Keychain profile CryptoMakoNotary is a last resort (often stale).
 #   3. macFUSE.framework present at /Library/Frameworks (linked, not embedded).
 #   4. Xcode-managed Mac Team Direct profiles for
 #      net.gschimmel.cryptomako and net.gschimmel.cryptomako.FileProvider
@@ -37,6 +37,28 @@ DEVELOPER_ID_NAME="${DEVELOPER_ID_NAME:-}"
 NOTARY_PROFILE="${NOTARY_PROFILE:-CryptoMakoNotary}"
 SKIP_NOTARIZE=0
 CONFIGURATION="Release"
+
+# Optional local overrides (gitignored). Does not print values.
+if [[ -f "$ROOT/release/notary.env" ]]; then
+  # shellcheck disable=SC1091
+  set -a
+  # shellcheck source=/dev/null
+  source "$ROOT/release/notary.env"
+  set +a
+fi
+
+# Auto-pick the only AuthKey_*.p8 if PATH/ID unset.
+if [[ -z "${APP_STORE_CONNECT_API_KEY_PATH:-}" || -z "${APP_STORE_CONNECT_API_KEY_ID:-}" ]]; then
+  shopt -s nullglob
+  _asc_keys=( "$HOME/.appstoreconnect/private_keys/AuthKey_"*.p8 )
+  shopt -u nullglob
+  if [[ ${#_asc_keys[@]} -eq 1 ]]; then
+    APP_STORE_CONNECT_API_KEY_PATH="${APP_STORE_CONNECT_API_KEY_PATH:-${_asc_keys[0]}}"
+    _base="$(basename "${_asc_keys[0]}" .p8)"
+    APP_STORE_CONNECT_API_KEY_ID="${APP_STORE_CONNECT_API_KEY_ID:-${_base#AuthKey_}}"
+  fi
+  unset _asc_keys _base
+fi
 
 for arg in "$@"; do
   case "$arg" in

@@ -136,8 +136,8 @@ final class BackupSyncEngine: ObservableObject {
     /// The Backup button is removed and a Cancel button appears in that same click;
     /// AppKit delivers that as cancel, which would stop the run immediately.
     private var suppressCancel = false
-    private var putRateWindowStartedAt: Date?
-    private var putRateWindowBytes: Int64 = 0
+    /// Wall clock when the put phase began — job BW = uploaded bytes ÷ this elapsed.
+    private var uploadPhaseStartedAt: Date?
 
     var isRunning: Bool {
         if case .running = state { return true }
@@ -233,8 +233,7 @@ final class BackupSyncEngine: ObservableObject {
         uploadBytesPerSecond = 0
         putWorkersLabel = ""
         progressEpoch = 0
-        putRateWindowStartedAt = nil
-        putRateWindowBytes = 0
+        uploadPhaseStartedAt = nil
         currentPath = ""
         currentSourceName = sources.first?.vaultFolderName ?? ""
         let transferRunID = TransferMetrics.beginRun()
@@ -723,7 +722,7 @@ final class BackupSyncEngine: ObservableObject {
                 self.filesDone = self.filesSkipped + self.filesUploaded
                 self.bytesDone += batch.bytes
                 if let p = batch.path { self.currentPath = p }
-                self.notePutCommitted(bytes: batch.bytes)
+                self.refreshJobBandwidth()
                 self.publishProgress()
             }
         }
@@ -823,6 +822,10 @@ final class BackupSyncEngine: ObservableObject {
             Self.syncLog.info(
                 "upload phase start toUploadFiles=\(plan.toUpload.files) toUploadBytes=\(plan.toUpload.bytes) small=\(plan.small.count)/\(smallWorkers) medium=\(plan.medium.count)/\(mediumWorkers) large=\(plan.large.count)/\(largeWorkers) workers=\(workerCount)"
             )
+            await MainActor.run {
+                self.uploadPhaseStartedAt = Date()
+                self.uploadBytesPerSecond = 0
+            }
             try await withThrowingTaskGroup(of: Void.self) { group in
                 group.addTask {
                     try await drainTier(jobs: plan.small, limit: smallWorkers, label: "small")
@@ -1122,24 +1125,17 @@ final class BackupSyncEngine: ObservableObject {
         return deleted
     }
 
-    /// Update job BW from cleartext bytes just committed via remote put (not skips).
-    private func notePutCommitted(bytes: Int64) {
-        let now = Date()
-        if putRateWindowStartedAt == nil {
-            putRateWindowStartedAt = now
-            putRateWindowBytes = 0
-        }
-        putRateWindowBytes += max(0, bytes)
-        if let started = putRateWindowStartedAt {
-            let dt = now.timeIntervalSince(started)
-            if dt >= 0.35, putRateWindowBytes > 0 {
-                let rate = Double(putRateWindowBytes) / max(dt, 0.001)
-                uploadBytesPerSecond = uploadBytesPerSecond == 0
-                    ? rate
-                    : (uploadBytesPerSecond * 0.7 + rate * 0.3)
-                putRateWindowStartedAt = now
-                putRateWindowBytes = 0
-            }
+    /// Job BW = cleartext bytes uploaded ÷ wall time since upload phase start.
+    /// Must not use short inter-batch windows — parallel put completions were
+    /// reporting tens of MB/s on a Zscaler-capped ~100–150 Mbps path.
+    private func refreshJobBandwidth(now: Date = Date()) {
+        guard let started = uploadPhaseStartedAt else { return }
+        let elapsed = now.timeIntervalSince(started)
+        if let rate = TransferSnapshot.busyAverageBytesPerSecond(
+            completedBytes: bytesUploaded,
+            elapsed: elapsed
+        ) {
+            uploadBytesPerSecond = rate
         }
     }
 

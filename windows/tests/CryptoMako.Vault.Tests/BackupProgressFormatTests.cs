@@ -19,7 +19,9 @@ public class BackupProgressFormatTests
     [Fact]
     public void FormatRate_suffix()
     {
-        Assert.Equal("1 MB/s", MainViewModel.FormatRate(1024 * 1024));
+        // 1_000_000 bytes/s → 8.0 Mbps (decimal bits; matches Settings Sync cap units).
+        Assert.Equal("8.0 Mbps", MainViewModel.FormatRate(1_000_000));
+        Assert.Equal("1.0 kbps", MainViewModel.FormatRate(125));
         Assert.Equal("", MainViewModel.FormatRate(0));
     }
 

@@ -16,6 +16,8 @@ fixtures/vault/
 
 # Release packaging outputs (CSR/key live in release/; *.key already ignored)
 release/dist/
+# Local notarization issuer / key path overrides (never commit)
+release/notary.env
 
 # PKCS12 export for keychain import (never commit)
 *.p12

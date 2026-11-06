@@ -186,7 +186,12 @@ public struct TransferSnapshot: Codable, Equatable, Sendable {
         activeRunID = try c.decodeIfPresent(UUID.self, forKey: .activeRunID)
     }
 
-    /// Human size for Sync / transfer UI (decimal SI units: 1000-based KB/MB/GB/TB).
+    // Product units (locked):
+    // - File / object sizes → **bytes** (`B` / `KB` / `MB` / `GB` / `TB`, decimal 1000).
+    // - Bandwidth / rates → **bits**/s (`bps` / `kbps` / `Mbps` / `Gbps`, decimal 1000).
+    // Never show byte rates (`MB/s`) in the UI — that collides with Mbps.
+
+    /// File/object size for Sync / transfer UI. Decimal SI **bytes**.
     /// At or above 1000 GB (1e12 bytes) shows TB with 2 decimal places so large
     /// photo libraries read as e.g. `1.25 TB` instead of `1250.00 GB`.
     public static func formatBytes(_ n: Int64) -> String {
@@ -199,22 +204,34 @@ public struct TransferSnapshot: Codable, Equatable, Sendable {
         return String(format: "%.2f TB", abs / 1_000_000_000_000)
     }
 
-    /// Human rate for the strip / tooltip (avoids "44 B/s" looking like a frozen bug when idle).
+    /// Bandwidth for the strip / tooltip / Sync job line.
+    /// Input is cleartext **bytes**/s (internal); display is decimal **bits**/s
+    /// so it matches the Settings Sync cap (`Mbps`) and ISP-style units.
     public static func formatRate(_ bytesPerSecond: Double) -> String {
-        let r = max(0, bytesPerSecond)
-        if r < 1 { return "0 B/s" }
-        if r < 1000 { return String(format: "%.0f B/s", r) }
-        if r < 1_000_000 { return String(format: "%.1f KB/s", r / 1_000) }
-        if r < 1_000_000_000 { return String(format: "%.1f MB/s", r / 1_000_000) }
-        return String(format: "%.2f GB/s", r / 1_000_000_000)
+        let bits = max(0, bytesPerSecond) * 8
+        if bits < 1 { return "0 bps" }
+        if bits < 1_000 { return String(format: "%.0f bps", bits) }
+        if bits < 1_000_000 { return String(format: "%.1f kbps", bits / 1_000) }
+        if bits < 1_000_000_000 { return String(format: "%.1f Mbps", bits / 1_000_000) }
+        return String(format: "%.2f Gbps", bits / 1_000_000_000)
+    }
+
+    /// Aggregate throughput while puts are busy: completed bytes ÷ wall time since
+    /// the busy period began. Parallel completions must not be divided by a short
+    /// inter-completion gap (that invented ~90 MB/s on a 100–150 Mbps path).
+    public static func busyAverageBytesPerSecond(
+        completedBytes: Int64,
+        elapsed: TimeInterval,
+        minElapsed: TimeInterval = 0.5
+    ) -> Double? {
+        guard completedBytes > 0, elapsed >= minElapsed, elapsed.isFinite else { return nil }
+        return Double(completedBytes) / elapsed
     }
 
     /// Display rate for the strip / menu.
     ///
-    /// - While puts are in flight: keep the last EMA. Backup Sync large files are
-    ///   single-slot and often take >>2.5s between `endPutSuccess` commits; blanking
-    ///   the meter made Sync look "all off" even though MinIO was receiving data.
-    /// - When idle: hide stale EMA after ~2.5s (avoids a frozen trickle after drain).
+    /// - While puts are in flight: keep the last busy-period average.
+    /// - When idle: hide after ~2.5s (avoids a frozen trickle after drain).
     /// Stuck `inFlight` is soft-healed in `TransferMetrics.load` after ~90s.
     public func liveUploadBytesPerSecond(now: Date = Date()) -> Double {
         guard uploadBytesPerSecond > 0 else { return 0 }
@@ -233,9 +250,10 @@ public enum TransferMetrics {
     public static let didChangeNotification = Notification.Name("net.gschimmel.cryptomako.transferMetrics")
 
     private static let lock = NSLock()
-    /// Wall-clock window for bandwidth under parallel puts (start times are not 1:1).
-    private static var rateWindowStartedAt: Date?
-    private static var rateWindowBytes: Int64 = 0
+    /// Busy-period rate: wall clock from first in-flight put; cumulative completed bytes.
+    /// Do not reset on each sample — short inter-completion gaps inflate MB/s wildly.
+    private static var rateBusyStartedAt: Date?
+    private static var rateBusyBytes: Int64 = 0
     /// Hot-path cache: avoid read+atomic-write JSON on every begin/end put (was
     /// serializing Sync under a global lock and stomping the cooperative pool).
     private static var memory: TransferSnapshot?
@@ -269,8 +287,8 @@ public enum TransferMetrics {
             snap.uploadBytesPerSecond = 0
             memory = snap
             saveUnlocked(snap)
-            rateWindowStartedAt = nil
-            rateWindowBytes = 0
+            rateBusyStartedAt = nil
+            rateBusyBytes = 0
         }
         return snap
     }
@@ -278,8 +296,8 @@ public enum TransferMetrics {
     public static func reset() {
         lock.lock()
         memory = TransferSnapshot.empty
-        rateWindowStartedAt = nil
-        rateWindowBytes = 0
+        rateBusyStartedAt = nil
+        rateBusyBytes = 0
         saveUnlocked(TransferSnapshot.empty)
         lock.unlock()
         DistributedNotificationCenter.default().post(name: didChangeNotification, object: nil)
@@ -368,9 +386,10 @@ public enum TransferMetrics {
             return s
         }
         lock.lock()
-        if rateWindowStartedAt == nil {
-            rateWindowStartedAt = Date()
-            rateWindowBytes = 0
+        // New busy period when nothing was in flight / window was cleared.
+        if rateBusyStartedAt == nil {
+            rateBusyStartedAt = Date()
+            rateBusyBytes = 0
         }
         lock.unlock()
         return token
@@ -380,18 +399,19 @@ public enum TransferMetrics {
         var rate = 0.0
         lock.lock()
         let pending = pendingPuts.removeValue(forKey: token)
-        rateWindowBytes += max(0, bytes)
-        if let started = rateWindowStartedAt {
+        rateBusyBytes += max(0, bytes)
+        if let started = rateBusyStartedAt {
             let dt = Date().timeIntervalSince(started)
-            // Refresh EMA every ~0.75s of wall time so parallel puts share one window.
-            if dt >= 0.35, rateWindowBytes > 0 {
-                rate = Double(rateWindowBytes) / max(dt, 0.001)
-                rateWindowStartedAt = Date()
-                rateWindowBytes = 0
+            if let avg = TransferSnapshot.busyAverageBytesPerSecond(
+                completedBytes: rateBusyBytes,
+                elapsed: dt
+            ) {
+                rate = avg
             }
         }
         lock.unlock()
 
+        var wentIdle = false
         mutate { snap in
             var s = snap
             s.inFlight = max(0, s.inFlight - 1)
@@ -399,11 +419,12 @@ public enum TransferMetrics {
             s.bytesUploaded += max(0, bytes)
             s.lastRemoteCommitAt = Date()
             s.updatedAt = Date()
-            if s.inFlight == 0 { s.currentName = nil }
+            if s.inFlight == 0 {
+                s.currentName = nil
+                wentIdle = true
+            }
             if rate > 0 {
-                s.uploadBytesPerSecond = s.uploadBytesPerSecond == 0
-                    ? rate
-                    : (s.uploadBytesPerSecond * 0.7 + rate * 0.3)
+                s.uploadBytesPerSecond = rate
             }
             // Source IDs make Backup paths unambiguous. Finder writes currently
             // provide only a basename, so do not auto-resolve an unrelated item
@@ -421,6 +442,12 @@ public enum TransferMetrics {
             }
             return s
         }
+        if wentIdle {
+            lock.lock()
+            rateBusyStartedAt = nil
+            rateBusyBytes = 0
+            lock.unlock()
+        }
     }
 
     public static func endPutFailure(token: UUID, error: Error) {
@@ -428,6 +455,7 @@ public enum TransferMetrics {
         let pending = pendingPuts.removeValue(forKey: token)
         lock.unlock()
         let detail = classify(error)
+        var wentIdle = false
         mutate { snap in
             var s = snap
             s.inFlight = max(0, s.inFlight - 1)
@@ -454,8 +482,17 @@ public enum TransferMetrics {
                 s.failureHistory.removeFirst(s.failureHistory.count - maxFailureHistory)
             }
             s.updatedAt = Date()
-            if s.inFlight == 0 { s.currentName = nil }
+            if s.inFlight == 0 {
+                s.currentName = nil
+                wentIdle = true
+            }
             return s
+        }
+        if wentIdle {
+            lock.lock()
+            rateBusyStartedAt = nil
+            rateBusyBytes = 0
+            lock.unlock()
         }
     }
 

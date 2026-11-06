@@ -175,6 +175,32 @@ final class UploadBandwidthLimiterTests: XCTestCase {
     }
 }
 
+final class TransferRateFormatTests: XCTestCase {
+    func testFormatRateUsesDecimalBits() {
+        XCTAssertEqual(TransferSnapshot.formatRate(0), "0 bps")
+        // 125 bytes/s → 1000 bits/s → 1.0 kbps
+        XCTAssertEqual(TransferSnapshot.formatRate(125), "1.0 kbps")
+        // 1_000_000 bytes/s → 8 Mbps
+        XCTAssertEqual(TransferSnapshot.formatRate(1_000_000), "8.0 Mbps")
+        // 91.1e6 bytes/s → 728.8 Mbps (legacy MB/s display was ambiguous)
+        XCTAssertEqual(TransferSnapshot.formatRate(91_100_000), "728.8 Mbps")
+    }
+
+    func testBusyAverageDoesNotInflateOnShortGaps() {
+        // Old bug: 91 MB dumped into a 1s UI batch / 0.35s window → ~260 MB/s.
+        // Honest: same bytes over a 6s busy period ≈ 15 MB/s ≈ 120 Mbps.
+        let avg = TransferSnapshot.busyAverageBytesPerSecond(
+            completedBytes: 91_100_000,
+            elapsed: 6
+        )
+        XCTAssertEqual(avg!, 91_100_000 / 6, accuracy: 1)
+        XCTAssertNil(TransferSnapshot.busyAverageBytesPerSecond(
+            completedBytes: 91_100_000,
+            elapsed: 0.2
+        ))
+    }
+}
+
 final class TransferMetricsTests: XCTestCase {
     override func setUp() {
         super.setUp()

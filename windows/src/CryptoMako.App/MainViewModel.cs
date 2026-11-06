@@ -1051,10 +1051,19 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         return string.Format(CultureInfo.InvariantCulture, "{0:0.##} {1}", v, units[u]);
     }
 
+    /// <summary>
+    /// Bandwidth label. Product rule: sizes = bytes (<see cref="FormatBytes"/>);
+    /// rates = decimal bits/s (<c>bps</c>/<c>kbps</c>/<c>Mbps</c>/<c>Gbps</c>).
+    /// Input is cleartext bytes/s.
+    /// </summary>
     public static string FormatRate(double bytesPerSecond)
     {
         if (bytesPerSecond <= 0) return "";
-        return FormatBytes((long)bytesPerSecond) + "/s";
+        var bits = bytesPerSecond * 8;
+        if (bits < 1_000) return string.Format(CultureInfo.InvariantCulture, "{0:0} bps", bits);
+        if (bits < 1_000_000) return string.Format(CultureInfo.InvariantCulture, "{0:0.0} kbps", bits / 1_000);
+        if (bits < 1_000_000_000) return string.Format(CultureInfo.InvariantCulture, "{0:0.0} Mbps", bits / 1_000_000);
+        return string.Format(CultureInfo.InvariantCulture, "{0:0.00} Gbps", bits / 1_000_000_000);
     }
 
     public static string FormatEta(long bytesDone, long bytesTotal, double bytesPerSecond)
