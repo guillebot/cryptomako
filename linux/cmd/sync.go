@@ -48,8 +48,10 @@ Transfer mode (prefs key backupTransferMode, default backup; override with --mod
     Refuses dest "/". Remote deletes fail closed.
 
 Sync concurrency and optional upload pacing come from app-preferences.json
-(same keys as macOS AppPreferences). Proxy password is env-only
-CRYPTOMAKO_PROXY_PASSWORD.
+(same keys as macOS AppPreferences). The upload cap (limitSyncUploadBandwidth /
+syncUploadCapMbps) is live: saving a new value while sync runs applies to the
+remaining puts within ~1s. Worker counts and excludes apply to the next run.
+Proxy password is env-only CRYPTOMAKO_PROXY_PASSWORD.
 
 Per-file fingerprints (size + contentModification) live in
 backup-sync-state.json; unchanged files are skipped. Fingerprints update
@@ -114,10 +116,17 @@ not stamp; earlier sources in a multi-source run keep theirs if a later fails.`,
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
 
+		// Bandwidth cap is live: edits to app-preferences.json during the run
+		// apply to the remaining puts (macOS didSaveNotification parity).
+		limiter := config.LiveUploadBandwidthLimiter(prefs)
+		watchCtx, stopWatch := context.WithCancel(ctx)
+		defer stopWatch()
+		go config.WatchBandwidthCap(watchCtx, flagSyncPreferences, config.DefaultPreferencesWatchInterval, limiter)
+
 		total := 0
 		totalDeleted := 0
 		for _, t := range targets {
-			n, deleted, err := session.SyncCleartextTree(ctx, t.SourcePath, t.DestPrefix, &excludes, &prefs, flagSyncState, t.VaultFolderName)
+			n, deleted, err := session.SyncCleartextTreeWithLimiter(ctx, t.SourcePath, t.DestPrefix, &excludes, &prefs, flagSyncState, t.VaultFolderName, limiter)
 			if err != nil {
 				return fmt.Errorf("sync %s → %s: %w", t.SourcePath, t.DestPrefix, err)
 			}
