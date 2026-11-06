@@ -307,6 +307,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
+    /// <summary>Live limiter for the in-flight Sync (null when idle).</summary>
+    private UploadBandwidthLimiter? _liveBandwidthLimiter;
+
     public void SaveSettings()
     {
         Settings.NormalizeForSave();
@@ -315,6 +318,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         Directory.CreateDirectory(Path.GetDirectoryName(AppPaths.PreferencesPath)!);
         File.WriteAllText(AppPaths.PreferencesPath, Preferences.Serialize());
         AppendLog($"saved settings → {AppPaths.SettingsPath}");
+        // Bandwidth cap applies live to a running Sync; workers/excludes need the next Sync.
+        var live = Volatile.Read(ref _liveBandwidthLimiter);
+        if (live is not null)
+        {
+            live.ApplyPreferences(Preferences);
+            AppendLog(live.BytesPerSecond > 0
+                ? $"bandwidth cap updated live: {Preferences.SyncUploadCapMbps:0.#} Mbps"
+                : "bandwidth cap updated live: unlimited");
+        }
     }
 
     public void SavePasswordToStore()
@@ -678,6 +690,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         try
         {
             var engine = new BackupSyncEngine();
+            // One live limiter for the whole run (all sources); SaveSettings hot-reloads it.
+            var bandwidthLimiter = UploadBandwidthLimiter.Live(Preferences);
+            Volatile.Write(ref _liveBandwidthLimiter, bandwidthLimiter);
             var progress = new Progress<string>(p => AppendLog(p));
             var syncProgress = new Progress<BackupSyncProgressUpdate>(ApplyBackupProgress);
             var mode = AppPreferences.NormalizeBackupTransferMode(Preferences.BackupTransferMode);
@@ -704,7 +719,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
                     syncStatePath: AppPaths.SyncStatePath,
                     progress: progress,
                     syncProgress: syncProgress,
-                    ct: linked.Token);
+                    ct: linked.Token,
+                    bandwidthLimiter: bandwidthLimiter);
                 uploaded += result.FilesUploaded;
                 skipped += result.FilesSkipped;
                 scanned += result.FilesScanned;
@@ -758,7 +774,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IAsyncDisposable
         finally
         {
             if (ReferenceEquals(_backupSyncCts, linked))
+            {
                 _backupSyncCts = null;
+                Volatile.Write(ref _liveBandwidthLimiter, null);
+            }
             linked.Dispose();
             OnPropertyChanged(nameof(IsBackupSyncRunning));
             OnPropertyChanged(nameof(IsBackupProgressVisible));
