@@ -163,6 +163,13 @@ type pendingUpload struct {
 // new puts; in-flight workers exit after their current file. Fail-closed remote
 // writes are unchanged; OS secret store is untouched.
 func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences, statePath, vaultFolderName string) (uploaded, deleted int, err error) {
+	return s.SyncCleartextTreeWithLimiter(ctx, localRoot, destPrefix, excludes, prefs, statePath, vaultFolderName, nil)
+}
+
+// SyncCleartextTreeWithLimiter is SyncCleartextTree with a caller-owned live
+// bandwidth limiter (shared across sources and hot-reloaded by the caller, e.g.
+// config.WatchBandwidthCap). limiter nil → a live limiter built from prefs.
+func (s *Session) SyncCleartextTreeWithLimiter(ctx context.Context, localRoot, destPrefix string, excludes *config.BackupSyncExcludes, prefs *config.AppPreferences, statePath, vaultFolderName string, limiter *config.UploadBandwidthLimiter) (uploaded, deleted int, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -299,7 +306,10 @@ func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix s
 			}
 		}
 
-		limiter := config.UploadBandwidthLimiterFromPreferences(p)
+		// Always live (rate 0 = unlimited) so the cap can change mid-Sync.
+		if limiter == nil {
+			limiter = config.LiveUploadBandwidthLimiter(p)
+		}
 		smallCh := make(chan pendingUpload, len(jobs))
 		mediumCh := make(chan pendingUpload, len(jobs))
 		largeCh := make(chan pendingUpload, len(jobs))
@@ -328,8 +338,10 @@ func (s *Session) SyncCleartextTree(ctx context.Context, localRoot, destPrefix s
 				if ctx.Err() != nil {
 					continue
 				}
-				if limiter != nil {
-					limiter.Acquire(job.size)
+				// No-op when unlimited; re-reads the live rate while waiting.
+				limiter.AcquireContext(ctx, job.size)
+				if ctx.Err() != nil {
+					continue
 				}
 				data, err := os.ReadFile(job.absPath)
 				if err != nil {

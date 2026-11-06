@@ -49,7 +49,8 @@ public sealed class BackupSyncEngine
         string? syncStatePath = null,
         IProgress<string>? progress = null,
         IProgress<BackupSyncProgressUpdate>? syncProgress = null,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        UploadBandwidthLimiter? bandwidthLimiter = null)
     {
         excludes ??= new BackupSyncExcludes();
         preferences.ClampSyncWorkers();
@@ -74,7 +75,9 @@ public sealed class BackupSyncEngine
         // (sync EnumerateFiles would freeze the UI on 'Counting local files...').
         var leafDirId = await session.EnsureDirectoryPathAsync(vaultRoot, ct).ConfigureAwait(false);
 
-        var limiter = UploadBandwidthLimiter.FromPreferences(preferences);
+        // Always live (rate 0 = unlimited). Callers may pass a shared limiter and
+        // hot-reload it via ApplyPreferences when Settings are saved mid-Sync.
+        var limiter = bandwidthLimiter ?? UploadBandwidthLimiter.Live(preferences);
         var opts = new UnboundedChannelOptions { SingleReader = false, SingleWriter = true };
         var smallCh = Channel.CreateUnbounded<PendingUpload>(opts);
         var mediumCh = Channel.CreateUnbounded<PendingUpload>(opts);
@@ -174,8 +177,8 @@ public sealed class BackupSyncEngine
 
                 // Pace after bytes are sent so large files are not blocked waiting
                 // for a full-file token grant (bucket holds only ~1s of rate).
-                if (limiter is not null)
-                    await limiter.AcquireAsync(job.Size, ct);
+                // No-op when unlimited; rate can change mid-Sync via Save preferences.
+                await limiter.AcquireAsync(job.Size, ct).ConfigureAwait(false);
 
                 var key = BackupSyncState.Key(vaultFolderName, job.RelativePath);
                 BackupSyncProgressUpdate? update = null;

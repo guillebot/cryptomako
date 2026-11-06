@@ -1,6 +1,7 @@
 package config
 
 import (
+	"context"
 	"sync"
 	"time"
 )
@@ -74,44 +75,83 @@ func (l *UploadBandwidthLimiter) SetBytesPerSecond(rateBytesPerSec float64) {
 	l.lastRefill = time.Now()
 }
 
-// Acquire blocks until byteCount tokens are available, then consumes them.
+// BytesPerSecond is the current budget (0 = unlimited). For tests / diagnostics.
+func (l *UploadBandwidthLimiter) BytesPerSecond() float64 {
+	if l == nil {
+		return 0
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.rateBytesPerSec
+}
+
+// maxAcquireSlice bounds each wait so cancel and live rate changes apply promptly.
+const maxAcquireSlice = 250 * time.Millisecond
+
+// Acquire consumes byteCount tokens as the bucket refills (macOS PR #40 parity).
+//
+//   - Never requires byteCount ≤ burst (1s of rate): takes whatever is available
+//     each pass, so files larger than the burst always finish.
+//   - Re-reads the rate every pass: switching to unlimited (0) mid-wait returns
+//     promptly; a changed Mbps applies to the remaining charge.
+//   - Sleeps in slices of at most 250ms.
 func (l *UploadBandwidthLimiter) Acquire(byteCount int64) {
+	l.AcquireContext(context.Background(), byteCount)
+}
+
+// AcquireContext is Acquire that also returns early when ctx is cancelled.
+func (l *UploadBandwidthLimiter) AcquireContext(ctx context.Context, byteCount int64) {
 	if l == nil || byteCount <= 0 {
 		return
 	}
-	need := float64(byteCount)
-	for {
-		var sleepSeconds float64
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	remaining := float64(byteCount)
+	for remaining > 0 {
+		if ctx.Err() != nil {
+			return
+		}
 		l.mu.Lock()
 		if l.rateBytesPerSec <= 0 {
 			l.mu.Unlock()
 			return
 		}
 		l.refillLocked()
-		if l.tokens >= need {
-			l.tokens -= need
-			l.mu.Unlock()
-			return
+		take := minFloat(l.tokens, remaining)
+		if take > 0 {
+			l.tokens -= take
+			remaining -= take
 		}
-		deficit := need - l.tokens
-		l.tokens = 0
-		l.lastRefill = time.Now()
-		sleepSeconds = deficit / l.rateBytesPerSec
+		var wait time.Duration
+		if remaining > 0 {
+			want := minFloat(remaining, l.rateBytesPerSec) // at most 1s of refill
+			wait = time.Duration(want / l.rateBytesPerSec * float64(time.Second))
+		}
 		l.mu.Unlock()
-		if sleepSeconds <= 0 {
+		if remaining <= 0 {
 			return
 		}
-		if sleepSeconds > 0.25 {
-			sleepSeconds = 0.25
+		if wait > maxAcquireSlice {
+			wait = maxAcquireSlice
 		}
-		time.Sleep(time.Duration(sleepSeconds * float64(time.Second)))
+		if wait < time.Millisecond {
+			wait = time.Millisecond
+		}
+		t := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			t.Stop()
+			return
+		case <-t.C:
+		}
 	}
 }
 
 func (l *UploadBandwidthLimiter) refillLocked() {
 	now := time.Now()
 	elapsed := now.Sub(l.lastRefill).Seconds()
-	if elapsed <= 0 {
+	if elapsed <= 0 || l.rateBytesPerSec <= 0 {
 		return
 	}
 	l.tokens = minFloat(l.rateBytesPerSec, l.tokens+elapsed*l.rateBytesPerSec)

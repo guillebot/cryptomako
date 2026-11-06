@@ -314,7 +314,13 @@ struct SettingsView: View {
                     prefs.syncLargePutConcurrency = 4
                 }
                 .appFont(.caption)
-                Text("Surfaces the BackupSyncEngine put pools. Higher small/medium counts fill a home uplink; keep large low to avoid multi-GB streams. SMB sources auto-cap at 16/6/2 so the share is not thrashed. Applies on the next Sync run.")
+                Toggle("Cap workers for network sources (SMB / NFS / AFP mounts)", isOn: $prefs.capSMBPutWorkers)
+                Text(networkWorkersCaption)
+                    .appFont(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Text("Surfaces the BackupSyncEngine put pools. Higher small/medium counts fill a home uplink; keep large low to avoid multi-GB streams. Network sources (smb:// shares and folders on an SMB/NFS/AFP/WebDAV mount) cap at \(SyncPutWorkerCounts.networkSourceCap.summary) when the toggle is on, so the share is not thrashed. Applies on the next Sync run.")
                     .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -323,6 +329,16 @@ struct SettingsView: View {
             .padding(4)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    /// Effective worker counts for local vs. network sources with the current values.
+    private var networkWorkersCaption: String {
+        let local = prefs.effectivePutWorkers(isNetworkSource: false)
+        let network = prefs.effectivePutWorkers(isNetworkSource: true)
+        if network.summary == local.summary {
+            return "Effective workers: \(local.summary) for all sources."
+        }
+        return "Effective workers: local \(local.summary) · network sources \(network.summary)."
     }
 
     private func workerRow(

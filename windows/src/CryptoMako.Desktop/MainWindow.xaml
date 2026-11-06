@@ -265,6 +265,8 @@
             <TextBlock Text="Mbps" VerticalAlignment="Center" />
             <TextBox x:Name="UploadCapBox" Width="80" />
           </StackPanel>
+          <TextBlock Opacity="0.75" TextWrapping="Wrap"
+                     Text="Upload cap applies live to a running Sync when you Save preferences; worker counts apply to the next Sync." />
           <StackPanel Orientation="Horizontal" Spacing="8">
             <TextBlock Text="Workers S/M/L" Width="140" VerticalAlignment="Center" />
             <TextBox x:Name="WorkersSBox" Width="60" />
