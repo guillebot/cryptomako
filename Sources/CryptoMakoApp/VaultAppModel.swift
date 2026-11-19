@@ -108,6 +108,10 @@ final class VaultAppModel: ObservableObject {
     /// Tab selection lives in its own tiny ObservableObject so the window shell (TabView)
     /// does not re-render on every model publish (see ContentView).
     let tabSelection = MainTabSelection()
+    /// "Free up space" (evict downloaded Finder files). Own ObservableObject so its
+    /// progress ticks do not re-render views that only observe the model.
+    let spaceReclaimer = SpaceReclaimer()
+    private var autoEvictionTask: Task<Void, Never>?
     var selectedTab: MainTab {
         get { tabSelection.selection }
         set { tabSelection.selection = newValue }
@@ -251,6 +255,7 @@ final class VaultAppModel: ObservableObject {
         Task { await refreshMountState() }
         refreshTransfers()
         startConnectivityMonitor()
+        startAutoEvictionScheduler()
         if settings.autoReconnect {
             userWantsUnlocked = true
             Task { await self.attemptAutoUnlock(reason: "launch") }
@@ -1287,6 +1292,65 @@ final class VaultAppModel: ObservableObject {
             Task { await attemptAutoUnlock(reason: "preference") }
         }
         startConnectivityMonitor()
+    }
+
+    // MARK: - Free up space (Finder eviction)
+
+    /// Evict downloaded files under `folder` (nil = whole vault) back to online-only.
+    /// Local only: nothing is deleted from the vault.
+    func freeUpSpace(folder: URL?, policy: AutoEvictionPolicy? = nil, label: String? = nil) {
+        guard isUnlocked, let session = activeSession else {
+            detail = "Unlock the vault before Free up space."
+            return
+        }
+        guard isMounted, let domain = domain() else {
+            detail = "Mount CryptoMako in Finder before Free up space."
+            return
+        }
+        let name = label ?? (folder.map { "Free up space in \($0.lastPathComponent)" } ?? "Free up space")
+        spaceReclaimer.run(folder: folder, policy: policy, domain: domain, session: session, label: name)
+    }
+
+    /// Finder location of the mounted vault (for the folder picker).
+    func finderRootURL() async -> URL? {
+        guard let domain = domain(), let manager = NSFileProviderManager(for: domain) else { return nil }
+        return try? await manager.getUserVisibleURL(for: .rootContainer)
+    }
+
+    /// Pick a folder under the CryptoMako Finder location, then free up space there.
+    func chooseFolderAndFreeUpSpace() async {
+        guard let root = await finderRootURL() else {
+            detail = "Mount CryptoMako in Finder before Free up space."
+            return
+        }
+        let panel = NSOpenPanel()
+        panel.title = "Free up space"
+        panel.message = "Choose a CryptoMako folder. Downloaded files in it become online-only; nothing is deleted from the vault."
+        panel.prompt = "Free up space"
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.directoryURL = root
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        freeUpSpace(folder: url)
+    }
+
+    /// Automatic policy (Settings → Finder storage). Off by default; checks every
+    /// `AutoEvictionPolicy.intervalHours` while unlocked + mounted.
+    func startAutoEvictionScheduler() {
+        autoEvictionTask?.cancel()
+        autoEvictionTask = Task { [weak self] in
+            // Let unlock/mount settle after launch.
+            try? await Task.sleep(nanoseconds: 10 * 60 * 1_000_000_000)
+            while !Task.isCancelled {
+                guard let self else { return }
+                let policy = AppPreferences.load().autoEviction.clamped
+                if policy.enabled, self.isUnlocked, self.isMounted, !self.spaceReclaimer.isRunning {
+                    self.freeUpSpace(folder: nil, policy: policy, label: "Auto free up space (\(policy.summary))")
+                }
+                try? await Task.sleep(nanoseconds: UInt64(AutoEvictionPolicy.intervalHours * 3600) * 1_000_000_000)
+            }
+        }
     }
 
     func startConnectivityMonitor() {

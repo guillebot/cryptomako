@@ -66,6 +66,10 @@ public struct AppPreferences: Codable, Equatable, Sendable {
     /// so the share is not thrashed. Older preference files decode as `true`.
     public var capSMBPutWorkers: Bool
 
+    /// Prefs key `autoEviction`. Automatic Finder "free up space" (make downloaded
+    /// vault files online-only). Off by default; older files decode as `.default`.
+    public var autoEviction: AutoEvictionPolicy
+
     public init(
         proxyMode: ProxyMode = .system,
         proxyHost: String = "",
@@ -78,7 +82,8 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         syncMediumPutConcurrency: Int = 32,
         syncLargePutConcurrency: Int = 4,
         textSize: TextSize = .standard,
-        capSMBPutWorkers: Bool = true
+        capSMBPutWorkers: Bool = true,
+        autoEviction: AutoEvictionPolicy = .default
     ) {
         self.proxyMode = proxyMode
         self.proxyHost = proxyHost
@@ -92,6 +97,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         self.syncLargePutConcurrency = syncLargePutConcurrency
         self.textSize = textSize
         self.capSMBPutWorkers = capSMBPutWorkers
+        self.autoEviction = autoEviction
     }
 
     public static let `default` = AppPreferences()
@@ -103,6 +109,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         case syncSmallPutConcurrency, syncMediumPutConcurrency, syncLargePutConcurrency
         case textSize
         case capSMBPutWorkers
+        case autoEviction
     }
 
     public init(from decoder: Decoder) throws {
@@ -119,6 +126,7 @@ public struct AppPreferences: Codable, Equatable, Sendable {
         syncLargePutConcurrency = try c.decodeIfPresent(Int.self, forKey: .syncLargePutConcurrency) ?? 4
         textSize = try c.decodeIfPresent(TextSize.self, forKey: .textSize) ?? .standard
         capSMBPutWorkers = try c.decodeIfPresent(Bool.self, forKey: .capSMBPutWorkers) ?? true
+        autoEviction = try c.decodeIfPresent(AutoEvictionPolicy.self, forKey: .autoEviction) ?? .default
     }
 
     /// Clamp worker knobs to safe ranges (fail-closed: never zero / never unbounded).
