@@ -19,7 +19,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           # Patch toolchain for GO-2026-6809 (crypto/x509). go.mod stays go 1.27.2.
-          go-version: "1.27.3"
+          go-version: "1.27.4"
           cache-dependency-path: linux/go.sum
 
       - name: Install scanners

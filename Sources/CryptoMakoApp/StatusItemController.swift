@@ -122,6 +122,13 @@ final class StatusItemController: NSObject, NSMenuDelegate {
                 tip += "\n\(sync.remainingLabel)"
             }
             tip += "\n\(sync.counterBreakdown)"
+        } else if !model.backupSources.isEmpty {
+            // Most recent successful per-source completion (same stamp as Backup rows).
+            if let latest = model.backupSources.compactMap(\.lastFullSyncAt).max() {
+                tip += "\nLast sync \(LastSyncFormatting.absoluteAndRelative(latest))"
+            } else {
+                tip += "\nNever synced"
+            }
         }
         statusItem.button?.toolTip = tip
         updateStatusItemImage()
