@@ -107,6 +107,7 @@ struct VaultTabView: View {
                     credentialsForm
                 }
                 controls
+                FreeUpSpaceStatusView(reclaimer: model.spaceReclaimer)
                 Text(model.detail)
                     .appFont(.caption)
                     .textSelection(.enabled)
@@ -369,8 +370,13 @@ struct VaultTabView: View {
                         .disabled(model.isUnmounting)
                     Button("Refresh") { Task { await model.refreshFinderMount() } }
                         .disabled(model.busy || model.isUnmounting || !model.isUnlocked)
+                    Divider()
+                    Button("Free up space (whole vault)") { model.freeUpSpace(folder: nil) }
+                        .disabled(!model.isUnlocked || !model.isMounted)
+                    Button("Free up space in folder…") { Task { await model.chooseFolderAndFreeUpSpace() } }
+                        .disabled(!model.isUnlocked || !model.isMounted)
                 }
-                .help("Unlocked vaults mount in Finder automatically. Use this menu to unmount, remount, or refresh.")
+                .help("Unlocked vaults mount in Finder automatically. Use this menu to unmount, remount, refresh, or free up space (downloaded files become online-only; nothing is deleted from the vault).")
             }
         }
     }
@@ -1001,3 +1007,37 @@ struct BackupView: View {
     }
 }
 
+
+
+// MARK: - Free up space status
+
+/// Observes only the reclaimer so eviction progress does not redraw the Vault tab.
+struct FreeUpSpaceStatusView: View {
+    @ObservedObject var reclaimer: SpaceReclaimer
+
+    var body: some View {
+        if let line = reclaimer.statusLine {
+            HStack(spacing: 8) {
+                if reclaimer.isRunning {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Image(systemName: "externaldrive.badge.checkmark")
+                        .foregroundStyle(.secondary)
+                }
+                Text(line)
+                    .appFont(.caption)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 8)
+                if reclaimer.isRunning {
+                    Button("Cancel") { reclaimer.cancel() }
+                        .appFont(.caption)
+                } else {
+                    Button("Dismiss") { reclaimer.clearStatus() }
+                        .appFont(.caption)
+                        .buttonStyle(.borderless)
+                }
+            }
+        }
+    }
+}

@@ -44,6 +44,7 @@ struct SettingsView: View {
                         .id(VaultAppModel.SettingsSection.syncWorkers)
                     excludesSection
                         .id(VaultAppModel.SettingsSection.excludes)
+                    finderStorageSection
 
                     if !statusMessage.isEmpty {
                         Text(statusMessage)
@@ -272,6 +273,45 @@ struct SettingsView: View {
                     }
                 }
                 Text("Applies only to Backup Sync puts (token-bucket pacing). Finder File Provider transfers are unchanged. Cap changes apply to a running Sync after each in-flight put finishes (next post-put charge); Job bandwidth uses a short sliding average so the new regime shows within a few seconds. Worker counts still need the next Sync.")
+                    .appFont(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .padding(4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    // MARK: - Finder storage (eviction)
+
+    private var finderStorageSection: some View {
+        GroupBox("Finder storage") {
+            VStack(alignment: .leading, spacing: 10) {
+                Toggle("Automatically free up space", isOn: $prefs.autoEviction.enabled)
+                if prefs.autoEviction.enabled {
+                    HStack {
+                        Text("Files not opened for")
+                        TextField("days", value: $prefs.autoEviction.minDaysSinceAccess, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 60)
+                        Text("days")
+                            .foregroundStyle(.secondary)
+                        Stepper("", value: $prefs.autoEviction.minDaysSinceAccess, in: 0...3650, step: 1)
+                            .labelsHidden()
+                    }
+                    HStack {
+                        Text("and at least")
+                        TextField("MB", value: $prefs.autoEviction.minFileSizeMB, format: .number)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 72)
+                        Text("MB (0 = any size)")
+                            .foregroundStyle(.secondary)
+                        Stepper("", value: $prefs.autoEviction.minFileSizeMB, in: 0...100_000, step: 5)
+                            .labelsHidden()
+                    }
+                }
+                Text("Downloaded vault files take local disk space. Freeing space makes them online-only again (Finder: right-click → Remove Download). Nothing is deleted from the vault, and files that are still uploading, not on the vault yet, or in conflict are kept. When on, CryptoMako checks every \(Int(AutoEvictionPolicy.intervalHours)) hours while the vault is unlocked and mounted. Manual: Vault → Finder → Free up space.")
                     .appFont(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

@@ -1,3 +1,4 @@
+import CryptoMakoShared
 import CryptoMakoVault
 import FileProvider
 import Foundation
@@ -86,7 +87,7 @@ final class VaultItem: NSObject, NSFileProviderItem {
             filename: displayName,
             contentType: .folder,
             // Root is not deletable (remoteDelete rejects .root); still allow writes/adds.
-            capabilities: [.allowsReading, .allowsWriting, .allowsAddingSubItems, .allowsContentEnumerating],
+            capabilities: FileProviderCapabilitySets.root,
             documentSize: nil,
             itemVersion: directoryVersion
         )
@@ -108,7 +109,7 @@ final class VaultItem: NSObject, NSFileProviderItem {
             // shows Delete → deleteItem → fail-closed remote recursive MinIO delete.
             // Include .allowsRenaming for Finder menu parity with files (rename still
             // fail-closed in modifyItem until implemented).
-            capabilities: directoryCapabilities,
+            capabilities: FileProviderCapabilitySets.directory,
             documentSize: nil,
             itemVersion: directoryVersion,
             downloaded: true
@@ -132,13 +133,16 @@ final class VaultItem: NSObject, NSFileProviderItem {
             // No .allowsTrashing: Finder Move-to-Trash used local .Trash and hit Error -36
             // (stale NFS / parentItemNotYetPropagated) before modifyItem ran. Cmd-Delete
             // / Delete go through deleteItem → remote MinIO delete (fail-closed).
-            capabilities: [.allowsReading, .allowsWriting, .allowsDeleting, .allowsRenaming, .allowsReparenting],
+            // .allowsEvicting → Finder "Remove Download" (local-only; never deleteItem).
+            capabilities: FileProviderCapabilitySets.file,
             // Default size is ciphertext `node.size`; callers that just hydrated
             // cleartext (fetchContents) should pass the destination fileSize.
             documentSize: documentSize ?? node.size.map { NSNumber(value: $0) },
             itemVersion: NSFileProviderItemVersion(
                 contentVersion: content,
-                metadataVersion: content
+                // Revision prefix so a capability change replaces cached items
+                // (ETag alone never changed → Finder kept the old menu).
+                metadataVersion: FileProviderCapabilitySets.fileMetadataVersion(eTag: node.eTag)
             ),
             // Enumerated/remote items stay dataless until fetchContents marks downloaded.
             downloaded: downloaded
@@ -153,7 +157,7 @@ final class VaultItem: NSObject, NSFileProviderItem {
             parent: .rootContainer,
             filename: ".Trash",
             contentType: .folder,
-            capabilities: [.allowsReading, .allowsContentEnumerating, .allowsAddingSubItems],
+            capabilities: FileProviderCapabilitySets.trashContainer,
             documentSize: nil,
             itemVersion: directoryVersion,
             downloaded: true
@@ -167,7 +171,7 @@ final class VaultItem: NSObject, NSFileProviderItem {
             parent: .rootContainer,
             filename: "Working Set",
             contentType: .folder,
-            capabilities: [.allowsReading, .allowsContentEnumerating],
+            capabilities: FileProviderCapabilitySets.workingSet,
             documentSize: nil,
             itemVersion: directoryVersion,
             downloaded: true
@@ -187,18 +191,7 @@ final class VaultItem: NSObject, NSFileProviderItem {
     /// pre-delete capabilities — Finder then hides Delete for directories only).
     private static let directoryVersion = NSFileProviderItemVersion(
         contentVersion: Data("dir-v2".utf8),
-        metadataVersion: Data("caps-delete-v2".utf8)
+        metadataVersion: Data(FileProviderCapabilitySets.metadataRevision.utf8)
     )
 
-    /// Finder Delete for folders requires .allowsDeleting on the directory item.
-    /// Mirrored from files except folder-specific add/enumerate aliases.
-    private static let directoryCapabilities: NSFileProviderItemCapabilities = [
-        .allowsReading,
-        .allowsWriting,
-        .allowsAddingSubItems,
-        .allowsContentEnumerating,
-        .allowsDeleting,
-        .allowsRenaming,
-        .allowsReparenting,
-    ]
 }
