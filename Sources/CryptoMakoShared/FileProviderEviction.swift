@@ -258,7 +258,10 @@ public struct EvictionSummary: Equatable, Sendable {
 /// capabilities forever. That is why 1.0.17 files had no `.allowsEvicting` and
 /// Finder showed no Remove Download.
 ///
-/// The working-set sync anchor now encodes `metadataRevision`. When the system asks
+/// Since 1.0.19 *whether* to refresh comes from `CapabilityRefreshState` (app group),
+/// not the anchor: fileproviderd adopted the 1.0.18 anchor via `currentSyncAnchor`
+/// without asking for changes, so anchor-only detection never fired. Anchors below
+/// are still used for paging. Originally: the working-set sync anchor encodes `metadataRevision`. When the system asks
 /// for changes from an older anchor, the extension reports `didUpdate` for every
 /// materialized item (from remote truth, same content version → metadata only, no
 /// re-download, local edits untouched) and moves the anchor to the current one.
