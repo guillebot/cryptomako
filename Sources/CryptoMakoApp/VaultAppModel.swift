@@ -1311,6 +1311,20 @@ final class VaultAppModel: ObservableObject {
         spaceReclaimer.run(folder: folder, policy: policy, domain: domain, session: session, label: name)
     }
 
+    /// Ask the File Provider extension to re-push current capabilities (Remove
+    /// Download) onto every downloaded item. Metadata-only: nothing downloads,
+    /// moves, or gets deleted locally or on S3.
+    func requestFinderCapabilityRefresh() async {
+        let before = CapabilityRefreshState.load()
+        let st = CapabilityRefreshState.update { $0.requestRefresh() }
+        await signalFinderRefresh()
+        var prior = before.lastStatus ?? "never ran"
+        if let at = before.lastStatusAt {
+            prior += " (\(at.formatted(date: .abbreviated, time: .shortened)))"
+        }
+        detail = "Finder permissions refresh requested (#\(st.requestedGeneration)). Previous result: \(prior). It runs in the background; Remove Download appears within a few minutes."
+    }
+
     /// Finder location of the mounted vault (for the folder picker).
     func finderRootURL() async -> URL? {
         guard let domain = domain(), let manager = NSFileProviderManager(for: domain) else { return nil }

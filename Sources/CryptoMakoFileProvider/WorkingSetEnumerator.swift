@@ -46,10 +46,18 @@ struct RefreshSnapshot: Sendable {
 actor CapabilityRefresher {
     private let domain: NSFileProviderDomain
     private(set) var snapshot: RefreshSnapshot?
+    /// `requestedGeneration` when the current snapshot was collected.
+    private(set) var snapshotGeneration = 0
     /// True once a partial anchor was handed out for the current snapshot.
     private(set) var servedPartial = false
     private var anyGroupFailed = false
     private var collecting = false
+    private var lastFailureAt: Date?
+
+    /// Wait before retrying after a failed collection / pass.
+    static let retryBackoff: TimeInterval = 300
+    /// Give up on a materialized-items enumeration that never calls back.
+    static let collectTimeout: TimeInterval = 180
 
     init(domain: NSFileProviderDomain) {
         self.domain = domain
@@ -64,32 +72,49 @@ actor CapabilityRefresher {
         snapshot = nil
         servedPartial = false
         anyGroupFailed = false
+        if failed { lastFailureAt = Date() }
         return failed
     }
 
-    /// Starts a background collection unless one is running or ready.
-    func startCollecting() {
+    /// Starts a background collection unless one is running, ready, or backing off.
+    func startCollecting(generation: Int) {
         guard !collecting, snapshot == nil else { return }
+        if let last = lastFailureAt, Date().timeIntervalSince(last) < Self.retryBackoff {
+            log.notice("capability refresh: backing off after a failure (retry in \(Int(Self.retryBackoff - Date().timeIntervalSince(last)), privacy: .public)s)")
+            return
+        }
         collecting = true
         let domain = self.domain
+        log.notice("capability refresh: collecting materialized items (generation \(generation, privacy: .public))")
         Task.detached {
             do {
-                let entries = try await Self.collect(domain: domain)
-                await self.finishCollecting(RefreshSnapshot(entries: entries))
-                log.info("capability refresh: \(entries.count) materialized item(s) need current capabilities")
-                try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet)
+                let started = Date()
+                let entries = try await withTimeout(seconds: Self.collectTimeout) {
+                    try await Self.collect(domain: domain)
+                }
+                let snap = RefreshSnapshot(entries: entries)
+                await self.finishCollecting(snap, generation: generation, failed: false)
+                log.notice("capability refresh: collected \(entries.count, privacy: .public) item(s) needing update in \(snap.groups.count, privacy: .public) folder(s) (\(Int(Date().timeIntervalSince(started)), privacy: .public)s); signalling working set")
+                do {
+                    try await NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet)
+                } catch {
+                    log.error("capability refresh: signalEnumerator failed: \(String(describing: error), privacy: .public)")
+                }
             } catch {
-                log.error("capability refresh: materialized enumeration failed: \(error.localizedDescription, privacy: .public)")
-                await self.finishCollecting(nil)
+                log.error("capability refresh: materialized enumeration failed: \(String(describing: error), privacy: .public)")
+                await self.finishCollecting(nil, generation: generation, failed: true)
+                CapabilityRefreshState.update { $0.lastStatus = "collect failed: \(error.localizedDescription)"; $0.lastStatusAt = Date() }
             }
         }
     }
 
-    private func finishCollecting(_ snap: RefreshSnapshot?) {
+    private func finishCollecting(_ snap: RefreshSnapshot?, generation: Int, failed: Bool) {
         collecting = false
         snapshot = snap
+        snapshotGeneration = generation
         servedPartial = false
         anyGroupFailed = false
+        if failed { lastFailureAt = Date() }
     }
 
     private static func collect(domain: NSFileProviderDomain) async throws -> [MaterializedEntry] {
@@ -99,15 +124,23 @@ actor CapabilityRefresher {
         let enumerator = manager.enumeratorForMaterializedItems()
         defer { enumerator.invalidate() }
         var entries: [MaterializedEntry] = []
+        var seen = 0
+        var pages = 0
         var page = NSFileProviderPage.initialPageSortedByName as NSFileProviderPage
         while true {
             let (items, next) = try await PageCollector.page(of: enumerator, startingAt: page)
+            pages += 1
+            seen += items.count
             for item in items {
                 if let e = entry(for: item) { entries.append(e) }
+            }
+            if pages % 20 == 0 {
+                log.notice("capability refresh: materialized pages=\(pages, privacy: .public) seen=\(seen, privacy: .public) candidates=\(entries.count, privacy: .public)")
             }
             guard let next else { break }
             page = next
         }
+        log.notice("capability refresh: materialized enumeration done pages=\(pages, privacy: .public) seen=\(seen, privacy: .public) candidates=\(entries.count, privacy: .public)")
         return entries
     }
 
@@ -219,31 +252,38 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
     }
 
     func currentSyncAnchor(completionHandler: @escaping (NSFileProviderSyncAnchor?) -> Void) {
-        completionHandler(NSFileProviderSyncAnchor(WorkingSetRefresh.currentAnchor))
+        let st = CapabilityRefreshState.load()
+        completionHandler(NSFileProviderSyncAnchor(st.completedAnchor(revision: FileProviderCapabilitySets.metadataRevision)))
     }
 
     func enumerateChanges(for observer: NSFileProviderChangeObserver, from anchor: NSFileProviderSyncAnchor) {
-        let state = WorkingSetRefresh.state(of: anchor.rawValue)
-        if state == .current {
+        let revision = FileProviderCapabilitySets.metadataRevision
+        let st = CapabilityRefreshState.load()
+        // Decide from the shared state, not the anchor: fileproviderd can adopt a new
+        // anchor via currentSyncAnchor without ever asking for changes (1.0.18 bug).
+        guard st.needsRefresh(revision: revision) else {
             observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
             return
         }
+        let anchorState = WorkingSetRefresh.state(of: anchor.rawValue)
         task = Task { [refresher, index, domainDisplayName] in
             guard let snapshot = await refresher.snapshot else {
+                log.notice("capability refresh: needed (revision \(revision, privacy: .public), done=\(st.completedRevision ?? "none", privacy: .public) gen \(st.completedGeneration, privacy: .public)/\(st.requestedGeneration, privacy: .public)); starting collection")
                 // Collect first (async, outside this call); it signals when ready.
-                await refresher.startCollecting()
+                await refresher.startCollecting(generation: st.requestedGeneration)
                 observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
                 return
             }
             var start = 0
-            if case .partial(let next) = state, await refresher.servedPartial {
+            if case .partial(let next) = anchorState, await refresher.servedPartial {
                 start = next
             }
             let session: VaultSession
             do {
                 session = try await index.session()
             } catch {
-                // Locked / offline: keep the old anchor and retry on the next signal.
+                log.error("capability refresh: vault not available in the extension (\(String(describing: error), privacy: .public)); will retry on next signal")
+                CapabilityRefreshState.update { $0.lastStatus = "waiting: vault locked in Finder extension"; $0.lastStatusAt = Date() }
                 observer.finishEnumeratingChanges(upTo: anchor, moreComing: false)
                 return
             }
@@ -252,6 +292,7 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 updated.append(VaultItem.root(displayName: domainDisplayName))
             }
             let end = min(start + WorkingSetRefresh.groupsPerPage, snapshot.groups.count)
+            var listFailures = 0
             if start < end {
                 for group in snapshot.groups[start..<end] {
                     if Task.isCancelled { return }
@@ -259,6 +300,7 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                         let nodes = try await session.list(dirId: group.parentDirId)
                         updated.append(contentsOf: Self.items(for: group, listing: nodes))
                     } catch {
+                        listFailures += 1
                         await refresher.markGroupFailed()
                     }
                 }
@@ -268,6 +310,7 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 observer.didUpdate(Array(updated[i..<min(i + 500, updated.count)]))
                 i += 500
             }
+            log.notice("capability refresh: folders \(start, privacy: .public)..<\(end, privacy: .public) of \(snapshot.groups.count, privacy: .public): reported \(updated.count, privacy: .public) update(s), listing failures \(listFailures, privacy: .public)")
             if end < snapshot.groups.count {
                 await refresher.markServedPartial()
                 observer.finishEnumeratingChanges(
@@ -276,12 +319,25 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 )
                 return
             }
+            let generation = await refresher.snapshotGeneration
             let failed = await refresher.finishPass()
-            log.info("capability refresh: pass finished (\(snapshot.itemCount) candidate item(s), listing failures: \(failed, privacy: .public))")
-            // On a listing failure keep a stale anchor so the next signal retries
-            // (re-reporting the items that did refresh is harmless).
-            let next = failed ? Data("ws-retry".utf8) : WorkingSetRefresh.currentAnchor
-            observer.finishEnumeratingChanges(upTo: NSFileProviderSyncAnchor(next), moreComing: false)
+            if failed {
+                log.error("capability refresh: pass finished with listing failures; retrying later")
+                CapabilityRefreshState.update { $0.lastStatus = "partial: some folders could not be listed, will retry"; $0.lastStatusAt = Date() }
+                observer.finishEnumeratingChanges(
+                    upTo: NSFileProviderSyncAnchor(Data("ws-retry|\(Date().timeIntervalSince1970)".utf8)),
+                    moreComing: false
+                )
+                return
+            }
+            let done = CapabilityRefreshState.update {
+                $0.markCompleted(revision: revision, generation: generation, status: "done: \(snapshot.itemCount) item(s) refreshed")
+            }
+            log.notice("capability refresh: pass complete (\(snapshot.itemCount, privacy: .public) candidate item(s), revision \(revision, privacy: .public), generation \(generation, privacy: .public))")
+            observer.finishEnumeratingChanges(
+                upTo: NSFileProviderSyncAnchor(done.completedAnchor(revision: revision)),
+                moreComing: false
+            )
         }
     }
 
@@ -322,5 +378,40 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
             }
         }
         return out
+    }
+}
+
+/// Runs `operation`, throwing `RefreshTimeout`
+/// if it has not finished after `seconds` (the operation keeps running detached; we
+/// just stop waiting, so a callback that never fires cannot wedge the refresh).
+struct RefreshTimeout: Error, CustomStringConvertible {
+    let seconds: TimeInterval
+    var description: String { "timed out after \(Int(seconds))s" }
+}
+
+final class OnceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var done = false
+    func claim() -> Bool { lock.lock(); defer { lock.unlock() }; if done { return false }; done = true; return true }
+}
+
+func withTimeout<T: Sendable>(
+    seconds: TimeInterval,
+    _ operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    let once = OnceFlag()
+    return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<T, Error>) in
+        Task.detached {
+            do {
+                let v = try await operation()
+                if once.claim() { cont.resume(returning: v) }
+            } catch {
+                if once.claim() { cont.resume(throwing: error) }
+            }
+        }
+        Task.detached {
+            try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+            if once.claim() { cont.resume(throwing: RefreshTimeout(seconds: seconds)) }
+        }
     }
 }

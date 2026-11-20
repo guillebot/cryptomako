@@ -26,9 +26,17 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         // Ask fileproviderd for working-set changes once per launch. A no-op when
         // the anchor is current; after an upgrade it starts the capability refresh
         // for items the system already stores (see WorkingSetRefresh).
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+        let st = CapabilityRefreshState.load()
+        log.notice("extension started v\(version, privacy: .public); capability refresh needed=\(st.needsRefresh(revision: FileProviderCapabilitySets.metadataRevision), privacy: .public) state=\(st.completedRevision ?? "none", privacy: .public) gen \(st.completedGeneration, privacy: .public)/\(st.requestedGeneration, privacy: .public)")
         Task.detached {
             try? await Task.sleep(nanoseconds: 3_000_000_000)
-            try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet)
+            do {
+                try await NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet)
+                log.notice("extension: signalled working set after launch")
+            } catch {
+                log.error("extension: signalEnumerator(.workingSet) failed: \(String(describing: error), privacy: .public)")
+            }
         }
     }
 

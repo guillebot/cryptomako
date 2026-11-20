@@ -375,6 +375,8 @@ struct VaultTabView: View {
                         .disabled(!model.isUnlocked || !model.isMounted)
                     Button("Free up space in folder…") { Task { await model.chooseFolderAndFreeUpSpace() } }
                         .disabled(!model.isUnlocked || !model.isMounted)
+                    Button("Refresh Finder permissions (Remove Download)") { Task { await model.requestFinderCapabilityRefresh() } }
+                        .disabled(!model.isUnlocked || !model.isMounted)
                 }
                 .help("Unlocked vaults mount in Finder automatically. Use this menu to unmount, remount, refresh, or free up space (downloaded files become online-only; nothing is deleted from the vault).")
             }

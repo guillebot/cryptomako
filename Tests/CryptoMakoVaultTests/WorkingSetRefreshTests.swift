@@ -197,3 +197,60 @@ final class EvictionErrorExplainerTests: XCTestCase {
         XCTAssertFalse(s.shouldAbortEarly)
     }
 }
+
+final class CapabilityRefreshStateTests: XCTestCase {
+    let rev = FileProviderCapabilitySets.metadataRevision
+
+    func testFreshInstallNeedsRefreshRegardlessOfAnchor() {
+        // 1.0.18 bug: fileproviderd already held the current anchor, so anchor-based
+        // detection said "nothing to do". The shared state must still say refresh.
+        XCTAssertTrue(CapabilityRefreshState().needsRefresh(revision: rev))
+    }
+
+    func testCompletionAndAppRequest() {
+        var s = CapabilityRefreshState()
+        s.markCompleted(revision: rev, generation: 0, status: "done")
+        XCTAssertFalse(s.needsRefresh(revision: rev))
+        XCTAssertTrue(s.needsRefresh(revision: "caps-future-v4"))
+        let a0 = s.completedAnchor(revision: rev)
+        s.requestRefresh()
+        XCTAssertTrue(s.needsRefresh(revision: rev))
+        // A pass that started before the request does not satisfy it.
+        s.markCompleted(revision: rev, generation: 0, status: "done")
+        XCTAssertTrue(s.needsRefresh(revision: rev))
+        s.markCompleted(revision: rev, generation: 1, status: "done")
+        XCTAssertFalse(s.needsRefresh(revision: rev))
+        XCTAssertNotEqual(s.completedAnchor(revision: rev), a0)
+    }
+
+    func testPersistenceRoundTripAndLenientDecode() throws {
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("cap-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: url) }
+        XCTAssertEqual(CapabilityRefreshState.load(from: url), CapabilityRefreshState())
+        CapabilityRefreshState.update(at: url) { $0.requestRefresh() }
+        XCTAssertEqual(CapabilityRefreshState.load(from: url).requestedGeneration, 1)
+        try Data(#"{"completedRevision":"x"}"#.utf8).write(to: url)
+        let s = CapabilityRefreshState.load(from: url)
+        XCTAssertEqual(s.completedRevision, "x")
+        XCTAssertEqual(s.requestedGeneration, 0)
+    }
+}
+
+final class RefreshTimeoutTests: XCTestCase {
+    func testTimeoutFiresWhenCallbackNeverComes() async {
+        do {
+            _ = try await withTimeout(seconds: 0.2) { () async throws -> Int in
+                try await Task.sleep(nanoseconds: 5_000_000_000)
+                return 1
+            }
+            XCTFail("expected timeout")
+        } catch {
+            XCTAssertTrue(error is RefreshTimeout)
+        }
+    }
+
+    func testValuePassesThrough() async throws {
+        let v = try await withTimeout(seconds: 5) { 42 }
+        XCTAssertEqual(v, 42)
+    }
+}
