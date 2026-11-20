@@ -243,3 +243,152 @@ public struct EvictionSummary: Equatable, Sendable {
         return s
     }
 }
+
+// MARK: - Working-set capability refresh (pure)
+
+/// One-time refresh that pushes current capabilities onto items the system already
+/// stores on disk.
+///
+/// With `NSFileProviderReplicatedExtension`, fileproviderd only asks for changes
+/// through the **working set** enumerator: per-folder `enumerateChanges` is never
+/// called, and `signalEnumerator` ignores every container but `.workingSet`. Our
+/// working set used to be permanently empty with a fixed anchor, so a capability or
+/// metadata-revision bump only reached items when a folder was enumerated from
+/// scratch. Items that were already known (every materialized file) kept their old
+/// capabilities forever. That is why 1.0.17 files had no `.allowsEvicting` and
+/// Finder showed no Remove Download.
+///
+/// The working-set sync anchor now encodes `metadataRevision`. When the system asks
+/// for changes from an older anchor, the extension reports `didUpdate` for every
+/// materialized item (from remote truth, same content version → metadata only, no
+/// re-download, local edits untouched) and moves the anchor to the current one.
+public enum WorkingSetRefresh {
+    /// Anchor the working set reports once every stored item carries the current revision.
+    public static var currentAnchor: Data {
+        Data("ws|\(FileProviderCapabilitySets.metadataRevision)".utf8)
+    }
+
+    /// Prefix for an in-progress (paged) refresh anchor: `wsp|<revision>|<nextGroup>`.
+    static let partialPrefix = "wsp|"
+
+    public enum AnchorState: Equatable, Sendable {
+        /// Nothing to report.
+        case current
+        /// Refresh needed, starting at group 0 (legacy `empty` anchor, older revision, garbage).
+        case stale
+        /// Paged refresh of the current revision in progress; resume at this group.
+        case partial(nextGroup: Int)
+    }
+
+    public static func partialAnchor(nextGroup: Int) -> Data {
+        Data("\(partialPrefix)\(FileProviderCapabilitySets.metadataRevision)|\(nextGroup)".utf8)
+    }
+
+    public static func state(of anchor: Data) -> AnchorState {
+        if anchor == currentAnchor { return .current }
+        guard let s = String(data: anchor, encoding: .utf8), s.hasPrefix(partialPrefix) else {
+            return .stale
+        }
+        let parts = s.dropFirst(partialPrefix.count).split(separator: "|", omittingEmptySubsequences: false)
+        guard parts.count == 2,
+              String(parts[0]) == FileProviderCapabilitySets.metadataRevision,
+              let next = Int(parts[1]), next >= 0
+        else { return .stale }
+        return .partial(nextGroup: next)
+    }
+
+    /// Parent directories listed per `enumerateChanges` page.
+    public static let groupsPerPage = 40
+
+    public enum ItemKind: Equatable, Sendable {
+        case root
+        case directory
+        case file
+    }
+
+    /// Metadata version an up-to-date item of this kind carries.
+    public static func expectedMetadataVersion(kind: ItemKind, contentVersion: Data?) -> Data {
+        switch kind {
+        case .root, .directory:
+            return Data(FileProviderCapabilitySets.metadataRevision.utf8)
+        case .file:
+            let eTag = contentVersion.flatMap { String(data: $0, encoding: .utf8) }
+            return FileProviderCapabilitySets.fileMetadataVersion(eTag: eTag)
+        }
+    }
+
+    /// Fail-safe filter for a materialized item seen by the system.
+    ///
+    /// - Skips items in flight or in conflict (they get fresh capabilities from
+    ///   `createItem` / `modifyItem` when the upload lands; nothing to evict anyway).
+    /// - Skips dataless files (nothing to evict; avoids listing 300k placeholders).
+    /// - Skips items that already carry `.allowsEvicting` **and** the current metadata.
+    public static func needsRefresh(
+        kind: ItemKind?,
+        isDownloaded: Bool?,
+        isUploaded: Bool?,
+        isUploading: Bool?,
+        hasUnresolvedConflicts: Bool?,
+        capabilities: NSFileProviderItemCapabilities?,
+        metadataVersion: Data?,
+        contentVersion: Data?
+    ) -> Bool {
+        guard let kind else { return false }
+        if isUploading == true || isUploaded == false || hasUnresolvedConflicts == true { return false }
+        if isDownloaded == false { return false }
+        let capsOK = capabilities?.contains(.allowsEvicting) ?? false
+        let metaOK = metadataVersion.map { $0 == expectedMetadataVersion(kind: kind, contentVersion: contentVersion) } ?? false
+        return !(capsOK && metaOK)
+    }
+}
+
+// MARK: - evictItem errors (pure)
+
+public enum EvictionErrorExplainer {
+    /// Human-readable reason for a failed `evictItem`, with the raw domain/code so a
+    /// bug report is actionable.
+    public static func describe(domain: String, code: Int, localized: String) -> String {
+        let raw = "\(domain) \(code)"
+        if domain == NSFileProviderErrorDomain {
+            switch code {
+            case NSFileProviderError.Code.noSuchItem.rawValue:
+                return "Finder no longer knows this file — it may have been moved or deleted (\(raw))"
+            case NSFileProviderError.Code.notAuthenticated.rawValue:
+                return "vault is locked — unlock CryptoMako and retry (\(raw))"
+            case NSFileProviderError.Code.unsyncedEdits.rawValue:
+                return "file has edits not uploaded yet (\(raw))"
+            default:
+                break
+            }
+        }
+        if isCapabilityRefusal(domain: domain, code: code) {
+            return "Finder has not picked up the Remove Download permission for this file yet. "
+                + "CryptoMako refreshes it automatically after an upgrade (unlock the vault and give it a few minutes), then retry (\(raw): \(localized))"
+        }
+        return "\(localized) (\(raw))"
+    }
+
+    /// Errors fileproviderd uses when an item's capabilities forbid the operation.
+    public static func isCapabilityRefusal(domain: String, code: Int) -> Bool {
+        switch domain {
+        case NSCocoaErrorDomain:
+            // NSFeatureUnsupportedError, NSFileWriteNoPermissionError, NSFileReadNoPermissionError
+            return code == 3328 || code == 513 || code == 257
+        case NSPOSIXErrorDomain:
+            return code == Int(EPERM) || code == Int(EACCES) || code == Int(ENOTSUP)
+        default:
+            return false
+        }
+    }
+}
+
+extension EvictionSummary {
+    /// Number of consecutive failures (with nothing evicted) after which a pass stops
+    /// instead of grinding through thousands of identical errors.
+    public static let earlyAbortFailures = 25
+
+    /// True when every attempt so far failed and there have been enough of them.
+    public var shouldAbortEarly: Bool {
+        evictedFiles == 0 && failed >= Self.earlyAbortFailures
+    }
+}

@@ -81,6 +81,10 @@ final class SpaceReclaimer: ObservableObject {
                 guard let manager = NSFileProviderManager(for: domain) else {
                     throw ReclaimError.message("CryptoMako is not mounted in Finder")
                 }
+                // Nudge the working-set capability refresh (no-op once current) so
+                // items Finder still holds with pre-1.0.18 capabilities get
+                // .allowsEvicting before/while we evict.
+                try? await manager.signalEnumerator(for: .workingSet)
                 let root = try await manager.getUserVisibleURL(for: .rootContainer)
                     .standardizedFileURL.resolvingSymlinksInPath()
                 let target = (folder ?? root).standardizedFileURL.resolvingSymlinksInPath()
@@ -124,6 +128,14 @@ final class SpaceReclaimer: ObservableObject {
                     case .failed(let msg):
                         summary.failed += 1
                         if summary.firstError == nil { summary.firstError = msg }
+                        reclaimLog.error("evict failed: \(msg, privacy: .public)")
+                    }
+                    if summary.shouldAbortEarly {
+                        let reason = summary.firstError ?? "unknown error"
+                        reclaimLog.error("reclaim aborted after \(summary.failed) failures, nothing evicted")
+                        throw ReclaimError.message(
+                            "stopped after \(summary.failed) files failed and none were freed. First error: \(reason)"
+                        )
                     }
                     done += 1
                     if done % 25 == 0 || done == total {
@@ -288,7 +300,11 @@ final class SpaceReclaimer: ObservableObject {
             guard dom == domainID else { return .skipped(.notOnRemote) }
             identifier = id
         } catch {
-            return .failed(error.localizedDescription)
+            let ns = error as NSError
+            return .failed(
+                "could not resolve the Finder item: "
+                    + EvictionErrorExplainer.describe(domain: ns.domain, code: ns.code, localized: ns.localizedDescription)
+            )
         }
         guard case .file(let parentDirId, let cipherName)? = ItemIdentifier(rawValue: identifier.rawValue) else {
             return .skipped(.notOnRemote)
@@ -312,7 +328,9 @@ final class SpaceReclaimer: ObservableObject {
                ns.code == NSFileProviderError.Code.unsyncedEdits.rawValue {
                 return .skipped(.notUploaded)
             }
-            return .failed(error.localizedDescription)
+            return .failed(
+                EvictionErrorExplainer.describe(domain: ns.domain, code: ns.code, localized: ns.localizedDescription)
+            )
         }
         var s = stat()
         if lstat(f.url.path, &s) == 0, s.st_flags & datalessFlag == 0 {

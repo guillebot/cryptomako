@@ -17,10 +17,19 @@ import UniformTypeIdentifiers
 final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
     private let domain: NSFileProviderDomain
     private let index = VaultIndex()
+    private let refresher: CapabilityRefresher
 
     required init(domain: NSFileProviderDomain) {
         self.domain = domain
+        self.refresher = CapabilityRefresher(domain: domain)
         super.init()
+        // Ask fileproviderd for working-set changes once per launch. A no-op when
+        // the anchor is current; after an upgrade it starts the capability refresh
+        // for items the system already stores (see WorkingSetRefresh).
+        Task.detached {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            try? await NSFileProviderManager(for: domain)?.signalEnumerator(for: .workingSet)
+        }
     }
 
     func invalidate() {
@@ -133,8 +142,11 @@ final class FileProviderExtension: NSObject, NSFileProviderReplicatedExtension {
         request: NSFileProviderRequest
     ) throws -> NSFileProviderEnumerator {
         // Required system containers — must not throw (Finder Trash / FPFS sync).
-        if containerItemIdentifier == .trashContainer || containerItemIdentifier == .workingSet {
+        if containerItemIdentifier == .trashContainer {
             return EmptyVaultEnumerator()
+        }
+        if containerItemIdentifier == .workingSet {
+            return WorkingSetEnumerator(refresher: refresher, index: index, domainDisplayName: domain.displayName)
         }
         switch ItemID.parse(containerItemIdentifier) {
         case .root:
