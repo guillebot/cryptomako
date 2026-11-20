@@ -66,6 +66,8 @@ let package = Package(
                 "CryptoMakoVault",
                 "CryptoMakoS3",
                 "CryptoMakoShared",
+                // Working-set refresh mapping (metadata-only update rules).
+                "CryptoMakoFileProvider",
             ]
         ),
     ]
