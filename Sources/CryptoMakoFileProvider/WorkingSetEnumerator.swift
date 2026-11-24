@@ -14,7 +14,16 @@ struct MaterializedEntry: Sendable {
     /// cipherName for files, dirId for directories.
     let ownKey: String
     let documentSize: Int64?
+    /// System content version (ETag). nil for entries from the app scan, which are
+    /// matched by cleartext size instead.
     let contentVersion: Data?
+}
+
+/// Result of one collection: deduplicated candidates plus counts for the outcome rule.
+struct CollectedSet: Sendable {
+    var entries: [MaterializedEntry]
+    var systemSeen: Int
+    var appEntries: Int
 }
 
 /// Materialized items grouped by the vault directory that lists them, so the
@@ -27,6 +36,8 @@ struct RefreshSnapshot: Sendable {
 
     var root: MaterializedEntry?
     var groups: [Group]
+    var systemSeen = 0
+    var appEntries = 0
 
     init(entries: [MaterializedEntry]) {
         root = entries.first { $0.kind == .root }
@@ -51,6 +62,7 @@ actor CapabilityRefresher {
     /// True once a partial anchor was handed out for the current snapshot.
     private(set) var servedPartial = false
     private var anyGroupFailed = false
+    private(set) var reportedInPass = 0
     private var collecting = false
     private var lastFailureAt: Date?
 
@@ -65,6 +77,9 @@ actor CapabilityRefresher {
 
     func markServedPartial() { servedPartial = true }
     func markGroupFailed() { anyGroupFailed = true }
+    func addReported(_ n: Int) { reportedInPass += n }
+    /// Retry after the standard backoff (pass changed nothing / waiting on the app scan).
+    func noteRetry() { lastFailureAt = Date() }
 
     /// Drops the snapshot after a full pass. Returns whether any group failed.
     func finishPass() -> Bool {
@@ -72,6 +87,7 @@ actor CapabilityRefresher {
         snapshot = nil
         servedPartial = false
         anyGroupFailed = false
+        reportedInPass = 0
         if failed { lastFailureAt = Date() }
         return failed
     }
@@ -89,10 +105,13 @@ actor CapabilityRefresher {
         Task.detached {
             do {
                 let started = Date()
-                let entries = try await withTimeout(seconds: Self.collectTimeout) {
+                let set = try await withTimeout(seconds: Self.collectTimeout) {
                     try await Self.collect(domain: domain)
                 }
-                let snap = RefreshSnapshot(entries: entries)
+                let entries = set.entries
+                var snap = RefreshSnapshot(entries: entries)
+                snap.systemSeen = set.systemSeen
+                snap.appEntries = set.appEntries
                 await self.finishCollecting(snap, generation: generation, failed: false)
                 log.notice("capability refresh: collected \(entries.count, privacy: .public) item(s) needing update in \(snap.groups.count, privacy: .public) folder(s) (\(Int(Date().timeIntervalSince(started)), privacy: .public)s); signalling working set")
                 do {
@@ -114,34 +133,80 @@ actor CapabilityRefresher {
         snapshotGeneration = generation
         servedPartial = false
         anyGroupFailed = false
+        reportedInPass = 0
         if failed { lastFailureAt = Date() }
     }
 
-    private static func collect(domain: NSFileProviderDomain) async throws -> [MaterializedEntry] {
+    private static func collect(domain: NSFileProviderDomain) async throws -> CollectedSet {
         guard let manager = NSFileProviderManager(for: domain) else {
             throw NSFileProviderError(.providerNotFound)
         }
-        let enumerator = manager.enumeratorForMaterializedItems()
-        defer { enumerator.invalidate() }
-        var entries: [MaterializedEntry] = []
+        var byId: [NSFileProviderItemIdentifier: MaterializedEntry] = [:]
         var seen = 0
         var pages = 0
-        var page = NSFileProviderPage.initialPageSortedByName as NSFileProviderPage
+        let enumerator = manager.enumeratorForMaterializedItems()
+        defer { enumerator.invalidate() }
+        // The materialized-set enumerator wants an EMPTY page (`[NSData new]`). The
+        // sort constants are only for provider enumerators; 1.0.18/1.0.19 passed
+        // `initialPageSortedByName` here and got nothing back → "done: 0 item(s)".
+        var page = NSFileProviderPage(Data())
         while true {
             let (items, next) = try await PageCollector.page(of: enumerator, startingAt: page)
             pages += 1
             seen += items.count
             for item in items {
-                if let e = entry(for: item) { entries.append(e) }
+                if let e = entry(for: item) { byId[e.identifier] = e }
             }
             if pages % 20 == 0 {
-                log.notice("capability refresh: materialized pages=\(pages, privacy: .public) seen=\(seen, privacy: .public) candidates=\(entries.count, privacy: .public)")
+                log.notice("capability refresh: materialized pages=\(pages, privacy: .public) seen=\(seen, privacy: .public) candidates=\(byId.count, privacy: .public)")
             }
-            guard let next else { break }
+            guard let next, !next.rawValue.isEmpty, pages < 100_000 else { break }
             page = next
         }
-        log.notice("capability refresh: materialized enumeration done pages=\(pages, privacy: .public) seen=\(seen, privacy: .public) candidates=\(entries.count, privacy: .public)")
-        return entries
+        log.notice("capability refresh: system materialized set pages=\(pages, privacy: .public) seen=\(seen, privacy: .public) candidates=\(byId.count, privacy: .public)")
+        // Second, independent source: downloaded items the app found on disk.
+        var appCount = 0
+        if let list = AppMaterializedList.load() {
+            for e in list.entries {
+                guard let m = entry(fromApp: e), byId[m.identifier] == nil else { continue }
+                byId[m.identifier] = m
+                appCount += 1
+            }
+            log.notice("capability refresh: app scan (\(list.entries.count, privacy: .public) entries from \(list.createdAt.description, privacy: .public)) added \(appCount, privacy: .public) candidate(s)")
+        } else {
+            log.notice("capability refresh: no app scan list yet")
+        }
+        return CollectedSet(entries: Array(byId.values), systemSeen: seen, appEntries: appCount)
+    }
+
+    /// Entry from the app's on-disk scan. No content version: matched by size.
+    static func entry(fromApp e: AppMaterializedList.Entry) -> MaterializedEntry? {
+        let id = NSFileProviderItemIdentifier(e.identifier)
+        let kind: WorkingSetRefresh.ItemKind
+        let parentDirId: String?
+        let ownKey: String
+        switch ItemID.parse(id) {
+        case .root?:
+            kind = .root; parentDirId = nil; ownKey = ""
+        case .directory(let dirId, let parent?)?:
+            guard e.isDirectory else { return nil }
+            kind = .directory; parentDirId = parent; ownKey = dirId
+        case .file(let parent, let cipherName)?:
+            guard !e.isDirectory else { return nil }
+            kind = .file; parentDirId = parent; ownKey = cipherName
+        default:
+            return nil
+        }
+        return MaterializedEntry(
+            identifier: id,
+            parent: NSFileProviderItemIdentifier(e.parent),
+            filename: e.filename,
+            kind: kind,
+            parentDirId: parentDirId,
+            ownKey: ownKey,
+            documentSize: e.isDirectory ? nil : e.size,
+            contentVersion: nil
+        )
     }
 
     /// Maps a system item to a refresh entry, or nil when it must be left alone.
@@ -305,6 +370,7 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                     }
                 }
             }
+            await refresher.addReported(updated.count)
             var i = 0
             while i < updated.count {
                 observer.didUpdate(Array(updated[i..<min(i + 500, updated.count)]))
@@ -320,6 +386,7 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 return
             }
             let generation = await refresher.snapshotGeneration
+            let reportedTotal = await refresher.reportedInPass
             let failed = await refresher.finishPass()
             if failed {
                 log.error("capability refresh: pass finished with listing failures; retrying later")
@@ -330,8 +397,24 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
                 )
                 return
             }
+            let outcome = CapabilityRefreshOutcome.decide(
+                candidates: snapshot.itemCount,
+                reported: reportedTotal,
+                systemSeen: snapshot.systemSeen,
+                appMaterialized: CapabilityRefreshState.load().appMaterializedCount
+            )
+            if case .retry(let why) = outcome {
+                await refresher.noteRetry()
+                log.error("capability refresh: NOT complete — \(why, privacy: .public) (candidates \(snapshot.itemCount, privacy: .public), reported \(reportedTotal, privacy: .public), system seen \(snapshot.systemSeen, privacy: .public)); retrying later")
+                CapabilityRefreshState.update { $0.lastStatus = "retrying: \(why)"; $0.lastStatusAt = Date() }
+                observer.finishEnumeratingChanges(
+                    upTo: NSFileProviderSyncAnchor(Data("ws-retry|\(Date().timeIntervalSince1970)".utf8)),
+                    moreComing: false
+                )
+                return
+            }
             let done = CapabilityRefreshState.update {
-                $0.markCompleted(revision: revision, generation: generation, status: "done: \(snapshot.itemCount) item(s) refreshed")
+                $0.markCompleted(revision: revision, generation: generation, status: "done: \(reportedTotal) of \(snapshot.itemCount) item(s) refreshed (system \(snapshot.systemSeen), app \(snapshot.appEntries))")
             }
             log.notice("capability refresh: pass complete (\(snapshot.itemCount, privacy: .public) candidate item(s), revision \(revision, privacy: .public), generation \(generation, privacy: .public))")
             observer.finishEnumeratingChanges(
@@ -341,6 +424,19 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
         }
     }
 
+    /// Same bytes as the local copy: ETag equality when the system gave us a content
+    /// version; otherwise (app scan) the remote ciphertext must decode to exactly
+    /// the local cleartext size.
+    static func sameContent(entry e: MaterializedEntry, node: VaultNode) -> Bool {
+        if let cv = e.contentVersion {
+            return Data((node.eTag ?? "0").utf8) == cv
+        }
+        guard let local = e.documentSize, let cipher = node.size,
+              let clear = CryptomatorSize.cleartextSize(ciphertext: cipher)
+        else { return false }
+        return clear == local
+    }
+
     /// Metadata-only updates for one directory's materialized entries.
     static func items(for group: RefreshSnapshot.Group, listing nodes: [VaultNode]) -> [NSFileProviderItem] {
         var out: [NSFileProviderItem] = []
@@ -348,8 +444,7 @@ final class WorkingSetEnumerator: NSObject, NSFileProviderEnumerator {
             switch e.kind {
             case .file:
                 guard let node = nodes.first(where: { $0.kind == .file && $0.cipherName == e.ownKey }) else { continue }
-                let remoteContent = Data((node.eTag ?? "0").utf8)
-                guard remoteContent == e.contentVersion,
+                guard Self.sameContent(entry: e, node: node),
                       node.cleartextName == e.filename,
                       ItemID.node(node) == e.identifier
                 else { continue }

@@ -1036,6 +1036,7 @@ final class VaultAppModel: ObservableObject {
         await refreshMountState()
         if isMounted {
             await signalFinderRefresh()
+            startCapabilityRefreshWatch()
             if !detail.lowercased().contains("mount") {
                 detail = detail.hasSuffix(".") ? String(detail.dropLast()) + "; Finder mounted." : detail + " Finder mounted."
             }
@@ -1070,6 +1071,7 @@ final class VaultAppModel: ObservableObject {
             detail = "Mounted. Finder → Locations → CryptoMako. (\(pluginNote))"
             await refreshMountState()
             await signalFinderRefresh()
+            startCapabilityRefreshWatch()
         } catch {
             // Keep vault unlocked — mount is independent of crypto session.
             // Setting .error here made Unlock→Mount-fail look like "locked again".
@@ -1315,14 +1317,54 @@ final class VaultAppModel: ObservableObject {
     /// Download) onto every downloaded item. Metadata-only: nothing downloads,
     /// moves, or gets deleted locally or on S3.
     func requestFinderCapabilityRefresh() async {
+        guard isUnlocked, isMounted, let domain = domain() else {
+            detail = "Unlock and mount the vault before refreshing Finder permissions."
+            return
+        }
         let before = CapabilityRefreshState.load()
         let st = CapabilityRefreshState.update { $0.requestRefresh() }
-        await signalFinderRefresh()
-        var prior = before.lastStatus ?? "never ran"
-        if let at = before.lastStatusAt {
-            prior += " (\(at.formatted(date: .abbreviated, time: .shortened)))"
+        detail = "Refreshing Finder permissions (#\(st.requestedGeneration)): scanning downloaded files… Previous result: \(Self.describe(before))"
+        let scan = await FinderPermissionScanner.run(domain: domain)
+        detail = "Finder permissions refresh #\(st.requestedGeneration): \(scan). The Finder extension applies it in the background; Remove Download appears within a few minutes. Previous result: \(Self.describe(before))"
+        startCapabilityRefreshWatch()
+    }
+
+    static func describe(_ s: CapabilityRefreshState) -> String {
+        var t = s.lastStatus ?? "never ran"
+        if let at = s.lastStatusAt { t += " (\(at.formatted(date: .abbreviated, time: .shortened)))" }
+        return t
+    }
+
+    /// Current Finder-permissions status for menus.
+    var finderPermissionsStatus: String {
+        let s = CapabilityRefreshState.load()
+        let needed = s.needsRefresh(revision: FileProviderCapabilitySets.metadataRevision)
+        return (needed ? "pending — " : "") + Self.describe(s)
+    }
+
+    private var capabilityRefreshWatch: Task<Void, Never>?
+
+    /// After mount: if the refresh has not completed for this revision, scan once
+    /// and keep nudging the working set every 5 minutes (up to 2 hours) until the
+    /// extension records completion. Metadata-only.
+    func startCapabilityRefreshWatch() {
+        capabilityRefreshWatch?.cancel()
+        capabilityRefreshWatch = Task { [weak self] in
+            guard let self else { return }
+            let revision = FileProviderCapabilitySets.metadataRevision
+            if CapabilityRefreshState.load().needsRefresh(revision: revision),
+               AppMaterializedList.load() == nil || CapabilityRefreshState.load().appMaterializedCount == nil,
+               let domain = await MainActor.run(body: { self.domain() }) {
+                _ = await FinderPermissionScanner.run(domain: domain)
+            }
+            for _ in 0..<24 {
+                try? await Task.sleep(nanoseconds: 300_000_000_000)
+                if Task.isCancelled { return }
+                guard CapabilityRefreshState.load().needsRefresh(revision: revision) else { return }
+                guard await MainActor.run(body: { self.isUnlocked && self.isMounted }) else { continue }
+                await self.signalFinderRefresh()
+            }
         }
-        detail = "Finder permissions refresh requested (#\(st.requestedGeneration)). Previous result: \(prior). It runs in the background; Remove Download appears within a few minutes."
     }
 
     /// Finder location of the mounted vault (for the folder picker).

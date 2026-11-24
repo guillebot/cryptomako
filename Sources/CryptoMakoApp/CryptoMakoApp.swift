@@ -30,6 +30,15 @@ struct CryptoMakoApp: App {
                     }
                 }
             }
+            // Menu-bar "Finder" menu (visible whenever the CryptoMako window is active).
+            CommandMenu("Finder") {
+                Button("Free Up Space (Whole Vault)") { delegate.model.freeUpSpace(folder: nil) }
+                Button("Free Up Space in Folder…") { Task { await delegate.model.chooseFolderAndFreeUpSpace() } }
+                Divider()
+                Button("Refresh Finder Permissions (Remove Download)") {
+                    Task { await delegate.model.requestFinderCapabilityRefresh() }
+                }
+            }
             CommandGroup(replacing: .appSettings) {
                 Button("Settings…") {
                     delegate.model.openSettings()
