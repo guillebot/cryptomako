@@ -51,7 +51,7 @@ public enum FileProviderCapabilitySets {
     /// Prefix folded into every item's metadataVersion. Bump whenever a capability
     /// set changes so FPFS replaces cached items (and Finder's menu) on the next
     /// enumeration. The content version is untouched, so nothing re-downloads.
-    public static let metadataRevision = "caps-evict-v4"
+    public static let metadataRevision = "caps-evict-v5"
 
     /// Metadata version for a file: revision + ETag (ETag alone never changed when
     /// capabilities did, so Finder kept the old menu).
@@ -320,12 +320,57 @@ public enum WorkingSetRefresh {
         }
     }
 
-    /// Fail-safe filter for a materialized item seen by the system.
+    /// Why a materialized item seen by the system is (or is not) a refresh candidate.
+    /// Counted per pass and logged, so a "0 candidates" pass always says why.
+    public enum FilterReason: String, CaseIterable, Sendable {
+        /// Downloaded / listed and lacking `.allowsEvicting` or the current metadata.
+        case candidate
+        /// Identifier is not one of ours (`d:` / `f:` / root), e.g. a system-internal
+        /// `__fp/fs/fileID(…)` reference. Never invent an update for it.
+        case unparseableIdentifier
+        /// Trash / working-set containers.
+        case systemContainer
+        /// Dataless file: nothing to evict.
+        case notDownloaded
+        /// Upload in flight: gets fresh capabilities from create/modifyItem.
+        case uploading
+        /// Not confirmed on S3 (local edits): must not be made evictable from here.
+        case notUploaded
+        case conflict
+        /// Already carries `.allowsEvicting` AND the current metadata version.
+        case alreadyCurrent
+    }
+
+    /// Classifies a materialized item seen by the system.
     ///
-    /// - Skips items in flight or in conflict (they get fresh capabilities from
-    ///   `createItem` / `modifyItem` when the upload lands; nothing to evict anyway).
-    /// - Skips dataless files (nothing to evict; avoids listing 300k placeholders).
-    /// - Skips items that already carry `.allowsEvicting` **and** the current metadata.
+    /// Any downloaded item that is confirmed uploaded and lacks `.allowsEvicting`
+    /// is a candidate, whatever its metadata version says. Missing (nil) values
+    /// never reject an item; only explicit "not downloaded / not uploaded /
+    /// uploading / conflict" do.
+    public static func classify(
+        kind: ItemKind?,
+        isSystemContainer: Bool = false,
+        isDownloaded: Bool?,
+        isUploaded: Bool?,
+        isUploading: Bool?,
+        hasUnresolvedConflicts: Bool?,
+        capabilities: NSFileProviderItemCapabilities?,
+        metadataVersion: Data?,
+        contentVersion: Data?
+    ) -> FilterReason {
+        if isSystemContainer { return .systemContainer }
+        guard let kind else { return .unparseableIdentifier }
+        if kind == .file && isDownloaded == false { return .notDownloaded }
+        if isUploading == true { return .uploading }
+        if isUploaded == false { return .notUploaded }
+        if hasUnresolvedConflicts == true { return .conflict }
+        let capsOK = capabilities?.contains(.allowsEvicting) ?? false
+        if !capsOK { return .candidate }
+        let metaOK = metadataVersion.map { $0 == expectedMetadataVersion(kind: kind, contentVersion: contentVersion) } ?? false
+        return metaOK ? .alreadyCurrent : .candidate
+    }
+
+    /// `classify(...) == .candidate` (kept for existing callers/tests).
     public static func needsRefresh(
         kind: ItemKind?,
         isDownloaded: Bool?,
@@ -336,12 +381,47 @@ public enum WorkingSetRefresh {
         metadataVersion: Data?,
         contentVersion: Data?
     ) -> Bool {
-        guard let kind else { return false }
-        if isUploading == true || isUploaded == false || hasUnresolvedConflicts == true { return false }
-        if isDownloaded == false { return false }
-        let capsOK = capabilities?.contains(.allowsEvicting) ?? false
-        let metaOK = metadataVersion.map { $0 == expectedMetadataVersion(kind: kind, contentVersion: contentVersion) } ?? false
-        return !(capsOK && metaOK)
+        classify(
+            kind: kind, isDownloaded: isDownloaded, isUploaded: isUploaded, isUploading: isUploading,
+            hasUnresolvedConflicts: hasUnresolvedConflicts, capabilities: capabilities,
+            metadataVersion: metadataVersion, contentVersion: contentVersion
+        ) == .candidate
+    }
+}
+
+/// Per-reason counters for one refresh pass (system filter + vault matching).
+public struct CapabilityRefreshCounters: Equatable, Sendable {
+    public var filter: [WorkingSetRefresh.FilterReason: Int] = [:]
+    /// Vault-matching phase: why a candidate did or did not become an update.
+    public enum MatchReason: String, CaseIterable, Sendable {
+        case updated
+        case notOnVault
+        case contentMismatch
+        case nameMismatch
+        case identifierMismatch
+        case listingFailed
+    }
+    public var match: [MatchReason: Int] = [:]
+    public var appAdded = 0
+    public var appDuplicateOfSystemCandidate = 0
+    public var appAlreadyCurrentOnSystem = 0
+    public var appUnparseable = 0
+
+    public init() {}
+
+    public mutating func add(_ r: WorkingSetRefresh.FilterReason, _ n: Int = 1) { filter[r, default: 0] += n }
+    public mutating func add(_ r: MatchReason, _ n: Int = 1) { match[r, default: 0] += n }
+    public func count(_ r: WorkingSetRefresh.FilterReason) -> Int { filter[r] ?? 0 }
+    public func count(_ r: MatchReason) -> Int { match[r] ?? 0 }
+
+    public var filterLine: String {
+        WorkingSetRefresh.FilterReason.allCases.map { "\($0.rawValue)=\(count($0))" }.joined(separator: " ")
+    }
+    public var appLine: String {
+        "added=\(appAdded) dupOfSystemCandidate=\(appDuplicateOfSystemCandidate) alreadyCurrentOnSystem=\(appAlreadyCurrentOnSystem) unparseable=\(appUnparseable)"
+    }
+    public var matchLine: String {
+        MatchReason.allCases.map { "\($0.rawValue)=\(count($0))" }.joined(separator: " ")
     }
 }
 

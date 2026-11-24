@@ -257,7 +257,7 @@ final class RefreshTimeoutTests: XCTestCase {
 
 final class CapabilityRefreshV4Tests: XCTestCase {
     func testRevisionBumpedSoEveryItemGetsNewMetadata() {
-        XCTAssertEqual(FileProviderCapabilitySets.metadataRevision, "caps-evict-v4")
+        XCTAssertEqual(FileProviderCapabilitySets.metadataRevision, "caps-evict-v5")
     }
 
     func testStateFileKeyBumped() {
@@ -266,14 +266,16 @@ final class CapabilityRefreshV4Tests: XCTestCase {
     }
 
     func testZeroUpdatePassIsNeverComplete() {
+        typealias S = CapabilityRefreshPassStats
         // The 1.0.19 failure: nothing collected while 17k files were downloaded.
-        XCTAssertNotEqual(CapabilityRefreshOutcome.decide(candidates: 0, reported: 0, systemSeen: 0, appMaterialized: 17_235), .complete)
-        XCTAssertNotEqual(CapabilityRefreshOutcome.decide(candidates: 0, reported: 0, systemSeen: 0, appMaterialized: nil), .complete)
-        XCTAssertNotEqual(CapabilityRefreshOutcome.decide(candidates: 500, reported: 0, systemSeen: 500, appMaterialized: 500), .complete)
-        // Legit completes: work done, or genuinely nothing downloaded / already current.
-        XCTAssertEqual(CapabilityRefreshOutcome.decide(candidates: 500, reported: 480, systemSeen: 500, appMaterialized: 500), .complete)
-        XCTAssertEqual(CapabilityRefreshOutcome.decide(candidates: 0, reported: 0, systemSeen: 0, appMaterialized: 0), .complete)
-        XCTAssertEqual(CapabilityRefreshOutcome.decide(candidates: 0, reported: 0, systemSeen: 900, appMaterialized: 900), .complete)
+        XCTAssertFalse(CapabilityRefreshOutcome.decide(S(appMaterialized: 17_235)).isComplete)
+        XCTAssertFalse(CapabilityRefreshOutcome.decide(S(appMaterialized: nil)).isComplete)
+        XCTAssertFalse(CapabilityRefreshOutcome.decide(S(systemSeen: 500, candidates: 500, nonRootCandidates: 500, appMaterialized: 500)).isComplete)
+        // The 1.0.20 failure: 900 listed, none a candidate, no explanation → retry (1.0.20 said complete).
+        XCTAssertFalse(CapabilityRefreshOutcome.decide(S(systemSeen: 900, appMaterialized: 900)).isComplete)
+        // Legit completes: work done, or genuinely nothing downloaded.
+        XCTAssertTrue(CapabilityRefreshOutcome.decide(S(systemSeen: 500, candidates: 500, nonRootCandidates: 500, updatedNonRoot: 480, appMaterialized: 500)).isComplete)
+        XCTAssertTrue(CapabilityRefreshOutcome.decide(S(systemSeen: 0, appMaterialized: 0)).isComplete)
     }
 
     func testCryptomatorSizeRoundTrip() {
@@ -329,6 +331,6 @@ final class CapabilityRefreshV4Tests: XCTestCase {
             XCTAssertTrue(item.capabilities.contains(.allowsEvicting), item.filename)
         }
         let fileMeta = VaultItem.file(node: node).itemVersion.metadataVersion
-        XCTAssertTrue(String(decoding: fileMeta, as: UTF8.self).hasPrefix("caps-evict-v4|"))
+        XCTAssertTrue(String(decoding: fileMeta, as: UTF8.self).hasPrefix(FileProviderCapabilitySets.metadataRevision + "|"))
     }
 }

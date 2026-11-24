@@ -942,12 +942,10 @@ final class VaultAppModel: ObservableObject {
     func signalFinderRefresh() async {
         guard let domain = domain() else { return }
         guard let manager = NSFileProviderManager(for: domain) else { return }
-        do {
-            try await manager.signalEnumerator(for: .rootContainer)
-            try await manager.signalEnumerator(for: .workingSet)
-        } catch {
-            // Best-effort; listing in the Vault tab still reflects remote truth.
-        }
+        // Independent calls: a failure on the root signal (replicated extensions
+        // only honour the working set) must not skip the working-set signal.
+        try? await manager.signalEnumerator(for: .rootContainer)
+        try? await manager.signalEnumerator(for: .workingSet)
     }
 
     private func watchBackupSyncForFinderRefresh() {
@@ -1322,9 +1320,10 @@ final class VaultAppModel: ObservableObject {
             return
         }
         let before = CapabilityRefreshState.load()
-        let st = CapabilityRefreshState.update { $0.requestRefresh() }
-        detail = "Refreshing Finder permissions (#\(st.requestedGeneration)): scanning downloaded files… Previous result: \(Self.describe(before))"
+        detail = "Refreshing Finder permissions: scanning downloaded files… Previous result: \(Self.describe(before))"
+        // The scan bumps the generation itself (CapabilityRefreshState.recordAppScan).
         let scan = await FinderPermissionScanner.run(domain: domain)
+        let st = CapabilityRefreshState.load()
         detail = "Finder permissions refresh #\(st.requestedGeneration): \(scan). The Finder extension applies it in the background; Remove Download appears within a few minutes. Previous result: \(Self.describe(before))"
         startCapabilityRefreshWatch()
     }
@@ -1352,8 +1351,9 @@ final class VaultAppModel: ObservableObject {
         capabilityRefreshWatch = Task { [weak self] in
             guard let self else { return }
             let revision = FileProviderCapabilitySets.metadataRevision
-            if CapabilityRefreshState.load().needsRefresh(revision: revision),
-               AppMaterializedList.load() == nil || CapabilityRefreshState.load().appMaterializedCount == nil,
+            let st = CapabilityRefreshState.load()
+            if st.needsRefresh(revision: revision) || st.needsAppScan(revision: revision),
+               st.needsAppScan(revision: revision) || AppMaterializedList.load() == nil,
                let domain = await MainActor.run(body: { self.domain() }) {
                 _ = await FinderPermissionScanner.run(domain: domain)
             }

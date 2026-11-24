@@ -19,6 +19,10 @@ public struct CapabilityRefreshState: Codable, Equatable, Sendable {
     /// Downloaded files + folders the app counted under the Finder location in its
     /// last scan (nil = no scan yet).
     public var appMaterializedCount: Int?
+    /// When / for which capability revision the app last wrote `AppMaterializedList`
+    /// (1.0.21). A list from an older revision is rescanned.
+    public var appScanAt: Date?
+    public var appScanRevision: String?
 
     public init(
         requestedGeneration: Int = 0,
@@ -26,7 +30,9 @@ public struct CapabilityRefreshState: Codable, Equatable, Sendable {
         completedGeneration: Int = 0,
         lastStatus: String? = nil,
         lastStatusAt: Date? = nil,
-        appMaterializedCount: Int? = nil
+        appMaterializedCount: Int? = nil,
+        appScanAt: Date? = nil,
+        appScanRevision: String? = nil
     ) {
         self.requestedGeneration = requestedGeneration
         self.completedRevision = completedRevision
@@ -34,6 +40,8 @@ public struct CapabilityRefreshState: Codable, Equatable, Sendable {
         self.lastStatus = lastStatus
         self.lastStatusAt = lastStatusAt
         self.appMaterializedCount = appMaterializedCount
+        self.appScanAt = appScanAt
+        self.appScanRevision = appScanRevision
     }
 
     public init(from decoder: Decoder) throws {
@@ -44,6 +52,8 @@ public struct CapabilityRefreshState: Codable, Equatable, Sendable {
         lastStatus = try c.decodeIfPresent(String.self, forKey: .lastStatus)
         lastStatusAt = try c.decodeIfPresent(Date.self, forKey: .lastStatusAt)
         appMaterializedCount = try c.decodeIfPresent(Int.self, forKey: .appMaterializedCount)
+        appScanAt = try c.decodeIfPresent(Date.self, forKey: .appScanAt)
+        appScanRevision = try c.decodeIfPresent(String.self, forKey: .appScanRevision)
     }
 
     /// True until a full pass finished for this revision and the latest app request.
@@ -65,10 +75,26 @@ public struct CapabilityRefreshState: Codable, Equatable, Sendable {
         lastStatusAt = date
     }
 
-    public mutating func requestRefresh(at date: Date = Date()) {
+    public mutating func requestRefresh(at date: Date = Date(), status: String = "refresh requested") {
         requestedGeneration += 1
-        lastStatus = "refresh requested"
+        lastStatus = status
         lastStatusAt = date
+    }
+
+    /// The app wrote a fresh `AppMaterializedList`. Bumps the generation so the
+    /// extension runs a NEW pass that includes the list, even if a pass for this
+    /// revision already finished (1.0.20: the pass completed 74 s before the scan
+    /// landed, and the scan's signal was ignored because nothing was "needed").
+    public mutating func recordAppScan(count: Int, revision: String, at date: Date = Date()) {
+        appMaterializedCount = count
+        appScanAt = date
+        appScanRevision = revision
+        requestRefresh(at: date, status: "app scan ready: \(count) downloaded item(s); refresh #\(requestedGeneration + 1) requested")
+    }
+
+    /// True when the app has no usable on-disk list for this revision.
+    public func needsAppScan(revision: String) -> Bool {
+        appMaterializedCount == nil || appScanRevision != revision
     }
 
     // MARK: - Storage (app group, shared by app and extension)
@@ -104,29 +130,94 @@ public struct CapabilityRefreshState: Codable, Equatable, Sendable {
 
 // MARK: - Pass outcome (pure)
 
+/// Counts for one refresh pass, used by the completion rule and logged verbatim.
+public struct CapabilityRefreshPassStats: Equatable, Sendable {
+    /// Items fileproviderd listed as materialized (before filtering).
+    public var systemSeen = 0
+    /// System items whose rejection reason was `.alreadyCurrent`.
+    public var systemAlreadyCurrent = 0
+    /// System items that are not refresh targets by nature (trash / working-set containers).
+    public var systemContainers = 0
+    /// Candidates handed to the vault-matching phase (system + app), root included.
+    public var candidates = 0
+    /// Candidates other than the root.
+    public var nonRootCandidates = 0
+    /// Metadata updates handed to fileproviderd, root excluded.
+    public var updatedNonRoot = 0
+    public var updatedRoot = false
+    /// Downloaded files/folders in the app's on-disk list (nil = no list for this revision yet).
+    public var appMaterialized: Int?
+
+    public init(
+        systemSeen: Int = 0, systemAlreadyCurrent: Int = 0, systemContainers: Int = 0,
+        candidates: Int = 0, nonRootCandidates: Int = 0, updatedNonRoot: Int = 0,
+        updatedRoot: Bool = false, appMaterialized: Int? = nil
+    ) {
+        self.systemSeen = systemSeen
+        self.systemAlreadyCurrent = systemAlreadyCurrent
+        self.systemContainers = systemContainers
+        self.candidates = candidates
+        self.nonRootCandidates = nonRootCandidates
+        self.updatedNonRoot = updatedNonRoot
+        self.updatedRoot = updatedRoot
+        self.appMaterialized = appMaterialized
+    }
+}
+
 public enum CapabilityRefreshOutcome: Equatable, Sendable {
-    case complete
+    case complete(String)
     case retry(String)
 
-    /// Never count a pass that changed nothing as done while downloaded items exist.
+    public var isComplete: Bool { if case .complete = self { return true } else { return false } }
+
+    /// 1.0.21 rule. A pass is complete ONLY when
+    /// 1. it handed at least one non-root update to fileproviderd, or
+    /// 2. the downloaded set is truly empty (fileproviderd lists nothing AND the
+    ///    app's on-disk scan for this revision found nothing), or
+    /// 3. every item fileproviderd listed was individually verified as already
+    ///    carrying `.allowsEvicting` + the current metadata (nothing lacks it), and
+    ///    the app list adds nothing.
+    /// Anything else (0 candidates with no explanation, candidates that matched
+    /// nothing, only the root updated, no app list yet) is retried.
     ///
-    /// - candidates: items that needed new capabilities (system + app sources).
-    /// - reported: metadata updates actually handed to fileproviderd.
-    /// - systemSeen: items fileproviderd listed as materialized (before filtering).
-    /// - appMaterialized: downloaded files/folders the app counted on disk (nil = no scan yet).
-    public static func decide(candidates: Int, reported: Int, systemSeen: Int, appMaterialized: Int?) -> CapabilityRefreshOutcome {
-        if candidates > 0 && reported == 0 {
-            return .retry("0 of \(candidates) candidate(s) could be matched on the vault")
+    /// 1.0.20 treated "system listed 77,758 items, 0 candidates" as complete; that
+    /// is exactly the case rule 3 now requires a per-item explanation for.
+    public static func decide(_ s: CapabilityRefreshPassStats) -> CapabilityRefreshOutcome {
+        if s.updatedNonRoot > 0 {
+            return .complete("updated \(s.updatedNonRoot) of \(s.nonRootCandidates) candidate item(s)")
         }
-        if candidates == 0 && systemSeen == 0 {
-            guard let app = appMaterialized else {
-                return .retry("waiting for the app to count downloaded items")
-            }
-            if app > 0 {
-                return .retry("no candidates found but the app sees \(app) downloaded item(s)")
-            }
+        if s.nonRootCandidates > 0 {
+            return .retry("0 of \(s.nonRootCandidates) candidate item(s) could be matched on the vault")
         }
-        return .complete
+        // No candidates beyond (maybe) the root.
+        guard let app = s.appMaterialized else {
+            return .retry("no candidates and the app has not listed downloaded items yet")
+        }
+        let listed = s.systemSeen - s.systemContainers
+        if listed <= 0 && app == 0 {
+            return .complete("nothing is downloaded")
+        }
+        if listed > 0 && s.systemAlreadyCurrent == listed {
+            // Any app entries were already-current system items (deduplicated away);
+            // an app entry the system did not vouch for would have been a candidate.
+            return .complete("all \(listed) downloaded item(s) already allow Remove Download (app list: \(app))")
+        }
+        return .retry("0 candidates although \(max(listed, 0)) item(s) are listed by the system (\(s.systemAlreadyCurrent) verified current) and \(app) by the app")
+    }
+}
+
+/// Pure scheduling decisions shared by the extension and tests.
+public enum CapabilityRefreshPlanner {
+    /// A collected snapshot that predates the latest app request must be rebuilt
+    /// (unless a paged pass is already being served from it).
+    public static func snapshotIsStale(snapshotGeneration: Int, requestedGeneration: Int, servedPartial: Bool) -> Bool {
+        !servedPartial && snapshotGeneration < requestedGeneration
+    }
+
+    /// A new generation (app scan / menu request) skips the failure backoff.
+    public static func bypassBackoff(generation: Int, lastFailureGeneration: Int?) -> Bool {
+        guard let last = lastFailureGeneration else { return true }
+        return generation > last
     }
 }
 
