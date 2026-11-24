@@ -254,3 +254,81 @@ final class RefreshTimeoutTests: XCTestCase {
         XCTAssertEqual(v, 42)
     }
 }
+
+final class CapabilityRefreshV4Tests: XCTestCase {
+    func testRevisionBumpedSoEveryItemGetsNewMetadata() {
+        XCTAssertEqual(FileProviderCapabilitySets.metadataRevision, "caps-evict-v4")
+    }
+
+    func testStateFileKeyBumped() {
+        // v1 file recorded "done: 0 item(s)" on Guillermo's Mac; v2 starts fresh.
+        XCTAssertEqual(CapabilityRefreshState.fileURL?.lastPathComponent ?? "capability-refresh-v2.json", "capability-refresh-v2.json")
+    }
+
+    func testZeroUpdatePassIsNeverComplete() {
+        // The 1.0.19 failure: nothing collected while 17k files were downloaded.
+        XCTAssertNotEqual(CapabilityRefreshOutcome.decide(candidates: 0, reported: 0, systemSeen: 0, appMaterialized: 17_235), .complete)
+        XCTAssertNotEqual(CapabilityRefreshOutcome.decide(candidates: 0, reported: 0, systemSeen: 0, appMaterialized: nil), .complete)
+        XCTAssertNotEqual(CapabilityRefreshOutcome.decide(candidates: 500, reported: 0, systemSeen: 500, appMaterialized: 500), .complete)
+        // Legit completes: work done, or genuinely nothing downloaded / already current.
+        XCTAssertEqual(CapabilityRefreshOutcome.decide(candidates: 500, reported: 480, systemSeen: 500, appMaterialized: 500), .complete)
+        XCTAssertEqual(CapabilityRefreshOutcome.decide(candidates: 0, reported: 0, systemSeen: 0, appMaterialized: 0), .complete)
+        XCTAssertEqual(CapabilityRefreshOutcome.decide(candidates: 0, reported: 0, systemSeen: 900, appMaterialized: 900), .complete)
+    }
+
+    func testCryptomatorSizeRoundTrip() {
+        for clear: Int64 in [0, 1, 1553, 32_767, 32_768, 32_769, 65_536, 5_558_959, 104_857_600] {
+            let cipher = CryptomatorSize.ciphertextSize(cleartext: clear)
+            XCTAssertEqual(CryptomatorSize.cleartextSize(ciphertext: cipher), clear, "clear=\(clear)")
+        }
+        XCTAssertEqual(CryptomatorSize.ciphertextSize(cleartext: 1553), 68 + 1553 + 28)
+        XCTAssertNil(CryptomatorSize.cleartextSize(ciphertext: 10))
+        // A body that is pure overhead cannot be valid.
+        XCTAssertNil(CryptomatorSize.cleartextSize(ciphertext: 68 + 28))
+    }
+
+    func testAppEntryMappingAndSizeMatch() throws {
+        let parentDir = "84AFAFAF-A46D-46AD-A51F-2D49090F5819"
+        let node = VaultNode(cleartextName: "IMG_1.jpg", kind: .file, cipherName: "x.c9r", parentDirId: parentDir,
+                             dirId: nil, ciphertextKey: "k", size: CryptomatorSize.ciphertextSize(cleartext: 5_558_959), eTag: "e9")
+        let appEntry = AppMaterializedList.Entry(
+            identifier: ItemID.node(node).rawValue,
+            parent: "d:GP/\(parentDir)",
+            filename: "IMG_1.jpg", isDirectory: false, size: 5_558_959
+        )
+        let e = try XCTUnwrap(CapabilityRefresher.entry(fromApp: appEntry))
+        XCTAssertNil(e.contentVersion)
+        XCTAssertTrue(WorkingSetEnumerator.sameContent(entry: e, node: node))
+        let items = WorkingSetEnumerator.items(for: .init(parentDirId: parentDir, entries: [e]), listing: [node])
+        XCTAssertEqual(items.count, 1)
+        XCTAssertTrue(items[0].capabilities?.contains(.allowsEvicting) ?? false)
+        XCTAssertEqual(items[0].parentItemIdentifier.rawValue, "d:GP/\(parentDir)")
+        // Local size differs from what S3 holds → skip (not our refresh to make).
+        var other = appEntry
+        other.size = 5_558_958
+        let e2 = try XCTUnwrap(CapabilityRefresher.entry(fromApp: other))
+        XCTAssertTrue(WorkingSetEnumerator.items(for: .init(parentDirId: parentDir, entries: [e2]), listing: [node]).isEmpty)
+        // Type mismatch / garbage identifiers are rejected.
+        var dirAsFile = appEntry
+        dirAsFile.isDirectory = true
+        XCTAssertNil(CapabilityRefresher.entry(fromApp: dirAsFile))
+        XCTAssertNil(CapabilityRefresher.entry(fromApp: .init(identifier: "zzz", parent: "p", filename: "f", isDirectory: false, size: 1)))
+    }
+
+    func testEveryVaultItemFactoryAllowsEvicting() {
+        let node = VaultNode(cleartextName: "a", kind: .file, cipherName: "a.c9r", parentDirId: "P",
+                             dirId: nil, ciphertextKey: "k", size: 100, eTag: "e")
+        let items: [VaultItem] = [
+            VaultItem.root(displayName: "CryptoMako"),
+            VaultItem.directory(dirId: "D", parentDirId: "P", name: "dir"),
+            VaultItem.file(node: node),
+            VaultItem.file(node: node, downloaded: true),
+            VaultItem.file(node: node, parentItemIdentifier: NSFileProviderItemIdentifier("d:/P"), documentSize: 10, downloaded: true),
+        ]
+        for item in items {
+            XCTAssertTrue(item.capabilities.contains(.allowsEvicting), item.filename)
+        }
+        let fileMeta = VaultItem.file(node: node).itemVersion.metadataVersion
+        XCTAssertTrue(String(decoding: fileMeta, as: UTF8.self).hasPrefix("caps-evict-v4|"))
+    }
+}

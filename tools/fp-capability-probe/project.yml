@@ -1,0 +1,51 @@
+# Throwaway File Provider probe (separate bundle ids + domain) used to prove how
+# fileproviderd picks up capability changes on already-materialized items.
+# Never touches the real CryptoMako domain. Build:
+#   xcodegen generate && xcodebuild -project CMProbe.xcodeproj -scheme CMProbe \
+#     -configuration Debug -derivedDataPath .dd -allowProvisioningUpdates build
+name: CMProbe
+options:
+  bundleIdPrefix: net.gschimmel.cryptomako
+  deploymentTarget:
+    macOS: "14.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.10"
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: "H4K6YW7MQM"
+    ENABLE_DEBUG_DYLIB: NO
+    ENABLE_PREVIEWS: NO
+    MARKETING_VERSION: "1.0"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  CMProbe:
+    type: application
+    platform: macOS
+    sources: [App]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.gschimmel.cryptomako.probe
+        CODE_SIGN_ENTITLEMENTS: App/App.entitlements
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_LSUIElement: YES
+    dependencies:
+      - target: CMProbeFileProvider
+  CMProbeFileProvider:
+    type: app-extension
+    platform: macOS
+    sources: [Ext]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: net.gschimmel.cryptomako.probe.FileProvider
+        CODE_SIGN_ENTITLEMENTS: Ext/Ext.entitlements
+    info:
+      path: Ext/Info.plist
+      properties:
+        CFBundleDisplayName: CMProbe
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.fileprovider-nonui
+          NSExtensionPrincipalClass: $(PRODUCT_MODULE_NAME).ProbeExtension
+          NSExtensionFileProviderSupportsEnumeration: true
+        NSExtensionFileProviderDocumentGroup: $(AppIdentifierPrefix)group.net.gschimmel.cryptomako

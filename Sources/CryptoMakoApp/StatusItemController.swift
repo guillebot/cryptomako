@@ -203,6 +203,36 @@ final class StatusItemController: NSObject, NSMenuDelegate {
 
         menu.addItem(.separator())
 
+        // Finder storage actions live here too: the app usually runs as a menu-bar
+        // accessory with its window closed, so the Vault tab's "Finder" pull-down
+        // was easy to miss (1.0.19 report: "can't see the menu item anywhere").
+        let finderItem = NSMenuItem(title: "Finder", action: nil, keyEquivalent: "")
+        let finderMenu = NSMenu(title: "Finder")
+        let canAct = model.isUnlocked && model.isMounted
+        for (title, sel) in [
+            ("Free Up Space (Whole Vault)", #selector(freeUpSpaceAll(_:))),
+            ("Free Up Space in Folder…", #selector(freeUpSpaceFolder(_:))),
+            ("Refresh Finder Permissions (Remove Download)", #selector(refreshFinderPermissions(_:))),
+        ] {
+            let item = NSMenuItem(title: title, action: sel, keyEquivalent: "")
+            item.target = self
+            item.isEnabled = canAct
+            finderMenu.addItem(item)
+        }
+        finderMenu.addItem(.separator())
+        let status = NSMenuItem(title: truncate("Permissions: \(model.finderPermissionsStatus)", limit: 80), action: nil, keyEquivalent: "")
+        status.isEnabled = false
+        finderMenu.addItem(status)
+        if !canAct {
+            let hint = NSMenuItem(title: "Unlock and mount the vault to use these", action: nil, keyEquivalent: "")
+            hint.isEnabled = false
+            finderMenu.addItem(hint)
+        }
+        finderItem.submenu = finderMenu
+        menu.addItem(finderItem)
+
+        menu.addItem(.separator())
+
         let aboutItem = NSMenuItem(
             title: "About CryptoMako",
             action: #selector(showAbout(_:)),
@@ -322,6 +352,21 @@ final class StatusItemController: NSObject, NSMenuDelegate {
         )
         showWindowHandler()
         NSApp.orderFrontStandardAboutPanel(options: options)
+    }
+
+    @objc private func freeUpSpaceAll(_ sender: Any?) {
+        model.freeUpSpace(folder: nil)
+        showWindowHandler()
+    }
+
+    @objc private func freeUpSpaceFolder(_ sender: Any?) {
+        showWindowHandler()
+        Task { @MainActor in await model.chooseFolderAndFreeUpSpace() }
+    }
+
+    @objc private func refreshFinderPermissions(_ sender: Any?) {
+        showWindowHandler()
+        Task { @MainActor in await model.requestFinderCapabilityRefresh() }
     }
 
     @objc private func checkUpdates(_ sender: Any?) {

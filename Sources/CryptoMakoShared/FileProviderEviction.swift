@@ -51,7 +51,7 @@ public enum FileProviderCapabilitySets {
     /// Prefix folded into every item's metadataVersion. Bump whenever a capability
     /// set changes so FPFS replaces cached items (and Finder's menu) on the next
     /// enumeration. The content version is untouched, so nothing re-downloads.
-    public static let metadataRevision = "caps-evict-v3"
+    public static let metadataRevision = "caps-evict-v4"
 
     /// Metadata version for a file: revision + ETag (ETag alone never changed when
     /// capabilities did, so Finder kept the old menu).
@@ -393,5 +393,33 @@ extension EvictionSummary {
     /// True when every attempt so far failed and there have been enough of them.
     public var shouldAbortEarly: Bool {
         evictedFiles == 0 && failed >= Self.earlyAbortFailures
+    }
+}
+
+// MARK: - Cryptomator sizes (pure)
+
+public enum CryptomatorSize {
+    static let headerBytes: Int64 = 68
+    static let chunkPayload: Int64 = 32_768
+    static let chunkOverhead: Int64 = 28
+
+    /// Cleartext size of a format-8 (GCM) file from its ciphertext object size,
+    /// or nil when the size cannot be a valid ciphertext.
+    public static func cleartextSize(ciphertext: Int64) -> Int64? {
+        guard ciphertext >= headerBytes else { return nil }
+        let body = ciphertext - headerBytes
+        if body == 0 { return 0 }
+        let fullChunk = chunkPayload + chunkOverhead
+        let chunks = (body + fullChunk - 1) / fullChunk
+        let clear = body - chunks * chunkOverhead
+        // The last chunk must carry at least one byte.
+        guard clear > (chunks - 1) * chunkPayload else { return nil }
+        return clear
+    }
+
+    public static func ciphertextSize(cleartext: Int64) -> Int64 {
+        guard cleartext > 0 else { return headerBytes }
+        let chunks = (cleartext + chunkPayload - 1) / chunkPayload
+        return headerBytes + cleartext + chunks * chunkOverhead
     }
 }
