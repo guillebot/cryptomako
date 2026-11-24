@@ -59,9 +59,13 @@ enum FinderPermissionScanner {
         }
         AppMaterializedList(createdAt: Date(), entries: entries).save()
         let files = entries.filter { !$0.isDirectory }.count
-        CapabilityRefreshState.update { $0.appMaterializedCount = entries.count }
+        // New list → new generation, so the extension runs a pass that includes it
+        // even if one already finished for this revision (1.0.20 ignored the signal).
+        let st = CapabilityRefreshState.update {
+            $0.recordAppScan(count: entries.count, revision: FileProviderCapabilitySets.metadataRevision)
+        }
         let secs = Int(Date().timeIntervalSince(started))
-        scanLog.notice("finder permissions: \(files, privacy: .public) downloaded file(s), \(entries.count - files, privacy: .public) folder(s), unresolved \(unresolved, privacy: .public), \(secs, privacy: .public)s; signalling working set")
+        scanLog.notice("finder permissions: \(files, privacy: .public) downloaded file(s), \(entries.count - files, privacy: .public) folder(s), unresolved \(unresolved, privacy: .public), \(secs, privacy: .public)s; requested generation \(st.requestedGeneration, privacy: .public); signalling working set")
         do {
             try await manager.signalEnumerator(for: .workingSet)
         } catch {

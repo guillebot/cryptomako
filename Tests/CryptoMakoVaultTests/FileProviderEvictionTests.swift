@@ -47,7 +47,7 @@ final class FileProviderCapabilityTests: XCTestCase {
 
     func testFileMetadataVersionCarriesRevisionAndETag() {
         let v = String(decoding: FileProviderCapabilitySets.fileMetadataVersion(eTag: "abc"), as: UTF8.self)
-        XCTAssertEqual(v, "caps-evict-v4|abc")
+        XCTAssertEqual(v, "caps-evict-v5|abc")
         // Old builds used the bare ETag; the new value must differ so FPFS refreshes caps.
         XCTAssertNotEqual(FileProviderCapabilitySets.fileMetadataVersion(eTag: "abc"), Data("abc".utf8))
         XCTAssertNotEqual(FileProviderCapabilitySets.metadataRevision, "caps-delete-v2")
